@@ -1,0 +1,59 @@
+# Render Blueprint — deploys backend (FastAPI) + frontend (Vite static site)
+# Connect this repo to Render and it will provision both services.
+# See: https://render.com/docs/blueprint-spec
+
+services:
+  # ------------------------------ Backend ------------------------------
+  - type: web
+    name: inpharmd-inquiry-api
+    runtime: python
+    rootDir: backend
+    plan: starter            # change to "free" for a no-cost first deploy (sleeps after 15 min idle)
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Postgres connection — paste your Render External URL after first deploy
+      - key: DATABASE_URL
+        sync: false
+      # CORS origins for the deployed frontend (update with the real URL after first frontend deploy)
+      - key: CORS_ORIGINS
+        value: https://inpharmd-inquiry-web.onrender.com,http://localhost:5173
+      # ElevenLabs — fill in after creating the agent
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_INQUIRY_AGENT_ID
+        sync: false
+      - key: ELEVENLABS_INQUIRY_PHONE_NUMBER_ID
+        sync: false
+      - key: ELEVENLABS_WEBHOOK_SECRET
+        sync: false
+      - key: AGENT_TOOLS_SECRET
+        sync: false
+
+  # ------------------------------ Frontend -----------------------------
+  - type: web
+    name: inpharmd-inquiry-web
+    runtime: static
+    rootDir: frontend
+    plan: starter
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    autoDeploy: true
+    envVars:
+      # Inject backend URL at build time so the SPA calls the right API
+      - key: VITE_API_URL
+        value: https://inpharmd-inquiry-api.onrender.com
+    routes:
+      # SPA fallback — every unknown path serves index.html
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff

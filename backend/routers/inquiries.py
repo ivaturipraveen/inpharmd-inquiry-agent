@@ -1,0 +1,236 @@
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy.orm import Session, joinedload
+
+import call_service
+from database import get_db
+from models import Inquiry, ManufacturerContact
+from schemas import (
+    CallResultPayload,
+    EmailResponsePayload,
+    InquiryCreate,
+    InquiryOut,
+    InquiryUpdate,
+)
+
+router = APIRouter(prefix="/api/inquiries", tags=["inquiries"])
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _get_or_404(db: Session, inquiry_id: int) -> Inquiry:
+    obj = (
+        db.query(Inquiry)
+        .options(joinedload(Inquiry.manufacturer))
+        .filter(Inquiry.id == inquiry_id)
+        .first()
+    )
+    if not obj:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    return obj
+
+
+@router.get("", response_model=List[InquiryOut])
+def list_inquiries(
+    status: Optional[str] = Query(None),
+    manufacturer_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Inquiry).options(joinedload(Inquiry.manufacturer))
+    if status:
+        q = q.filter(Inquiry.status == status)
+    if manufacturer_id:
+        q = q.filter(Inquiry.manufacturer_id == manufacturer_id)
+    return q.order_by(Inquiry.created_at.desc()).all()
+
+
+@router.get("/{inquiry_id}", response_model=InquiryOut)
+def get_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("", response_model=InquiryOut, status_code=201)
+def create_inquiry(payload: InquiryCreate, db: Session = Depends(get_db)):
+    mfr = db.get(ManufacturerContact, payload.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Unknown manufacturer_id")
+    obj = Inquiry(**payload.model_dump(), status="draft")
+    db.add(obj)
+    db.commit()
+    return _get_or_404(db, obj.id)
+
+
+@router.put("/{inquiry_id}", response_model=InquiryOut)
+def update_inquiry(
+    inquiry_id: int, payload: InquiryUpdate, db: Session = Depends(get_db)
+):
+    obj = _get_or_404(db, inquiry_id)
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, k, v)
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.delete("/{inquiry_id}", status_code=204)
+def delete_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
+    obj = _get_or_404(db, inquiry_id)
+    db.delete(obj)
+    db.commit()
+    return None
+
+
+# ---------- Lifecycle transitions ----------
+
+@router.post("/{inquiry_id}/send-email", response_model=InquiryOut)
+def send_email(inquiry_id: int, db: Session = Depends(get_db)):
+    """Mark the inquiry as emailed. Actual SMTP delivery wires in separately;
+    this endpoint records the fact and schedules the fallback call window."""
+    obj = _get_or_404(db, inquiry_id)
+    if obj.status not in ("draft", "email_sent", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot send email from status '{obj.status}'",
+        )
+    now = _now()
+    obj.status = "email_sent"
+    obj.email_sent_at = now
+    obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/record-email-response", response_model=InquiryOut)
+def record_email_response(
+    inquiry_id: int,
+    payload: EmailResponsePayload,
+    db: Session = Depends(get_db),
+):
+    obj = _get_or_404(db, inquiry_id)
+    obj.status = "email_responded"
+    obj.email_response = payload.response
+    obj.email_response_at = _now()
+    obj.final_answer = payload.response
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/business-hours")
+def business_hours_check(inquiry_id: int, db: Session = Depends(get_db)):
+    """Returns whether the manufacturer is in business hours right now,
+    based on the parsed `mi_phone_hours` text. Used by the UI to warn
+    before placing a call."""
+    obj = _get_or_404(db, inquiry_id)
+    if not obj.manufacturer:
+        return {"known": False, "reason": "no manufacturer"}
+    hours_text = obj.manufacturer.mi_phone_hours if hasattr(obj.manufacturer, "mi_phone_hours") else None
+    # ManufacturerSummary may not include hours; fetch fully
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    hours_text = mfr.mi_phone_hours if mfr else None
+    result = call_service.is_within_business_hours(hours_text)
+    return {
+        "known": result is not None,
+        "in_hours": result,
+        "hours_text": hours_text,
+        "phone": mfr.mi_phone if mfr else None,
+    }
+
+
+@router.post("/{inquiry_id}/trigger-call", response_model=InquiryOut)
+def trigger_call(
+    inquiry_id: int,
+    force: bool = Query(False, description="Place the call even if outside business hours"),
+    db: Session = Depends(get_db),
+):
+    """Place an outbound ElevenLabs call to the manufacturer with this
+    inquiry's context. Updates the inquiry's status, scheduled time, and
+    stores the ElevenLabs `conversation_id` for the post-call webhook."""
+    obj = _get_or_404(db, inquiry_id)
+    if obj.status in ("email_responded", "call_completed", "closed"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot trigger call from status '{obj.status}'",
+        )
+
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+    if not mfr.mi_phone:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{mfr.manufacturer} has no MI phone number on file",
+        )
+
+    # Business-hours guard (skippable via ?force=true)
+    in_hours = call_service.is_within_business_hours(mfr.mi_phone_hours)
+    if in_hours is False and not force:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "out_of_hours",
+                "message": f"{mfr.manufacturer} is outside business hours ({mfr.mi_phone_hours}). "
+                           "Retry with ?force=true to call anyway.",
+                "hours": mfr.mi_phone_hours,
+            },
+        )
+
+    try:
+        resp = call_service.place_inquiry_call(
+            inquiry_id=obj.id,
+            to_number=mfr.mi_phone,
+            manufacturer_name=mfr.manufacturer,
+            subject=obj.subject,
+            question=obj.question,
+            requester_name=obj.requester_name,
+            requester_email=obj.requester_email,
+        )
+    except call_service.CallConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ElevenLabs rejected the call: {e.response.status_code} {e.response.text}",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to place call: {e}")
+
+    obj.status = "call_pending"
+    obj.call_scheduled_for = _now()
+    obj.call_conversation_id = (
+        resp.get("conversation_id") or resp.get("conversationId")
+    )
+    obj.call_provider_status = resp.get("status") or "initiated"
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/record-call-result", response_model=InquiryOut)
+def record_call_result(
+    inquiry_id: int,
+    payload: CallResultPayload,
+    db: Session = Depends(get_db),
+):
+    """Manual entry point: lets a human (or another integration) attach the
+    call result without going through the ElevenLabs webhook."""
+    obj = _get_or_404(db, inquiry_id)
+    obj.status = "call_completed"
+    obj.call_completed_at = _now()
+    if payload.transcript is not None:
+        obj.call_transcript = payload.transcript
+    if payload.summary is not None:
+        obj.call_summary = payload.summary
+        obj.final_answer = payload.summary
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/close", response_model=InquiryOut)
+def close_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
+    obj = _get_or_404(db, inquiry_id)
+    obj.status = "closed"
+    db.commit()
+    return _get_or_404(db, inquiry_id)

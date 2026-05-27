@@ -1,0 +1,24 @@
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Node
+**/node_modules/
+**/dist/
+
+# Env (never commit secrets)
+**/.env
+**/.env.local
+!**/.env.example
+
+# OS / editor
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log
