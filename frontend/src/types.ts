@@ -31,6 +31,7 @@ export type InquiryStatus =
   | "email_responded"
   | "call_pending"
   | "call_completed"
+  | "needs_attention"
   | "closed"
   | "failed";
 
@@ -59,6 +60,11 @@ export interface Inquiry {
   call_completed_at?: string | null;
   call_transcript?: string | null;
   call_summary?: string | null;
+  call_conversation_id?: string | null;
+  call_provider_status?: string | null;
+  retry_count?: number;
+  max_retries?: number;
+  next_retry_at?: string | null;
   final_answer?: string | null;
   created_at?: string | null;
   updated_at?: string | null;

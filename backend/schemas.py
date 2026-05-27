@@ -47,6 +47,7 @@ InquiryStatus = Literal[
     "email_responded",
     "call_pending",
     "call_completed",
+    "needs_attention",
     "closed",
     "failed",
 ]
@@ -110,6 +111,9 @@ class InquiryOut(InquiryBase):
     call_summary: Optional[str] = None
     call_conversation_id: Optional[str] = None
     call_provider_status: Optional[str] = None
+    retry_count: int = 0
+    max_retries: int = 2
+    next_retry_at: Optional[datetime] = None
     final_answer: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

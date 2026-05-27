@@ -178,10 +178,16 @@ def trigger_call(
     inquiry's context. Updates the inquiry's status, scheduled time, and
     stores the ElevenLabs `conversation_id` for the post-call webhook."""
     obj = _get_or_404(db, inquiry_id)
-    if obj.status in ("email_responded", "call_completed", "closed"):
+    if obj.status in ("email_responded", "closed"):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot trigger call from status '{obj.status}'",
+        )
+    # call_completed (with non-answered outcome) and needs_attention are valid retry sources
+    if obj.status == "call_completed" and obj.call_provider_status == "answered":
+        raise HTTPException(
+            status_code=409,
+            detail="This inquiry already has an answer. Reopen it before retrying.",
         )
 
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
@@ -232,6 +238,20 @@ def trigger_call(
         resp.get("conversation_id") or resp.get("conversationId")
     )
     obj.call_provider_status = resp.get("status") or "initiated"
+    obj.next_retry_at = None  # manual trigger cancels any pending auto-retry
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/reset-retries", response_model=InquiryOut)
+def reset_retries(inquiry_id: int, db: Session = Depends(get_db)):
+    """Manual override — clear the retry counter so this inquiry can auto-retry
+    again. Useful when a user manually edits the inquiry and wants a fresh chance."""
+    obj = _get_or_404(db, inquiry_id)
+    obj.retry_count = 0
+    obj.next_retry_at = None
+    if obj.status == "needs_attention":
+        obj.status = "draft"
     db.commit()
     return _get_or_404(db, inquiry_id)
 

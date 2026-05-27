@@ -31,9 +31,24 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
 
   const canSendEmail = ["draft", "failed"].includes(inquiry.status);
   const canRecordEmail = inquiry.status === "email_sent";
-  const canTriggerCall = ["email_sent", "draft"].includes(inquiry.status);
+  // Allow manual call from any not-yet-answered state. Retries reuse this same trigger.
+  const canTriggerCall =
+    ["email_sent", "draft", "needs_attention"].includes(inquiry.status) ||
+    (inquiry.status === "call_completed" &&
+      inquiry.call_provider_status !== "answered" &&
+      inquiry.call_provider_status !== "follow_up_via_email");
   const canRecordCall = inquiry.status === "call_pending";
   const canClose = !["closed"].includes(inquiry.status);
+
+  const retryCount = inquiry.retry_count ?? 0;
+  const maxRetries = inquiry.max_retries ?? 2;
+  const nextRetry = inquiry.next_retry_at ? new Date(inquiry.next_retry_at) : null;
+  const retryButtonLabel =
+    inquiry.status === "needs_attention"
+      ? "Retry Call Manually"
+      : retryCount > 0
+      ? `Trigger Call (retried ${retryCount}/${maxRetries})`
+      : "Trigger Call Now";
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -187,6 +202,23 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </ol>
           </div>
 
+          {nextRetry && retryCount < maxRetries && (
+            <div className="detail-section retry-banner">
+              <strong>Auto-retry scheduled</strong> for{" "}
+              {nextRetry.toLocaleString()} ({retryCount}/{maxRetries} retries used).
+              The voice agent will dial again automatically. You can also click
+              "Trigger Call Now" below to retry immediately.
+            </div>
+          )}
+
+          {inquiry.status === "needs_attention" && (
+            <div className="detail-section retry-banner retry-banner-warn">
+              <strong>Not responded after {retryCount} attempt
+              {retryCount === 1 ? "" : "s"}.</strong> Decide what to do next —
+              retry manually, send the inquiry by email, or close it.
+            </div>
+          )}
+
           {inquiry.final_answer && (
             <div className="detail-section answer-box">
               <div className="detail-label">Final Answer</div>
@@ -282,12 +314,16 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             )}
             {canTriggerCall && (
               <button
-                className="btn btn-ghost"
+                className={
+                  inquiry.status === "needs_attention"
+                    ? "btn btn-primary"
+                    : "btn btn-ghost"
+                }
                 type="button"
                 disabled={busy}
                 onClick={() => run(() => onAction("triggerCall"))}
               >
-                Trigger Call Now
+                {retryButtonLabel}
               </button>
             )}
             {canClose && (

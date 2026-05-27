@@ -13,6 +13,7 @@ const STATUS_FILTERS = [
   { value: "email_responded", label: "Email Responded" },
   { value: "call_pending", label: "Call Pending" },
   { value: "call_completed", label: "Call Completed" },
+  { value: "needs_attention", label: "Needs Attention" },
   { value: "closed", label: "Closed" },
 ];
 

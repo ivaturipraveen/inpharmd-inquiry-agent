@@ -928,6 +928,26 @@ tbody tr:last-child td {
   padding: 14px 16px;
   border-radius: var(--radius);
 }
+.retry-banner {
+  background: var(--blue-soft);
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.retry-banner strong {
+  color: #1e3a8a;
+}
+.retry-banner-warn {
+  background: var(--red-soft);
+  border-color: #fecaca;
+  color: #991b1b;
+}
+.retry-banner-warn strong {
+  color: #7f1d1d;
+}
 .action-panel {
   background: var(--line-soft);
   border: 1px solid var(--line);

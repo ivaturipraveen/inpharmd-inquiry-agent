@@ -7,6 +7,7 @@ const LABEL: Record<InquiryStatus, string> = {
   email_responded: "Email Responded",
   call_pending: "Call Pending",
   call_completed: "Call Completed",
+  needs_attention: "Needs Attention",
   closed: "Closed",
   failed: "Failed",
 };
@@ -17,6 +18,7 @@ const TONE: Record<InquiryStatus, string> = {
   email_responded: "tone-green",
   call_pending: "tone-amber",
   call_completed: "tone-green",
+  needs_attention: "tone-red",
   closed: "tone-muted",
   failed: "tone-red",
 };

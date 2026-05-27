@@ -54,6 +54,7 @@ INQUIRY_STATUSES = (
     "email_responded",
     "call_pending",
     "call_completed",
+    "needs_attention",   # call(s) failed; awaiting human follow-up
     "closed",
     "failed",
 )
@@ -91,6 +92,11 @@ class Inquiry(Base):
     call_summary = Column(Text)
     call_conversation_id = Column(String(128), index=True)
     call_provider_status = Column(String(64))
+
+    # Auto-retry on voicemail/no_answer
+    retry_count = Column(Integer, nullable=False, default=0)
+    max_retries = Column(Integer, nullable=False, default=2)
+    next_retry_at = Column(DateTime(timezone=True), index=True)
 
     final_answer = Column(Text)
 

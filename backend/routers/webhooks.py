@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from models import Inquiry
+from scheduler import schedule_retry_after_failure
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
@@ -83,13 +84,36 @@ async def elevenlabs_post_call(
     transcript = _extract_transcript(body)
 
     from datetime import datetime, timezone
-    obj.status = "call_completed"
     obj.call_completed_at = datetime.now(timezone.utc)
     if summary:
         obj.call_summary = summary
-        obj.final_answer = summary
+        # Only overwrite final_answer if submit_answer didn't already set a structured one
+        if not obj.final_answer:
+            obj.final_answer = summary
     if transcript:
         obj.call_transcript = transcript
-    obj.call_provider_status = body.get("status") or "completed"
+
+    # ElevenLabs payload may include duration / status — treat short/no-answer calls as voicemail
+    provider_status = body.get("status") or "completed"
+    duration = (
+        body.get("duration_seconds")
+        or (body.get("data") or {}).get("duration_seconds")
+        or 0
+    )
+    # If submit_answer already set a meaningful provider_status, don't overwrite it
+    if not obj.call_provider_status or obj.call_provider_status == "initiated":
+        if duration and duration < 8:
+            obj.call_provider_status = "no_answer"
+        else:
+            obj.call_provider_status = provider_status
+
+    # If submit_answer ran, status is already set; otherwise mark call_completed
+    if obj.status == "call_pending":
+        obj.status = "call_completed"
+
+    # Auto-retry only if submit_answer didn't capture a real answer AND outcome is retriable
+    if obj.call_provider_status in ("voicemail", "no_answer") and not obj.call_summary:
+        schedule_retry_after_failure(db, obj, delay_minutes=2)
+
     db.commit()
     return {"matched": True, "inquiry_id": obj.id}

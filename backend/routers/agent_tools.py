@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db
 from models import Inquiry
+from scheduler import schedule_retry_after_failure
 
 router = APIRouter(prefix="/api/agent-tools", tags=["agent-tools"])
 
@@ -103,9 +104,13 @@ def submit_answer(
         followup_note = f"Rep promised to follow up via email to {obj.requester_email or 'requester'}."
         obj.final_answer = f"{summary}\n\n{followup_note}" if summary else followup_note
     elif payload.outcome in ("voicemail", "wrong_number", "no_answer", "call_back_later"):
-        # Call attempted but no useful info — leave room to retry
+        # Call attempted but no useful info
         obj.status = "call_completed"
         obj.final_answer = summary or f"Call ended without an answer ({payload.outcome})."
+        # Auto-retry only on voicemail / no_answer (transient failures).
+        # wrong_number and call_back_later are deliberate human signals — don't auto-retry.
+        if payload.outcome in ("voicemail", "no_answer"):
+            schedule_retry_after_failure(db, obj, delay_minutes=2)
 
     db.commit()
     return {
