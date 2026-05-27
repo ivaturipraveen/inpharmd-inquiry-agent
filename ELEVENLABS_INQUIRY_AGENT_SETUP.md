@@ -10,46 +10,49 @@ Complete guide to set up your ElevenLabs voice agent as a Medical Information li
 
 1. ElevenLabs account with Conversational AI access (paid plan — outbound calling requires it)
 2. Twilio account with at least one voice-capable phone number (re-use the one already linked to Nova if you have it)
-3. This backend running and reachable from the public internet (e.g. `ngrok http 8000` for local dev, or deployed to Render)
+3. Backend deployed to Render at `https://inpharmd-inquiry-api.onrender.com` (or reachable via `ngrok http 8000` for local dev)
 4. At least one row in the `manufacturer_contacts` table with a valid E.164 phone number to test against — the repo already ships with `Yanthraa (TEST)` at id 92 for this purpose
 
 ---
 
-## Step 1: Configure the Backend
+## Step 1: Deployed URLs
 
-### Local development
+Both services are deployed to Render:
 
-1. Open `backend/.env` and confirm `DATABASE_URL` is set to your Render Postgres URL
-2. Add these new keys (leave blank for now — we'll fill them in as we go):
-   ```bash
-   ELEVENLABS_API_KEY=
-   ELEVENLABS_INQUIRY_AGENT_ID=
-   ELEVENLABS_INQUIRY_PHONE_NUMBER_ID=
-   ELEVENLABS_WEBHOOK_SECRET=
-   AGENT_TOOLS_SECRET=
-   ```
-3. Generate two random secrets and save them somewhere — you'll paste them into the ElevenLabs dashboard:
-   ```bash
-   openssl rand -hex 32   # use for ELEVENLABS_WEBHOOK_SECRET
-   openssl rand -hex 32   # use for AGENT_TOOLS_SECRET
-   ```
-4. Start the backend:
-   ```bash
-   cd backend
-   source .venv/bin/activate
-   uvicorn main:app --reload --port 8000
-   ```
-5. In another terminal, expose it to the internet:
-   ```bash
-   ngrok http 8000
-   ```
-6. Copy the `https://….ngrok-free.app` URL — this is your **`<your-public-host>`** in every URL below
+| Service | URL |
+|---|---|
+| **Backend API** | `https://inpharmd-inquiry-api.onrender.com` |
+| **Frontend** | `https://inpharmd-inquiry-web.onrender.com` |
 
-### Production (Render)
+Confirm the API is up:
 
-1. Deploy the `backend/` folder as a Render Web Service (uses `requirements.txt` + `uvicorn main:app`)
-2. In the Render dashboard → **Environment**, set all the env vars from Step 1.2 above
-3. Your public host is the Render URL: `https://<service-name>.onrender.com`
+```bash
+curl https://inpharmd-inquiry-api.onrender.com/health
+# → {"status":"ok"}
+```
+
+### Generate the two secrets you'll need
+
+Run these locally and save the output — you'll paste each value into both the Render dashboard *and* the ElevenLabs dashboard so they match.
+
+```bash
+openssl rand -hex 32   # → paste as ELEVENLABS_WEBHOOK_SECRET
+openssl rand -hex 32   # → paste as AGENT_TOOLS_SECRET
+```
+
+### Set env vars on Render
+
+In the Render dashboard → `inpharmd-inquiry-api` service → **Environment**, set:
+
+| Key | Value |
+|---|---|
+| `ELEVENLABS_API_KEY` | from ElevenLabs → Profile → API Keys |
+| `ELEVENLABS_INQUIRY_AGENT_ID` | filled in after Step 4 |
+| `ELEVENLABS_INQUIRY_PHONE_NUMBER_ID` | filled in after Step 3 |
+| `ELEVENLABS_WEBHOOK_SECRET` | the first secret from above |
+| `AGENT_TOOLS_SECRET` | the second secret from above |
+
+Click **Save Changes** — Render restarts the service automatically.
 
 ---
 
@@ -144,7 +147,7 @@ If you want to customise the opening template, edit the `first_message` variable
 
 ## Step 6: Add HTTP Tools
 
-**Base URL**: `https://<your-public-host>` (your ngrok URL for local dev, or Render URL for prod)
+**Base URL**: `https://inpharmd-inquiry-api.onrender.com`
 
 All tools use **POST** method and **Body parameters** (JSON). Every tool request must include the header `X-Agent-Secret: <AGENT_TOOLS_SECRET>` so the backend can verify the request came from your agent.
 
@@ -157,7 +160,7 @@ All tools use **POST** method and **Body parameters** (JSON). Every tool request
 | **Name** | `submit_answer` |
 | **Description** | Submit the answer captured during this call back to the InpharmD inquiry system. Call this tool ONCE, near the end of the call, just before saying goodbye. Set `outcome` based on how the call went: `"answered"` if the rep gave a clinical answer (put their words in `answer`); `"follow_up_via_email"` if they'll send the info by email; `"no_answer"` if a real person declined or couldn't answer; `"voicemail"` if you left a voicemail; `"wrong_number"` if routed to the wrong department; `"call_back_later"` if asked to call back. ALWAYS pass `inquiry_id` from the dynamic variable {{inquiry_id}}. ALWAYS pass `rep_name` if the rep gave their name. Use `rep_reference` for any case number / document name / package insert section they cited. Put caveats into `notes`. |
 | **Method** | `POST` |
-| **URL** | `https://<your-public-host>/api/agent-tools/submit-answer` |
+| **URL** | `https://inpharmd-inquiry-api.onrender.com/api/agent-tools/submit-answer` |
 | **Header** | `Content-Type: application/json` |
 | **Header** | `X-Agent-Secret: <AGENT_TOOLS_SECRET>` |
 
@@ -217,7 +220,7 @@ In the agent's **Webhooks** panel → set the Post-Call URL:
 
 | Field | Value |
 |-------|-------|
-| **URL** | `https://<your-public-host>/api/webhooks/elevenlabs/post-call` |
+| **URL** | `https://inpharmd-inquiry-api.onrender.com/api/webhooks/elevenlabs/post-call` |
 | **Method** | `POST` |
 | **Header** | `X-Webhook-Secret: <ELEVENLABS_WEBHOOK_SECRET>` |
 
@@ -304,7 +307,7 @@ All three should print `True`.
 ### Step 8.2 — Verify the tool endpoint is reachable from the public internet
 
 ```bash
-curl -X POST https://<your-public-host>/api/agent-tools/submit-answer \
+curl -X POST https://inpharmd-inquiry-api.onrender.com/api/agent-tools/submit-answer \
   -H "Content-Type: application/json" \
   -H "X-Agent-Secret: <AGENT_TOOLS_SECRET>" \
   -d '{"inquiry_id": 0, "outcome": "answered", "answer": "test"}'
@@ -316,7 +319,7 @@ If you get `{"detail":"Invalid agent secret"}` → header value doesn't match `A
 
 ### Step 8.3 — Place a test call
 
-1. Open `http://localhost:5173/#inquiries`
+1. Open `https://inpharmd-inquiry-web.onrender.com/#inquiries`
 2. Click **+ New Inquiry**
 3. Pick `Yanthraa (TEST)` from the dropdown
 4. Subject: `Stability question for Drug X`
@@ -367,7 +370,7 @@ The tool wasn't added in the dashboard, OR the prompt is missing the "Before you
 
 ### Post-call webhook never fires
 
-The webhook URL must be reachable from the public internet. Use `ngrok http 8000` locally and confirm the ngrok URL responds to `GET /health` from outside. Then verify the URL in **Webhooks → Logs** in the ElevenLabs dashboard.
+Confirm the API is reachable from the public internet: `curl https://inpharmd-inquiry-api.onrender.com/health` should return `{"status":"ok"}`. Then check the webhook delivery log in **Webhooks → Logs** in the ElevenLabs dashboard — it shows every fire attempt with status code and response body.
 
 ### Webhook fires but inquiry doesn't update
 
