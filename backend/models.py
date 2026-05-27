@@ -81,6 +81,7 @@ class Inquiry(Base):
     status = Column(String(32), nullable=False, default="draft", index=True)
 
     email_sent_at = Column(DateTime(timezone=True))
+    email_message_id = Column(String(255))
     email_response_at = Column(DateTime(timezone=True))
     email_response = Column(Text)
 

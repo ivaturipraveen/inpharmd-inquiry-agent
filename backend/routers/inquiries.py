@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session, joinedload
 
 import call_service
+import email_service
 from database import get_db
 from models import Inquiry, ManufacturerContact
 from schemas import (
@@ -88,17 +89,44 @@ def delete_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{inquiry_id}/send-email", response_model=InquiryOut)
 def send_email(inquiry_id: int, db: Session = Depends(get_db)):
-    """Mark the inquiry as emailed. Actual SMTP delivery wires in separately;
-    this endpoint records the fact and schedules the fallback call window."""
+    """Send the inquiry by SMTP to the manufacturer's MI email and schedule
+    the fallback call window."""
     obj = _get_or_404(db, inquiry_id)
     if obj.status not in ("draft", "email_sent", "failed"):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot send email from status '{obj.status}'",
         )
+
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+    to_email = mfr.official_mi_email or mfr.team_verified_email
+    if not to_email:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{mfr.manufacturer} has no email address on file",
+        )
+
+    try:
+        message_id = email_service.send_inquiry_email(
+            inquiry_id=obj.id,
+            manufacturer_name=mfr.manufacturer,
+            to_email=to_email,
+            subject=obj.subject,
+            question=obj.question,
+            requester_name=obj.requester_name,
+            requester_email=obj.requester_email,
+        )
+    except email_service.EmailConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"SMTP send failed: {e}")
+
     now = _now()
     obj.status = "email_sent"
     obj.email_sent_at = now
+    obj.email_message_id = message_id
     obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
     db.commit()
     return _get_or_404(db, inquiry_id)

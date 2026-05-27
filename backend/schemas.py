@@ -101,6 +101,7 @@ class InquiryOut(InquiryBase):
     id: int
     status: InquiryStatus
     email_sent_at: Optional[datetime] = None
+    email_message_id: Optional[str] = None
     email_response_at: Optional[datetime] = None
     email_response: Optional[str] = None
     call_scheduled_for: Optional[datetime] = None
