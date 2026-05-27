@@ -19,10 +19,12 @@ Complete guide to set up your ElevenLabs voice agent as a Medical Information li
 
 Both services are deployed to Render:
 
-| Service | URL |
-|---|---|
+
+| Service         | URL                                         |
+| --------------- | ------------------------------------------- |
 | **Backend API** | `https://inpharmd-inquiry-api.onrender.com` |
-| **Frontend** | `https://inpharmd-inquiry-web.onrender.com` |
+| **Frontend**    | `https://inpharmd-inquiry-web.onrender.com` |
+
 
 Confirm the API is up:
 
@@ -31,12 +33,11 @@ curl https://inpharmd-inquiry-api.onrender.com/health
 # → {"status":"ok"}
 ```
 
-### Generate the two secrets you'll need
+### Generate the agent-tools secret
 
-Run these locally and save the output — you'll paste each value into both the Render dashboard *and* the ElevenLabs dashboard so they match.
+You only need one secret — it goes into both the Render dashboard *and* the ElevenLabs `submit_answer` tool header so they match.
 
 ```bash
-openssl rand -hex 32   # → paste as ELEVENLABS_WEBHOOK_SECRET
 openssl rand -hex 32   # → paste as AGENT_TOOLS_SECRET
 ```
 
@@ -44,50 +45,43 @@ openssl rand -hex 32   # → paste as AGENT_TOOLS_SECRET
 
 In the Render dashboard → `inpharmd-inquiry-api` service → **Environment**, set:
 
-| Key | Value |
-|---|---|
-| `ELEVENLABS_API_KEY` | from ElevenLabs → Profile → API Keys |
-| `ELEVENLABS_INQUIRY_AGENT_ID` | filled in after Step 4 |
-| `ELEVENLABS_INQUIRY_PHONE_NUMBER_ID` | filled in after Step 3 |
-| `ELEVENLABS_WEBHOOK_SECRET` | the first secret from above |
-| `AGENT_TOOLS_SECRET` | the second secret from above |
+
+| Key                                  | Value                                                                 |
+| ------------------------------------ | --------------------------------------------------------------------- |
+| `ELEVENLABS_API_KEY`                 | from ElevenLabs → Profile → API Keys                                  |
+| `ELEVENLABS_INQUIRY_AGENT_ID`        | `agent_8201ksm7n8pke0wsv85wererh9ed`                                  |
+| `ELEVENLABS_INQUIRY_PHONE_NUMBER_ID` | `phnum_8801ksm8ta4sfkpvc5f4qcz6a3g7`                                  |
+| `AGENT_TOOLS_SECRET`                 | the secret you generated above                                        |
+| `ELEVENLABS_WEBHOOK_SECRET`          | leave blank for now (optional — see note in Step 4 about HMAC signing)|
+
 
 Click **Save Changes** — Render restarts the service automatically.
 
 ---
 
-## Step 2: Set Up Twilio (skip if you already have a number linked to ElevenLabs)
+## Step 2: Twilio + Agent (already done ✓)
 
-1. Create/log into your [Twilio Console](https://console.twilio.com)
-2. Buy a voice-capable phone number — `+1` (US) is cheapest for outbound to US manufacturers; pick `+91` (India) if you mostly test against Yanthraa
-3. Grab from the Twilio dashboard:
-   - **Account SID**
-   - **Auth Token**
-   - **Twilio phone number** in E.164 format (e.g. `+14155550123`)
+The following is already set up — included here for reference only:
 
----
+| Thing                  | Value                                          |
+| ---------------------- | ---------------------------------------------- |
+| Twilio number          | `+1 470 480 2411` (purchased + voice-capable)  |
+| ElevenLabs phone ID    | `phnum_8801ksm8ta4sfkpvc5f4qcz6a3g7`           |
+| Agent name             | `InpharmD MI Inquiry`                          |
+| Agent ID               | `agent_8201ksm7n8pke0wsv85wererh9ed`           |
+| Linked                 | Phone number → agent (visible in dashboard)    |
 
-## Step 3: Link Twilio Number to ElevenLabs
+If you ever need to re-do any of these:
 
-1. Log in to [ElevenLabs Dashboard](https://elevenlabs.io)
-2. **Conversational AI → Phone Numbers → Add Phone Number**
-3. Choose **Twilio**, paste:
-   - Account SID
-   - Auth Token
-   - Phone number (E.164)
-4. After import, copy the **Phone Number ID** (`phn_xxx`) → save into `ELEVENLABS_INQUIRY_PHONE_NUMBER_ID`
+- **Twilio number** → [Twilio Console](https://console.twilio.com) → Phone Numbers → buy voice-capable
+- **Phone import** → ElevenLabs → **Conversational AI → Phone Numbers → Add Phone Number** → Twilio → paste Account SID + Auth Token + the number
+- **Agent** → ElevenLabs → **Conversational AI → Agents → Create New Agent**
 
----
-
-## Step 4: Create ElevenLabs Conversational AI Agent
-
-1. **Conversational AI → Agents → Create New Agent**
-2. Name: `InpharmD MI Inquiry`
-3. Once created, the agent's URL looks like `…/agents/<agent_id>` — copy `<agent_id>` → save into `ELEVENLABS_INQUIRY_AGENT_ID`
+The rest of this guide configures the *behavior* of the already-created agent.
 
 ---
 
-## Step 5: Configure Agent Settings
+## Step 3: Configure Agent Settings
 
 ### Voice & Language
 
@@ -101,39 +95,42 @@ Click **Save Changes** — Render restarts the service automatically.
 
 What the backend passes per call (see `backend/call_service.py:place_inquiry_call`):
 
-| Variable | Meaning |
-|----------|---------|
-| `{{inquiry_id}}` | Our internal inquiry ID — required by the `submit_answer` tool |
-| `{{manufacturer_name}}` | Company being called, e.g. `Pfizer` |
-| `{{inquiry_subject}}` | One-line title from the form |
-| `{{inquiry_question}}` | Full clinical question / detail body |
-| `{{requester_name}}` | Pharmacist's name (may be empty) |
-| `{{requester_email}}` | Pharmacist's reply-to address (may be empty) |
+
+| Variable                | Meaning                                                        |
+| ----------------------- | -------------------------------------------------------------- |
+| `{{inquiry_id}}`        | Our internal inquiry ID — required by the `submit_answer` tool |
+| `{{manufacturer_name}}` | Company being called, e.g. `Pfizer`                            |
+| `{{inquiry_subject}}`   | One-line title from the form                                   |
+| `{{inquiry_question}}`  | Full clinical question / detail body                           |
+| `{{requester_name}}`    | Pharmacist's name (may be empty)                               |
+| `{{requester_email}}`   | Pharmacist's reply-to address (may be empty)                   |
+
 
 ### LLM Settings
 
-| Setting | Value |
-|---------|-------|
-| **Model** | `Gemini 2.5 Flash` *or* `GPT-4o Mini` |
-| **Temperature** | `0.4` |
-| **Max tokens** | default |
+
+| Setting         | Value                                 |
+| --------------- | ------------------------------------- |
+| **Model**       | `Gemini 2.5 Flash` *or* `GPT-4o Mini` |
+| **Temperature** | `0.4`                                 |
+| **Max tokens**  | default                               |
+
 
 Lower temperature than typical — we want faithful relay of the question, not creative paraphrasing.
 
 ### Conversation Settings
 
-| Setting | Value |
-|---------|-------|
-| **Max duration** | `10 minutes` |
+
+| Setting            | Value        |
+| ------------------ | ------------ |
+| **Max duration**   | `10 minutes` |
 | **End on silence** | `30 seconds` |
-| **Interruption** | enabled |
+| **Interruption**   | enabled      |
+
 
 ### System Prompt
 
 Paste the following into the **System Prompt** field:
-
-
-
 
 ### First Message
 
@@ -145,7 +142,7 @@ If you want to customise the opening template, edit the `first_message` variable
 
 ---
 
-## Step 6: Add HTTP Tools
+## Step 4: Add HTTP Tools
 
 **Base URL**: `https://inpharmd-inquiry-api.onrender.com`
 
@@ -155,25 +152,29 @@ All tools use **POST** method and **Body parameters** (JSON). Every tool request
 
 ### Tool A: Submit Answer (REQUIRED — agent calls this near end of call)
 
-| Field | Value |
-|-------|-------|
-| **Name** | `submit_answer` |
+
+| Field           | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Name**        | `submit_answer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Description** | Submit the answer captured during this call back to the InpharmD inquiry system. Call this tool ONCE, near the end of the call, just before saying goodbye. Set `outcome` based on how the call went: `"answered"` if the rep gave a clinical answer (put their words in `answer`); `"follow_up_via_email"` if they'll send the info by email; `"no_answer"` if a real person declined or couldn't answer; `"voicemail"` if you left a voicemail; `"wrong_number"` if routed to the wrong department; `"call_back_later"` if asked to call back. ALWAYS pass `inquiry_id` from the dynamic variable {{inquiry_id}}. ALWAYS pass `rep_name` if the rep gave their name. Use `rep_reference` for any case number / document name / package insert section they cited. Put caveats into `notes`. |
-| **Method** | `POST` |
-| **URL** | `https://inpharmd-inquiry-api.onrender.com/api/agent-tools/submit-answer` |
-| **Header** | `Content-Type: application/json` |
-| **Header** | `X-Agent-Secret: <AGENT_TOOLS_SECRET>` |
+| **Method**      | `POST`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **URL**         | `https://inpharmd-inquiry-api.onrender.com/api/agent-tools/submit-answer`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Header**      | `Content-Type: application/json`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Header**      | `X-Agent-Secret: <AGENT_TOOLS_SECRET>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+
 
 **Body Parameters:**
 
-| Identifier | Data Type | Required | Value Type | Description |
-|-----------|-----------|----------|------------|-------------|
-| `inquiry_id` | Integer | Yes | LLM Prompt | The inquiry ID. ALWAYS pass `{{inquiry_id}}` — it's a dynamic variable available to you for every call. |
-| `outcome` | String | Yes | LLM Prompt | One of: `"answered"`, `"follow_up_via_email"`, `"no_answer"`, `"voicemail"`, `"wrong_number"`, `"call_back_later"`. Pick the most accurate one based on how the call went. |
-| `answer` | String | No | LLM Prompt | The clinical answer the rep gave, in their own words. REQUIRED when `outcome="answered"`. Be faithful — do not interpret or rephrase clinical content. |
-| `rep_name` | String | No | LLM Prompt | Name of the person you spoke with, if they gave it (e.g. `"Sarah from Medical Affairs"`). |
-| `rep_reference` | String | No | LLM Prompt | Any reference number, case ID, package-insert section, or document name the rep cited (e.g. `"Case #PFE-2026-04812"` or `"PI Section 5.4"`). |
-| `notes` | String | No | LLM Prompt | Anything extra worth keeping — off-label disclaimers, escalation paths, "they'll follow up with X in Y days". |
+
+| Identifier      | Data Type | Required | Value Type | Description                                                                                                                                                                |
+| --------------- | --------- | -------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inquiry_id`    | Integer   | Yes      | LLM Prompt | The inquiry ID. ALWAYS pass `{{inquiry_id}}` — it's a dynamic variable available to you for every call.                                                                    |
+| `outcome`       | String    | Yes      | LLM Prompt | One of: `"answered"`, `"follow_up_via_email"`, `"no_answer"`, `"voicemail"`, `"wrong_number"`, `"call_back_later"`. Pick the most accurate one based on how the call went. |
+| `answer`        | String    | No       | LLM Prompt | The clinical answer the rep gave, in their own words. REQUIRED when `outcome="answered"`. Be faithful — do not interpret or rephrase clinical content.                     |
+| `rep_name`      | String    | No       | LLM Prompt | Name of the person you spoke with, if they gave it (e.g. `"Sarah from Medical Affairs"`).                                                                                  |
+| `rep_reference` | String    | No       | LLM Prompt | Any reference number, case ID, package-insert section, or document name the rep cited (e.g. `"Case #PFE-2026-04812"` or `"PI Section 5.4"`).                               |
+| `notes`         | String    | No       | LLM Prompt | Anything extra worth keeping — off-label disclaimers, escalation paths, "they'll follow up with X in Y days".                                                              |
+
 
 **Example Body (what the agent sends):**
 
@@ -218,17 +219,22 @@ This is the transcript backup. Even if the agent forgot to call `submit_answer`,
 
 In the agent's **Webhooks** panel → set the Post-Call URL:
 
-| Field | Value |
-|-------|-------|
-| **URL** | `https://inpharmd-inquiry-api.onrender.com/api/webhooks/elevenlabs/post-call` |
-| **Method** | `POST` |
-| **Header** | `X-Webhook-Secret: <ELEVENLABS_WEBHOOK_SECRET>` |
 
-The backend matches the post-call payload to the inquiry by `conversation_id` (which the backend recorded when the outbound call was placed), flattens the transcript turn-by-turn, and stores both `call_transcript` and `call_summary` on the inquiry. If `submit_answer` already ran, the structured answer wins; the transcript is kept alongside for review.
+| Field      | Value                                                                         |
+| ---------- | ----------------------------------------------------------------------------- |
+| **URL**    | `https://inpharmd-inquiry-api.onrender.com/api/webhooks/elevenlabs/post-call` |
+| **Method** | `POST`                                                                        |
+
+
+No custom header needed for now. ElevenLabs auto-generates a webhook signing secret in `wsec_…` format and signs each payload via HMAC-SHA256. Our backend does **not** verify that signature yet — leave `ELEVENLABS_WEBHOOK_SECRET` blank in the Render env vars so verification is skipped. The endpoint is still safe in practice because we look up the inquiry by the `conversation_id` ElevenLabs returns when we placed the call, so a spoofer would need to know a valid in-flight conversation ID to do any damage.
+
+> When you want hardening, ping me and I'll add proper `ElevenLabs-Signature` HMAC verification using the `wsec_…` secret.
+
+The backend matches the post-call payload to the inquiry by `conversation_id` (which we recorded when the outbound call was placed), flattens the transcript turn-by-turn, and stores both `call_transcript` and `call_summary` on the inquiry. If `submit_answer` already ran, the structured answer wins; the transcript is kept alongside for review.
 
 ---
 
-## Step 7: Agent Conversation Examples
+## Step 5: Agent Conversation Examples
 
 ### Example 1 — Successful answer
 
@@ -256,7 +262,7 @@ The backend matches the post-call payload to the inquiry by `conversation_id` (w
 >
 > **Rep**: "I don't have that off the top of my head — we'll need to dig into the stability records. Can we email it to you?"
 >
-> **Agent**: "Of course. Could you send that to praveen@yanthraa.com with the subject 'InpharmD inquiry: Stability data for Drug X'?"
+> **Agent**: "Of course. Could you send that to [praveen@yanthraa.com](mailto:praveen@yanthraa.com) with the subject 'InpharmD inquiry: Stability data for Drug X'?"
 >
 > **Rep**: "Will do — expect it within 24 hours."
 >
@@ -268,7 +274,7 @@ The backend matches the post-call payload to the inquiry by `conversation_id` (w
 
 > *(Phone rings out to voicemail)*
 >
-> **Agent**: "Hi, this is InpharmD calling on behalf of a pharmacist with a clinical question about Pfizer. The question is: stability data for Drug X. Could someone please call back, or send a reply to praveen@yanthraa.com? Thank you."
+> **Agent**: "Hi, this is InpharmD calling on behalf of a pharmacist with a clinical question about Pfizer. The question is: stability data for Drug X. Could someone please call back, or send a reply to [praveen@yanthraa.com](mailto:praveen@yanthraa.com)? Thank you."
 >
 > **Agent** calls `submit_answer` with `outcome="voicemail"`, `notes="called during business hours, no answer"`.
 >
@@ -284,16 +290,18 @@ The backend matches the post-call payload to the inquiry by `conversation_id` (w
 
 ---
 
-## Step 8: Test the Agent
+## Step 6: Test the Agent
 
 The repo ships with a test manufacturer `Yanthraa (TEST)` (id 92) so you don't disturb the 90 real US companies while iterating on the agent.
 
-| Field | Value |
-|-------|-------|
-| Manufacturer | `Yanthraa (TEST)` |
-| MI Phone | `+919848639655` |
-| Hours | `Mon-Sat 9a-9p IST` |
-| Email | `praveen@yanthraa.com` |
+
+| Field        | Value                  |
+| ------------ | ---------------------- |
+| Manufacturer | `Yanthraa (TEST)`      |
+| MI Phone     | `+919848639655`        |
+| Hours        | `Mon-Sat 9a-9p IST`    |
+| Email        | `praveen@yanthraa.com` |
+
 
 ### Step 8.1 — Verify backend env vars are loaded
 
@@ -329,7 +337,7 @@ If you get `{"detail":"Invalid agent secret"}` → header value doesn't match `A
 8. Click **Call Agent Now**
 9. Your phone (+91 98486 39655) should ring. Answer it.
 10. The agent should:
-    - Open with the inquiry subject
+  - Open with the inquiry subject
     - Wait for "this is a good time"
     - Read out the full question
     - Take down your spoken answer
@@ -343,7 +351,7 @@ If you get `{"detail":"Invalid agent secret"}` → header value doesn't match `A
 
 ### `503: ELEVENLABS_API_KEY is not set`
 
-Backend env vars missing. Add the five `ELEVENLABS_*` / `AGENT_TOOLS_SECRET` lines to `backend/.env`, then **restart uvicorn** (env vars are read at startup).
+Backend env vars missing. Add the five `ELEVENLABS_`* / `AGENT_TOOLS_SECRET` lines to `backend/.env`, then **restart uvicorn** (env vars are read at startup).
 
 ### `502: ElevenLabs rejected the call` with a `phone_number` error
 
@@ -352,6 +360,7 @@ Wrong `ELEVENLABS_INQUIRY_PHONE_NUMBER_ID`. In the dashboard it's a string like 
 ### `409: out_of_hours`
 
 The manufacturer's `mi_phone_hours` field says we're outside their window. Either:
+
 - Wait until in-hours, or
 - Click **Call anyway** in the confirm dialog (the UI passes `?force=true`), or
 - Edit the manufacturer row's hours via the UI
@@ -362,7 +371,7 @@ The agent has no voice configured. Dashboard → your agent → **Voice & Langua
 
 ### Call connects, agent speaks, but doesn't say the question
 
-The system prompt wasn't pasted. The default ElevenLabs prompt makes the agent act as a generic assistant. Re-paste the prompt from Step 5 → System Prompt.
+The system prompt wasn't pasted. The default ElevenLabs prompt makes the agent act as a generic assistant. Re-paste the prompt from Step 3 → System Prompt.
 
 ### `submit_answer` never fires (only the post-call webhook captures anything)
 
@@ -375,9 +384,11 @@ Confirm the API is reachable from the public internet: `curl https://inpharmd-in
 ### Webhook fires but inquiry doesn't update
 
 The `conversation_id` in the payload didn't match what we stored. Check the inquiry row directly:
+
 ```bash
 curl -s http://127.0.0.1:8000/api/inquiries/<id> | jq '.call_conversation_id'
 ```
+
 Compare to the `conversation_id` shown in the ElevenLabs dashboard for that call. If they differ, the outbound-call response didn't include `conversation_id` — capture the full response with `tail -f /tmp/uvicorn.log` next time you trigger a call.
 
 ### Agent answers but reads `{{inquiry_question}}` literally
@@ -386,7 +397,7 @@ The agent's prompt is **not** treating `{{inquiry_question}}` as a template — 
 
 ---
 
-## Step 8.5: Inspecting Call State
+## Step 6.5: Inspecting Call State
 
 ### Check a single inquiry's call status
 
@@ -395,6 +406,7 @@ curl -s http://127.0.0.1:8000/api/inquiries/<id> | python3 -m json.tool
 ```
 
 Fields to look at:
+
 - `status` — should be `call_pending` while ringing, `call_completed` after
 - `call_conversation_id` — set when the call is placed; matched against the post-call webhook
 - `call_provider_status` — `initiated` → `answered` / `voicemail` / etc. (set by `submit_answer`)
@@ -420,29 +432,32 @@ curl -X POST http://127.0.0.1:8000/api/inquiries/<id>/record-call-result \
 
 ---
 
-## Step 9: How Each Piece Works
+## Step 7: How Each Piece Works
 
-| Trigger | Component | What happens |
-|---------|-----------|--------------|
-| Pharmacist clicks **Call Agent Now** in the UI | `POST /api/inquiries/{id}/trigger-call` | Validates business hours (skippable with `?force=true`), calls `place_inquiry_call`, stores `conversation_id`, sets status to `call_pending` |
-| Backend → ElevenLabs | `call_service.place_inquiry_call` | POSTs to `https://api.elevenlabs.io/v1/convai/twilio/outbound-call` with the dynamic variables + first-message override |
-| ElevenLabs → Twilio → manufacturer | (handled by ElevenLabs) | Twilio dials the manufacturer's MI phone, voice agent speaks |
-| Agent captures answer mid-call | `submit_answer` tool → `POST /api/agent-tools/submit-answer` | Updates `call_summary`, `final_answer`, `call_provider_status`, marks `call_completed_at` |
-| Agent hangs up | Post-call webhook → `POST /api/webhooks/elevenlabs/post-call` | Stores `call_transcript` (turn-by-turn), backs up `call_summary` if `submit_answer` didn't fire |
-| Pharmacist refreshes inquiry detail | UI fetches `GET /api/inquiries/{id}` | Shows the timeline, structured answer, and full transcript |
+
+| Trigger                                        | Component                                                     | What happens                                                                                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pharmacist clicks **Call Agent Now** in the UI | `POST /api/inquiries/{id}/trigger-call`                       | Validates business hours (skippable with `?force=true`), calls `place_inquiry_call`, stores `conversation_id`, sets status to `call_pending` |
+| Backend → ElevenLabs                           | `call_service.place_inquiry_call`                             | POSTs to `https://api.elevenlabs.io/v1/convai/twilio/outbound-call` with the dynamic variables + first-message override                      |
+| ElevenLabs → Twilio → manufacturer             | (handled by ElevenLabs)                                       | Twilio dials the manufacturer's MI phone, voice agent speaks                                                                                 |
+| Agent captures answer mid-call                 | `submit_answer` tool → `POST /api/agent-tools/submit-answer`  | Updates `call_summary`, `final_answer`, `call_provider_status`, marks `call_completed_at`                                                    |
+| Agent hangs up                                 | Post-call webhook → `POST /api/webhooks/elevenlabs/post-call` | Stores `call_transcript` (turn-by-turn), backs up `call_summary` if `submit_answer` didn't fire                                              |
+| Pharmacist refreshes inquiry detail            | UI fetches `GET /api/inquiries/{id}`                          | Shows the timeline, structured answer, and full transcript                                                                                   |
+
 
 ---
 
 ## Production Hardening Checklist
 
-- [ ] `AGENT_TOOLS_SECRET` and `ELEVENLABS_WEBHOOK_SECRET` are strong random values (`openssl rand -hex 32`). The endpoints reject calls with wrong secrets.
-- [ ] `ELEVENLABS_API_KEY` and `DATABASE_URL` are set via Render env (never committed to git — `.env` is in `.gitignore`)
-- [ ] The Twilio number is registered for A2P 10DLC if calling US numbers regularly (unregistered numbers get throttled or blocked)
-- [ ] Manufacturer rows have realistic `mi_phone_hours` so the business-hours guard works. The parser understands `Mon-Fri 8a-6p ET`, `Mon-Sat 9a-9p IST`, `Mon-Fri 9-5 CT`, etc.
-- [ ] Use a **dedicated** agent for inquiries (not the Nova personal assistant) so transcripts and analytics stay scoped
-- [ ] The post-call webhook URL on ElevenLabs is HTTPS and reachable 24/7 (Render Starter plan or external uptime ping if using free tier)
-- [ ] Only test against `Yanthraa (TEST)` while you're tuning the prompt. Real manufacturers will log every call against their MI line and may flag your Twilio number as a robocall
-- [ ] When you're ready to go live, remove the `(TEST)` suffix on the Yanthraa row or delete it — make sure no one accidentally fires a real inquiry against Yanthraa's placeholder phone
+- `AGENT_TOOLS_SECRET` is a strong random value (`openssl rand -hex 32`). The tool endpoint rejects calls with wrong secrets.
+- Webhook hardening (deferred): `ELEVENLABS_WEBHOOK_SECRET` is left blank. Proper HMAC verification of the `ElevenLabs-Signature` header is a follow-up task — until then, `conversation_id` matching is the safety net.
+- `ELEVENLABS_API_KEY` and `DATABASE_URL` are set via Render env (never committed to git — `.env` is in `.gitignore`)
+- The Twilio number is registered for A2P 10DLC if calling US numbers regularly (unregistered numbers get throttled or blocked)
+- Manufacturer rows have realistic `mi_phone_hours` so the business-hours guard works. The parser understands `Mon-Fri 8a-6p ET`, `Mon-Sat 9a-9p IST`, `Mon-Fri 9-5 CT`, etc.
+- Use a **dedicated** agent for inquiries (not the Nova personal assistant) so transcripts and analytics stay scoped
+- The post-call webhook URL on ElevenLabs is HTTPS and reachable 24/7 (Render Starter plan or external uptime ping if using free tier)
+- Only test against `Yanthraa (TEST)` while you're tuning the prompt. Real manufacturers will log every call against their MI line and may flag your Twilio number as a robocall
+- When you're ready to go live, remove the `(TEST)` suffix on the Yanthraa row or delete it — make sure no one accidentally fires a real inquiry against Yanthraa's placeholder phone
 
 ---
 
