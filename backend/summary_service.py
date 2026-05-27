@@ -51,6 +51,9 @@ _SYSTEM = (
 )
 
 
+_MODEL = "gpt-4o-mini"
+
+
 def extract_answer_from_transcript(
     *,
     question: str,
@@ -59,7 +62,6 @@ def extract_answer_from_transcript(
 ) -> str:
     """Use OpenAI to extract a clean clinical answer from a call transcript."""
     client = _get_client()
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     user = (
         f"MANUFACTURER: {manufacturer}\n"
@@ -71,7 +73,7 @@ def extract_answer_from_transcript(
 
     try:
         resp = client.chat.completions.create(
-            model=model,
+            model=_MODEL,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": user},
