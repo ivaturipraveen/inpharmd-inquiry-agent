@@ -1,0 +1,18 @@
+nswering your questions first
+
+  1. Example inquiries you can use to test
+
+  Subject:  Stability data for Drug X after temperature excursion
+  Question: A pharmacy received a shipment of Drug X (250mg tablets) that was exposed
+            to 30°C for ~6 hours during transit. What is the stability data for this
+            excursion — can the product still be dispensed? Please reference the
+            official package insert section.
+
+  Subject:  Drug Y compatibility with Y-site infusion
+  Question: Is Drug Y compatible with normal saline (0.9% NaCl) when given via Y-site
+            infusion alongside vancomycin? Looking for visual and pH compatibility data.
+  
+  Subject:  Dosing adjustment for Drug Z in renal impairment
+  Question: What's the recommended dose of Drug Z for a patient with CrCl of
+            22 mL/min? Is there a published study supporting dosing in this range?
+  

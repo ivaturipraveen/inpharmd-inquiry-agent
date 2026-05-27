@@ -16,6 +16,8 @@ const FALLBACK_PRESETS = [
   { hours: 168, label: "7 days" },
 ];
 
+const PRESET_HOURS = FALLBACK_PRESETS.map((p) => p.hours);
+
 const InquiryForm: FC<Props> = ({
   manufacturers,
   defaultManufacturerId,
@@ -30,6 +32,9 @@ const InquiryForm: FC<Props> = ({
   const [requesterName, setRequesterName] = useState("");
   const [requesterEmail, setRequesterEmail] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
+  const [customMode, setCustomMode] = useState(false);
+  const [customValue, setCustomValue] = useState(24);
+  const [customUnit, setCustomUnit] = useState<"hours" | "days">("hours");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,26 +153,31 @@ const InquiryForm: FC<Props> = ({
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   rows={5}
-                  placeholder="Describe what you need from the manufacturer…"
+                  placeholder="e.g. A pharmacy received Drug X exposed to 30°C for 6 hours during transit. What's the stability data — can it still be dispensed? Please reference the PI section."
                   required
                 />
               </div>
 
               <div className="field">
-                <label>Requester Name</label>
+                <label>
+                  Requester Name <span className="label-hint">optional</span>
+                </label>
                 <input
                   type="text"
                   value={requesterName}
                   onChange={(e) => setRequesterName(e.target.value)}
+                  placeholder="Pharmacist name (for audit log)"
                 />
               </div>
               <div className="field">
-                <label>Requester Email</label>
+                <label>
+                  Requester Email <span className="label-hint">optional</span>
+                </label>
                 <input
                   type="email"
                   value={requesterEmail}
                   onChange={(e) => setRequesterEmail(e.target.value)}
-                  placeholder="reply-to address"
+                  placeholder="Where the rep should reply / send follow-up"
                 />
               </div>
 
@@ -179,30 +189,91 @@ const InquiryForm: FC<Props> = ({
                       type="button"
                       key={p.hours}
                       className={`preset-chip ${
-                        fallbackHours === p.hours ? "preset-chip-active" : ""
+                        !customMode && fallbackHours === p.hours
+                          ? "preset-chip-active"
+                          : ""
                       }`}
-                      onClick={() => setFallbackHours(p.hours)}
+                      onClick={() => {
+                        setCustomMode(false);
+                        setFallbackHours(p.hours);
+                      }}
                     >
                       {p.label}
                     </button>
                   ))}
-                  <input
-                    type="number"
-                    min={1}
-                    max={720}
-                    value={fallbackHours}
-                    onChange={(e) =>
-                      setFallbackHours(Math.max(1, Number(e.target.value)))
-                    }
-                    className="preset-num"
-                  />
-                  <span className="preset-unit">hours</span>
+                  <button
+                    type="button"
+                    className={`preset-chip ${
+                      customMode ? "preset-chip-active" : ""
+                    }`}
+                    onClick={() => {
+                      setCustomMode(true);
+                      const initial =
+                        !PRESET_HOURS.includes(fallbackHours)
+                          ? fallbackHours
+                          : 24;
+                      setCustomValue(
+                        customUnit === "days" ? Math.ceil(initial / 24) : initial
+                      );
+                      setFallbackHours(initial);
+                    }}
+                  >
+                    Custom…
+                  </button>
                 </div>
+                {customMode && (
+                  <div className="custom-row">
+                    <input
+                      type="number"
+                      min={1}
+                      max={customUnit === "days" ? 30 : 720}
+                      value={customValue}
+                      onChange={(e) => {
+                        const v = Math.max(1, Number(e.target.value) || 1);
+                        setCustomValue(v);
+                        setFallbackHours(customUnit === "days" ? v * 24 : v);
+                      }}
+                      className="preset-num"
+                    />
+                    <div className="unit-toggle">
+                      <button
+                        type="button"
+                        className={
+                          customUnit === "hours" ? "unit-active" : ""
+                        }
+                        onClick={() => {
+                          setCustomUnit("hours");
+                          setFallbackHours(customValue);
+                        }}
+                      >
+                        hours
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          customUnit === "days" ? "unit-active" : ""
+                        }
+                        onClick={() => {
+                          setCustomUnit("days");
+                          setFallbackHours(customValue * 24);
+                        }}
+                      >
+                        days
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="hint">
                   After this window passes without an email reply, the inquiry
                   becomes eligible for an automated voice-agent fallback call.
                 </div>
               </div>
+            </div>
+
+            <div className="form-foot">
+              <strong>What happens next?</strong> Once you click Create Inquiry,
+              you'll choose how to reach this manufacturer — send an email, or
+              have the voice agent call them now.
             </div>
           </div>
 

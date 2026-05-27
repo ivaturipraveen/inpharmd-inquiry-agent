@@ -810,16 +810,73 @@ tbody tr:last-child td {
   border-color: var(--brand-orange);
 }
 .preset-num {
-  width: 76px;
-  padding: 6px 10px;
+  width: 90px;
+  padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   font-size: 13px;
   font-family: inherit;
 }
-.preset-unit {
+.preset-num:focus {
+  outline: none;
+  border-color: var(--brand-orange);
+  box-shadow: 0 0 0 3px var(--brand-orange-soft);
+}
+
+.custom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--line-soft);
+  border-radius: var(--radius);
+}
+.unit-toggle {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 2px;
+}
+.unit-toggle button {
+  background: transparent;
+  border: none;
+  padding: 6px 14px;
   font-size: 12px;
+  font-weight: 600;
   color: var(--muted);
+  cursor: pointer;
+  border-radius: 5px;
+  font-family: inherit;
+  transition: all 0.12s ease;
+}
+.unit-toggle button.unit-active {
+  background: var(--brand-orange);
+  color: #fff;
+}
+
+.label-hint {
+  font-weight: 400;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.form-foot {
+  margin: 16px 0 -6px;
+  padding: 12px 14px;
+  background: var(--brand-orange-soft);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  color: var(--brand-orange-strong);
+  line-height: 1.5;
+}
+.form-foot strong {
+  color: var(--brand-orange-strong);
+  font-weight: 600;
 }
 
 /* ---------- Inquiry detail ---------- */
