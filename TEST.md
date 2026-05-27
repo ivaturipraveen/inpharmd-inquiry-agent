@@ -2,19 +2,23 @@
 
 End-to-end tests you can run against the deployed services without disturbing the 90 real US manufacturers. All tests target the `Yanthraa (TEST)` manufacturer (id 92).
 
-| Service | URL |
-|---|---|
-| **Web app** | https://inpharmd-inquiry-web.onrender.com |
-| **Backend API** | https://inpharmd-inquiry-api.onrender.com |
-| **API docs** | https://inpharmd-inquiry-api.onrender.com/docs |
 
-| Test manufacturer | Value |
-|---|---|
-| Name | Yanthraa (TEST) |
-| ID | 92 |
-| MI Email | praveen@yanthraa.com |
-| MI Phone | +91 9848639655 |
-| Hours | Mon-Sat 9a-9p IST |
+| Service         | URL                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| **Web app**     | [https://inpharmd-inquiry-web.onrender.com](https://inpharmd-inquiry-web.onrender.com)           |
+| **Backend API** | [https://inpharmd-inquiry-api.onrender.com](https://inpharmd-inquiry-api.onrender.com)           |
+| **API docs**    | [https://inpharmd-inquiry-api.onrender.com/docs](https://inpharmd-inquiry-api.onrender.com/docs) |
+
+
+
+| Test manufacturer | Value                                               |
+| ----------------- | --------------------------------------------------- |
+| Name              | Yanthraa (TEST)                                     |
+| ID                | 92                                                  |
+| MI Email          | [praveen@yanthraa.com](mailto:praveen@yanthraa.com) |
+| MI Phone          | +91 9848639655                                      |
+| Hours             | Mon-Sat 9a-9p IST                                   |
+
 
 ---
 
@@ -22,61 +26,69 @@ End-to-end tests you can run against the deployed services without disturbing th
 
 Copy any of these into the form to simulate real pharmacist queries. They're realistic enough to test the voice-agent prompt and the email template.
 
-### 1. Stability / Temperature Excursion
+### 1. Stability / Temperature Excursion — Humira (adalimumab)
 
-**Subject:** `Stability data for Drug X after temperature excursion`
-
-**Question:**
-> A pharmacy received a shipment of Drug X (250 mg tablets) that was exposed to ambient temperatures of approximately 30 °C for 6 hours during last-mile delivery. The package insert states 'store between 15–25 °C'. Is there stability data supporting that the product can still be dispensed after this excursion? Please reference the specific PI section or stability study if available.
-
-### 2. Y-Site Compatibility
-
-**Subject:** `Y-site compatibility — Drug Y with vancomycin in 0.9% NaCl`
+**Subject:** `Stability data for Humira after temperature excursion`
 
 **Question:**
-> Looking for compatibility data: can Drug Y be infused via Y-site alongside vancomycin in 0.9% normal saline? Specifically need visual compatibility, pH compatibility, and any precipitation data over a 4-hour co-infusion window. Patient is in ICU and we are trying to minimize line access.
 
-### 3. Renal Dosing
+> A pharmacy received a shipment of Humira (adalimumab 40 mg/0.4 mL pre-filled syringes) that was exposed to ambient temperatures of approximately 30 °C for 6 hours during last-mile delivery. The package insert states 'store refrigerated at 36–46 °F (2–8 °C); do not freeze'. Is there stability data supporting that the product can still be dispensed after this excursion? Please reference the specific PI section or stability study if available.
 
-**Subject:** `Drug Z dosing adjustment in renal impairment (CrCl 22 mL/min)`
+### 2. Y-Site Compatibility — Protonix + vancomycin
 
-**Question:**
-> Recommended dose of Drug Z for a 68-year-old patient with CrCl of 22 mL/min and stable hepatic function? The PI gives ranges for CrCl >30 and <15 but does not address 15–30 directly. Is there a published study or unpublished company data supporting dosing in this band?
-
-### 4. Off-Label Pediatric Use
-
-**Subject:** `Off-label pediatric use of Drug A — 9-year-old, 28 kg`
+**Subject:** `Y-site compatibility — Protonix (pantoprazole) with vancomycin in 0.9% NaCl`
 
 **Question:**
-> The treating physician is considering Drug A off-label for a 9-year-old patient weighing 28 kg with refractory condition X. The label is adult-only. Does the manufacturer have any pediatric pharmacokinetic data, case series, or expanded-access program experience that could inform dosing?
 
-### 5. Drug Interaction
+> Looking for compatibility data: can Protonix (pantoprazole) be infused via Y-site alongside vancomycin in 0.9% normal saline? Specifically need visual compatibility, pH compatibility, and any precipitation data over a 4-hour co-infusion window. Patient is in ICU and we are trying to minimize line access.
 
-**Subject:** `Interaction — Drug B + warfarin in elderly patient`
+### 3. Renal Dosing — Eliquis (apixaban)
 
-**Question:**
-> Patient is 78 years old, on warfarin (INR target 2–3, currently stable), and Drug B is being added for a new indication. PI mentions 'may potentiate anticoagulant effect'. Looking for the magnitude of effect — what INR rise should the team anticipate, and is dose-adjustment of warfarin recommended pre-emptively or only after the next INR check?
-
-### 6. Reconstitution / Compounding
-
-**Subject:** `Drug C reconstitution and beyond-use date in elastomeric pump`
+**Subject:** `Eliquis (apixaban) dosing in CrCl 22 mL/min`
 
 **Question:**
-> Pharmacy wants to compound Drug C in an elastomeric infusion pump for 48-hour ambulatory use at 32 °C. The official PI gives 24h refrigerated stability post-reconstitution but no elastomeric/ambulatory data. Does the manufacturer have any in-use stability data supporting 48 h at body-adjacent temperature?
 
-### 7. Therapeutic Substitution
+> Recommended dose of Eliquis (apixaban) for atrial fibrillation in a 68-year-old patient with CrCl of 22 mL/min, weight 74 kg, and stable hepatic function? The PI lists dose-reduction criteria (age ≥80, weight ≤60 kg, SCr ≥1.5) but our patient meets only the renal criterion. Is there a published study or unpublished company data supporting dosing in the CrCl 15–29 mL/min band?
 
-**Subject:** `Switching from Drug D to its generic — bioequivalence concern`
+### 4. Off-Label Pediatric Use — Prograf (tacrolimus)
 
-**Question:**
-> Patient has been stable on brand Drug D for 8 months. The formulary is switching to the AB-rated generic. Are there documented cases of clinical non-equivalence (specifically narrow-therapeutic-index concerns) when switching from your brand to the generic? Anything beyond the standard AB-rated bioequivalence range?
-
-### 8. Adverse Event Follow-up
-
-**Subject:** `Reported adverse event — patient on Drug E and Drug F`
+**Subject:** `Off-label pediatric use of Prograf — 9-year-old, 28 kg post-transplant`
 
 **Question:**
-> Patient initiated Drug E 14 days ago, also on stable Drug F. Developed a rash on day 11 (maculopapular, no mucosal involvement, no fever). PI lists rash as 'common'. Is there a known interaction or PK potentiation when Drug E and Drug F are co-administered that increases dermatologic risk? Patient has been re-challenged in similar circumstances before with no event.
+
+> The transplant team is initiating Prograf (tacrolimus) for a 9-year-old, 28 kg patient post-liver transplant. The granule formulation is approved for peds but our hospital only stocks the IR capsules. Does the manufacturer have pediatric pharmacokinetic data, case series, or expanded-access program experience that supports using opened-capsule/sprinkle dosing of the IR formulation in this age/weight range?
+
+### 5. Drug Interaction — Pacerone (amiodarone) + Coumadin (warfarin)
+
+**Subject:** `Interaction — initiating Pacerone in patient on stable Coumadin`
+
+**Question:**
+
+> Patient is 78 years old, on Coumadin (warfarin) 5 mg daily with stable INR 2.4 over the last 6 months. Pacerone (amiodarone) 200 mg daily is being added for new-onset atrial fibrillation. PI notes warfarin interaction. What's the typical magnitude and onset of INR elevation we should expect, and does the manufacturer recommend a pre-emptive warfarin dose reduction (and by what %) or simply increased INR monitoring frequency?
+
+### 6. Reconstitution / Compounding — Zosyn (piperacillin-tazobactam)
+
+**Subject:** `Zosyn beyond-use date in elastomeric pump for ambulatory OPAT`
+
+**Question:**
+
+> Pharmacy wants to compound Zosyn (piperacillin-tazobactam) 3.375 g in an elastomeric infusion pump for 24-hour ambulatory OPAT (outpatient parenteral antimicrobial therapy) at body-adjacent temperature (~32 °C). The official PI gives stability data for refrigerated storage but limited in-use data for elastomeric devices at warmer temperatures. Does the manufacturer have stability data supporting 24-hour BUD under these conditions?
+
+### 7. Therapeutic Substitution — Synthroid → generic levothyroxine
+
+**Subject:** `Switching from Synthroid to generic levothyroxine — NTI concern`
+
+**Question:**
+
+> Patient with Hashimoto's hypothyroidism has been stable on brand Synthroid 125 mcg daily for 8 months (TSH 1.8 mIU/L). The formulary is switching to AB-rated generic levothyroxine. Levothyroxine is widely flagged as a narrow-therapeutic-index drug. Does the manufacturer have any documented case series of clinically meaningful TSH fluctuation in patients switched from Synthroid to AB-rated generics, beyond the standard 80–125% bioequivalence range?
+
+### 8. Adverse Event Follow-up — Lamictal + Depakote rash
+
+**Subject:** `Reported adverse event — patient on Lamictal and Depakote`
+
+**Question:**
+
+> Patient initiated Lamictal (lamotrigine) 14 days ago for new-onset partial seizures, also on stable Depakote (valproate). Developed a maculopapular rash on day 11 — trunk only, no mucosal involvement, no fever, no eosinophilia. PI lists rash as common and warns valproate ↑ lamotrigine levels by ~2x. Should we hold Lamictal and reassess, or is this consistent with benign rash that resolves? Any manufacturer guidance on re-titration after non-severe rash in patients on concomitant valproate?
 
 ---
 
@@ -84,7 +96,7 @@ Copy any of these into the form to simulate real pharmacist queries. They're rea
 
 Goal: place a real outbound call against your phone (+91 9848639655) using the deployed agent.
 
-1. Open https://inpharmd-inquiry-web.onrender.com/#inquiries
+1. Open [https://inpharmd-inquiry-web.onrender.com/#inquiries](https://inpharmd-inquiry-web.onrender.com/#inquiries)
 2. Click **+ New Inquiry**
 3. Pick `Yanthraa (TEST)` from the manufacturer dropdown — you should see the manufacturer's email + phone + SLA appear underneath
 4. Subject: paste from Example 1 above
@@ -95,7 +107,7 @@ Goal: place a real outbound call against your phone (+91 9848639655) using the d
 9. Click **Create Inquiry** → form closes, Channel Chooser opens with 2 cards
 10. Click **Call Agent Now** on the right card
 11. Your phone (+91 9848639655) should ring within ~5 seconds — answer it
-12. The agent should open: *"Hello, this is the InpharmD medical information line calling on behalf of a pharmacist with an inquiry regarding Yanthraa (TEST). I need to ask about: Stability data for Drug X after temperature excursion. Is this a good time?"*
+12. The agent should open: *"Hello, this is the InpharmD medical information line calling on behalf of a pharmacist with an inquiry regarding Yanthraa (TEST). I need to ask about: Stability data for Humira after temperature excursion. Is this a good time?"*
 13. Reply *"yes"*, the agent reads the full question
 14. Give a brief verbal answer (e.g. *"yes, our stability study shows 95% potency at 30°C for 72 hours, per study STAB-2024"*)
 15. Agent calls `submit_answer` silently, then says goodbye
@@ -104,6 +116,7 @@ Goal: place a real outbound call against your phone (+91 9848639655) using the d
 **Expected result:** inquiry resolved within ~3 minutes of clicking the button.
 
 **If the call doesn't fire:** check Render API logs for the error returned by `/trigger-call`. Most common causes:
+
 - `503 ELEVENLABS_API_KEY is not set` → env var missing on Render
 - `502 ElevenLabs rejected the call` → wrong agent ID or phone number ID
 - `409 out_of_hours` → Yanthraa's hours say outside business window. UI offers a "call anyway" prompt.
@@ -117,8 +130,8 @@ Goal: send a real email from `ivaturipraveen11@gmail.com` to `praveen@yanthraa.c
 1. Same steps 1–9 as Test 1, but **fill in Requester Email** so you can see the Reply-To behavior
 2. In the Channel Chooser, click **Send Email** on the left card
 3. Check `praveen@yanthraa.com` inbox within ~10 seconds — email should arrive with:
-    - **From:** `InpharmD MI <ivaturipraveen11@gmail.com>`
-    - **Subject:** `[InpharmD #N] Stability data for Drug X after temperature excursion`
+  - **From:** `InpharmD MI <ivaturipraveen11@gmail.com>`
+    - **Subject:** `[InpharmD #N] Stability data for Humira after temperature excursion`
     - **Reply-To:** `ivaturipraveen11@gmail.com` (or whatever you put in requester_email)
 4. Reply to the email (keep subject intact!) with a brief answer
 5. Reply lands in `ivaturipraveen11@gmail.com`
@@ -126,6 +139,7 @@ Goal: send a real email from `ivaturipraveen11@gmail.com` to `praveen@yanthraa.c
 7. Inquiry status flips to `email_responded`, the answer shows in the Final Answer box
 
 **If the email doesn't arrive:**
+
 - Check Gmail's "Sent" folder of `ivaturipraveen11@gmail.com` — if it's there, the issue is delivery (check spam folder on receive)
 - Check Render API response: a `503` means SMTP env vars missing on Render; `502` means the SMTP auth or send failed (App Password likely wrong)
 
@@ -185,11 +199,13 @@ curl -s -X POST "$BASE/api/agent-tools/submit-answer" \
   -d '{"inquiry_id":0,"outcome":"answered","answer":"reachability test"}'
 ```
 
-| Response | Meaning |
-|---|---|
-| `{"detail":"Inquiry 0 not found"}` | ✓ Backend reachable, auth header valid |
+
+| Response                            | Meaning                                                                                  |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `{"detail":"Inquiry 0 not found"}`  | ✓ Backend reachable, auth header valid                                                   |
 | `{"detail":"Invalid agent secret"}` | ✗ Wrong secret — check `AGENT_TOOLS_SECRET` on Render matches the ElevenLabs tool header |
-| `502 Bad Gateway` | ✗ Render service is down — check the dashboard |
+| `502 Bad Gateway`                   | ✗ Render service is down — check the dashboard                                           |
+
 
 ---
 
@@ -203,6 +219,7 @@ curl -s -X POST https://inpharmd-inquiry-api.onrender.com/api/inquiries/{N}/busi
 ```
 
 Response:
+
 ```json
 {
   "known": true,
@@ -240,7 +257,8 @@ Or just leave them — the dashboard handles dozens fine.
 2. **ElevenLabs call log:** dashboard → Conversational AI → Agents → `InpharmD MI Inquiry` → **Calls** tab. Shows every outbound call, transcript, and tool calls.
 3. **Render web logs:** dashboard → `inpharmd-inquiry-web` → **Logs**. Mostly just build output.
 4. **DB direct query:** the Postgres external URL works from your laptop:
-   ```bash
+  ```bash
    psql "postgresql://inpharmdassistant:5z…@dpg-d8b5qgcm0tmc73d89hg0-a.oregon-postgres.render.com/inpharmd"
-   ```
+  ```
    Then `SELECT id, status, subject, call_provider_status FROM inquiries ORDER BY id DESC LIMIT 5;`
+
