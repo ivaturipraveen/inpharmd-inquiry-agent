@@ -89,8 +89,13 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
         </div>
 
         <div className="modal-body">
-          {/* ANSWER FIRST — most important info at the top */}
-          {inquiry.final_answer ? (
+          <div className="detail-section">
+            <div className="detail-label">Question</div>
+            <div className="detail-prose">{inquiry.question}</div>
+          </div>
+
+          {/* Final Answer shows automatically once the agent or AI has captured one */}
+          {inquiry.final_answer && (
             <div className="detail-section answer-box answer-box-prominent">
               <div className="answer-label">
                 <span className="answer-icon">✓</span>
@@ -98,29 +103,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               </div>
               <div className="detail-prose">{inquiry.final_answer}</div>
             </div>
-          ) : inquiry.call_transcript ? (
-            <div className="detail-section answer-pending">
-              <div className="answer-label">No structured answer yet</div>
-              <div className="answer-pending-body">
-                The agent didn't capture a clean answer via the <code>submit_answer</code> tool,
-                but a full transcript is available below. You can extract the answer with AI
-                or paste a manual summary.
-              </div>
-              <button
-                className="btn btn-primary btn-sm"
-                type="button"
-                disabled={busy}
-                onClick={() => run(() => onAction("extractAnswer"))}
-              >
-                ✨ Extract Answer with AI
-              </button>
-            </div>
-          ) : null}
-
-          <div className="detail-section">
-            <div className="detail-label">Question</div>
-            <div className="detail-prose">{inquiry.question}</div>
-          </div>
+          )}
 
           {(inquiry.requester_name || inquiry.requester_email) && (
             <div className="detail-section detail-meta-row">

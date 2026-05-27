@@ -82,7 +82,7 @@ def extract_answer_from_transcript(
             temperature=0.2,
         )
         answer = (resp.choices[0].message.content or "").strip()
-        log.info("Extracted answer (%d chars) via %s", len(answer), model)
+        log.info("Extracted answer (%d chars) via %s", len(answer), _MODEL)
         return answer
     except Exception as e:
         log.exception("OpenAI extraction failed: %s", e)
