@@ -9,6 +9,8 @@ needing a custom agent per inquiry.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -17,6 +19,8 @@ from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 import httpx
+
+log = logging.getLogger("inquiry.call")
 
 ELEVEN_BASE = "https://api.elevenlabs.io/v1"
 
@@ -206,11 +210,23 @@ def place_inquiry_call(
     }
 
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+
+    # Log the exact payload (with API key redacted) so we can verify variables in Render logs
+    log.info(
+        "ElevenLabs outbound-call payload for inquiry %s:\n%s",
+        inquiry_id,
+        json.dumps(payload, indent=2),
+    )
+
     with httpx.Client(timeout=30) as client:
         r = client.post(
             f"{ELEVEN_BASE}/convai/twilio/outbound-call",
             headers=headers,
             json=payload,
         )
+        if not r.is_success:
+            log.error("ElevenLabs rejected call: %s %s", r.status_code, r.text)
         r.raise_for_status()
-        return r.json()
+        resp_json = r.json()
+        log.info("ElevenLabs accepted: %s", json.dumps(resp_json))
+        return resp_json
