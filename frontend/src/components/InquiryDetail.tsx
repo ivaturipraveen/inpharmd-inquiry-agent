@@ -89,6 +89,34 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
         </div>
 
         <div className="modal-body">
+          {/* ANSWER FIRST — most important info at the top */}
+          {inquiry.final_answer ? (
+            <div className="detail-section answer-box answer-box-prominent">
+              <div className="answer-label">
+                <span className="answer-icon">✓</span>
+                Final Answer
+              </div>
+              <div className="detail-prose">{inquiry.final_answer}</div>
+            </div>
+          ) : inquiry.call_transcript ? (
+            <div className="detail-section answer-pending">
+              <div className="answer-label">No structured answer yet</div>
+              <div className="answer-pending-body">
+                The agent didn't capture a clean answer via the <code>submit_answer</code> tool,
+                but a full transcript is available below. You can extract the answer with AI
+                or paste a manual summary.
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                disabled={busy}
+                onClick={() => run(() => onAction("extractAnswer"))}
+              >
+                ✨ Extract Answer with AI
+              </button>
+            </div>
+          ) : null}
+
           <div className="detail-section">
             <div className="detail-label">Question</div>
             <div className="detail-prose">{inquiry.question}</div>
@@ -176,14 +204,9 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                       {fmtDate(inquiry.call_completed_at) ??
                         `scheduled ${fmtDate(inquiry.call_scheduled_for) ?? ""}`}
                     </div>
-                    {inquiry.call_summary && (
-                      <div className="timeline-body">
-                        <strong>Summary:</strong> {inquiry.call_summary}
-                      </div>
-                    )}
                     {inquiry.call_transcript && (
                       <details className="transcript-toggle">
-                        <summary>Full transcript</summary>
+                        <summary>View full call transcript</summary>
                         <pre>{inquiry.call_transcript}</pre>
                       </details>
                     )}
@@ -216,13 +239,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               <strong>Not responded after {retryCount} attempt
               {retryCount === 1 ? "" : "s"}.</strong> Decide what to do next —
               retry manually, send the inquiry by email, or close it.
-            </div>
-          )}
-
-          {inquiry.final_answer && (
-            <div className="detail-section answer-box">
-              <div className="detail-label">Final Answer</div>
-              <div className="detail-prose">{inquiry.final_answer}</div>
             </div>
           )}
 

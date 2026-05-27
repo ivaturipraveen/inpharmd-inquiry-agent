@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
 
+import summary_service
 from database import get_db
 from models import Inquiry
 from scheduler import schedule_retry_after_failure
@@ -114,6 +115,20 @@ async def elevenlabs_post_call(
     # Auto-retry only if submit_answer didn't capture a real answer AND outcome is retriable
     if obj.call_provider_status in ("voicemail", "no_answer") and not obj.call_summary:
         schedule_retry_after_failure(db, obj, delay_minutes=2)
+
+    # If we have a transcript but no clean answer yet, try LLM extraction
+    if obj.call_transcript and not obj.final_answer and summary_service.is_configured():
+        try:
+            extracted = summary_service.extract_answer_from_transcript(
+                question=obj.question,
+                manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
+                transcript=obj.call_transcript,
+            )
+            obj.call_summary = obj.call_summary or extracted
+            obj.final_answer = extracted
+        except summary_service.SummaryConfigError as e:
+            # Soft-fail: leave transcript as-is, user can extract manually later
+            pass
 
     db.commit()
     return {"matched": True, "inquiry_id": obj.id}

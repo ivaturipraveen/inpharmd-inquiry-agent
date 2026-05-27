@@ -87,5 +87,7 @@ export const api = {
       }),
     close: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/close`, { method: "POST" }),
+    extractAnswer: (id: number) =>
+      request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
   },
 };

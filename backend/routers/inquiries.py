@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 import call_service
 import email_service
+import summary_service
 from database import get_db
 from models import Inquiry, ManufacturerContact
 from schemas import (
@@ -239,6 +240,36 @@ def trigger_call(
     )
     obj.call_provider_status = resp.get("status") or "initiated"
     obj.next_retry_at = None  # manual trigger cancels any pending auto-retry
+    db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/extract-answer", response_model=InquiryOut)
+def extract_answer(inquiry_id: int, db: Session = Depends(get_db)):
+    """Manually trigger LLM extraction of a clean answer from the call transcript.
+    Useful when the agent's submit_answer didn't fire and you want the AI to
+    summarize what was said."""
+    obj = _get_or_404(db, inquiry_id)
+    if not obj.call_transcript:
+        raise HTTPException(
+            status_code=400,
+            detail="No transcript available to extract from",
+        )
+    if not summary_service.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY not set. Add it to backend/.env to enable AI extraction.",
+        )
+    try:
+        extracted = summary_service.extract_answer_from_transcript(
+            question=obj.question,
+            manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
+            transcript=obj.call_transcript,
+        )
+    except summary_service.SummaryConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    obj.call_summary = extracted
+    obj.final_answer = extracted
     db.commit()
     return _get_or_404(db, inquiry_id)
 

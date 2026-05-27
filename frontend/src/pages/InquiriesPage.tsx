@@ -134,6 +134,10 @@ export default function InquiriesPage() {
           updated = await api.inquiries.close(selected.id);
           setSuccess("Inquiry closed.");
           break;
+        case "extractAnswer":
+          updated = await api.inquiries.extractAnswer(selected.id);
+          setSuccess("Answer extracted from transcript.");
+          break;
         default:
           return;
       }

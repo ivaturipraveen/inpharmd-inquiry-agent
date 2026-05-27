@@ -928,6 +928,70 @@ tbody tr:last-child td {
   padding: 14px 16px;
   border-radius: var(--radius);
 }
+.answer-box-prominent {
+  background: linear-gradient(135deg, #fff6e9 0%, var(--brand-orange-soft) 100%);
+  border: 1.5px solid var(--brand-orange);
+  padding: 18px 20px;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 2px 8px rgba(245, 130, 32, 0.08);
+}
+.answer-box-prominent .detail-prose {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.answer-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand-orange-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 10px;
+}
+.answer-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: var(--brand-orange);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+}
+.answer-pending {
+  background: var(--line-soft);
+  border: 1px dashed var(--line);
+  padding: 16px 18px;
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.answer-pending .answer-label {
+  color: var(--muted);
+}
+.answer-pending-body {
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+.answer-pending-body code {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+.answer-pending .btn {
+  align-self: flex-start;
+}
 .retry-banner {
   background: var(--blue-soft);
   border: 1px solid #bfdbfe;
