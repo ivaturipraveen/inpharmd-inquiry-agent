@@ -111,12 +111,12 @@ def _get_body(msg: dict) -> str:
     return content
 
 
-def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[int]:
-    """Process one Graph message. Returns inquiry_id if matched, else None."""
+def _process_message(db, token: str, mailbox: str, msg: dict) -> bool:
+    """Process one Graph message. Returns True if the inquiry was updated."""
     subject = msg.get("subject", "") or ""
     m = _SUBJECT_TAG.search(subject)
     if not m:
-        return None
+        return False
 
     inquiry_id = int(m.group(1))
 
@@ -124,19 +124,18 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[int]:
     obj = db.get(Inquiry, inquiry_id)
     if not obj:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
-        return None
+        return False
     if obj.status == "closed":
-        return None
+        return False
     if obj.email_response:
-        # Already captured — just mark read and move on
         _mark_read(token, mailbox, msg["id"])
-        return inquiry_id
+        return False
 
     body = _get_body(msg)
     reply = _strip_quoted(body)
     if not reply:
         log.info("Inquiry %s reply had no extractable body; skipping", inquiry_id)
-        return None
+        return False
 
     sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
 
@@ -160,14 +159,22 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[int]:
 
     obj.final_answer = final
     log.info("Captured Graph email reply for inquiry %s from %s", inquiry_id, sender)
-    return inquiry_id
+    return True
 
 
 def _mark_read(token: str, mailbox: str, message_id: str) -> None:
+    """Mark message read so the next poll skips it. Requires Mail.ReadWrite (optional)."""
     url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    with httpx.Client(timeout=10) as client:
-        client.patch(url, headers=headers, json={"isRead": True})
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.patch(url, headers=headers, json={"isRead": True})
+            if resp.status_code == 403:
+                log.debug("Cannot mark message read (add Mail.ReadWrite in Azure to enable)")
+            elif resp.status_code >= 400:
+                log.warning("Mark-read failed: %s %s", resp.status_code, resp.text[:120])
+    except Exception as e:
+        log.debug("Mark-read failed: %s", e)
 
 
 def poll_once() -> int:
@@ -208,11 +215,11 @@ def poll_once() -> int:
     try:
         for msg in messages:
             try:
-                matched = _process_message(db, token, mailbox, msg)
+                changed = _process_message(db, token, mailbox, msg)
             except Exception as e:
                 log.exception("Failed to process Graph message %s: %s", msg.get("id"), e)
                 continue
-            if matched is not None:
+            if changed:
                 db.commit()
                 updated += 1
                 _mark_read(token, mailbox, msg["id"])
