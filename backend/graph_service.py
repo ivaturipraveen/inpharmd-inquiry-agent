@@ -66,7 +66,14 @@ def _get_token() -> str:
     }
     with httpx.Client(timeout=15) as client:
         resp = client.post(url, data=data)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            try:
+                err = resp.json()
+                desc = err.get("error_description") or err.get("error") or resp.text
+            except Exception:
+                desc = resp.text
+            log.error("Azure token request failed (%s): %s", resp.status_code, desc)
+            raise RuntimeError(f"Azure token failed: {desc}") from None
         return resp.json()["access_token"]
 
 
