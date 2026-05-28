@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import scheduler
 from database import Base, engine
-from routers import agent_tools, inquiries, manufacturers, webhooks
+from routers import agent_tools, email_inbound, inquiries, manufacturers, webhooks
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -46,3 +46,4 @@ app.include_router(manufacturers.router)
 app.include_router(inquiries.router)
 app.include_router(webhooks.router)
 app.include_router(agent_tools.router)
+app.include_router(email_inbound.router)

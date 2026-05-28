@@ -89,5 +89,52 @@ def extract_answer_from_transcript(
         raise SummaryConfigError(f"OpenAI call failed: {e}")
 
 
+_EMAIL_SYSTEM = (
+    "You are extracting the clinical answer from a medical-information email reply. "
+    "The reply is from a pharmaceutical manufacturer's Medical Information desk, answering "
+    "a pharmacist's clinical question that InpharmD forwarded. Read the reply and extract ONLY "
+    "the clinical answer the manufacturer provided. Be faithful — do not interpret, do not add "
+    "caveats unless they wrote them. If they cited a reference (case ID, package insert section, "
+    "document name, case number), include it. Ignore email signatures, disclaimers, legal "
+    "boilerplate, and quoted text from earlier messages. If no clinical answer was given "
+    "(auto-reply, acknowledgement only, request for more info, declined), say so plainly in one short sentence."
+)
+
+
+def extract_answer_from_email(
+    *,
+    question: str,
+    manufacturer: str,
+    reply_text: str,
+) -> str:
+    """Use OpenAI to extract a clean clinical answer from an email reply body."""
+    client = _get_client()
+
+    user = (
+        f"MANUFACTURER: {manufacturer}\n"
+        f"PHARMACIST'S QUESTION: {question}\n\n"
+        f"MANUFACTURER'S EMAIL REPLY:\n{reply_text}\n\n"
+        "Extract their clinical answer in 1–3 sentences. Include any references they "
+        "cited. If no answer was given, say so plainly."
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": _EMAIL_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=400,
+            temperature=0.2,
+        )
+        answer = (resp.choices[0].message.content or "").strip()
+        log.info("Extracted email answer (%d chars) via %s", len(answer), _MODEL)
+        return answer
+    except Exception as e:
+        log.exception("OpenAI email extraction failed: %s", e)
+        raise SummaryConfigError(f"OpenAI call failed: {e}")
+
+
 def is_configured() -> bool:
     return bool(os.getenv("OPENAI_API_KEY"))

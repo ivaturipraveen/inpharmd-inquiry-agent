@@ -90,8 +90,9 @@ def delete_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{inquiry_id}/send-email", response_model=InquiryOut)
 def send_email(inquiry_id: int, db: Session = Depends(get_db)):
-    """Send the inquiry by SMTP to the manufacturer's MI email and schedule
-    the fallback call window."""
+    """Send the inquiry via SendGrid to the manufacturer's MI email and schedule
+    the fallback call window. Replies come back to our mailbox and are captured
+    automatically by the IMAP poller."""
     obj = _get_or_404(db, inquiry_id)
     if obj.status not in ("draft", "email_sent", "failed"):
         raise HTTPException(
@@ -122,7 +123,7 @@ def send_email(inquiry_id: int, db: Session = Depends(get_db)):
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"SMTP send failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Email send failed: {e}")
 
     now = _now()
     obj.status = "email_sent"
