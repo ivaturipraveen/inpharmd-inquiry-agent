@@ -94,6 +94,18 @@ def _place_retry(db, obj: Inquiry) -> None:
     )
 
 
+def _poll_email_replies() -> None:
+    """One scheduler tick: pull any new manufacturer email replies from the inbox."""
+    import graph_service
+
+    if not graph_service.is_configured():
+        return
+    try:
+        graph_service.poll_once()
+    except Exception:
+        log.exception("email poll tick failed")
+
+
 def _scan_and_retry() -> None:
     """One scheduler tick: place retries for everything that's due."""
     db = SessionLocal()
@@ -145,8 +157,21 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _poll_seconds = int(os.getenv("IMAP_POLL_SECONDS", "60"))
+    _scheduler.add_job(
+        _poll_email_replies,
+        "interval",
+        seconds=_poll_seconds,
+        id="email_reply_poll",
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
-    log.info("Inquiry retry scheduler started (every %ss)", _TICK_SECONDS)
+    log.info(
+        "Schedulers started (retry every %ss, email poll every %ss)",
+        _TICK_SECONDS,
+        _poll_seconds,
+    )
 
 
 def stop_scheduler() -> None:
