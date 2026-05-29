@@ -132,14 +132,16 @@ async def elevenlabs_post_call(
 
     db.commit()
 
-    # Post to Slack only when the call produced a real answer (mirror of the email path).
-    # "answered" = agent captured a clinical answer; "completed" = we extracted one from
-    # the transcript. Everything else (voicemail, no_answer, wrong_number, call_back_later,
-    # follow_up_via_email) is not a real manufacturer response, so it's not posted.
+    # Post to Slack when the call produced a real answer (mirror of the email path).
+    # Denylist the outcomes that are NOT a real manufacturer response; everything
+    # else with a final_answer posts. The post-call webhook may set provider_status
+    # to ElevenLabs' own string (e.g. "done"/"success") when submit_answer didn't
+    # run, so an allowlist would miss those legitimate answers.
+    _NO_ANSWER = ("voicemail", "no_answer", "wrong_number", "call_back_later", "follow_up_via_email", "initiated")
     if (
         obj.status == "call_completed"
         and obj.final_answer
-        and obj.call_provider_status in ("answered", "completed")
+        and (obj.call_provider_status or "") not in _NO_ANSWER
     ):
         try:
             import slack_service
