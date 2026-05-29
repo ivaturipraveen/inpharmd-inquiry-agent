@@ -1,4 +1,5 @@
 """Webhook receivers for external services (currently: ElevenLabs post-call)."""
+import logging
 import os
 from typing import Any, Dict, Optional
 
@@ -9,6 +10,8 @@ import summary_service
 from database import get_db
 from models import Inquiry
 from scheduler import schedule_retry_after_failure
+
+log = logging.getLogger("inquiry.webhooks")
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
@@ -156,7 +159,14 @@ async def elevenlabs_post_call(
                     requester_email=obj.requester_email,
                     channel="call",
                 )
+            else:
+                log.info("Slack not configured; skipping call card for inquiry %s", obj.id)
         except Exception:
-            pass
+            log.exception("Slack notify failed for inquiry %s", obj.id)
+    else:
+        log.info(
+            "Call for inquiry %s not posted to Slack (status=%s provider_status=%s has_answer=%s)",
+            obj.id, obj.status, obj.call_provider_status, bool(obj.final_answer),
+        )
 
     return {"matched": True, "inquiry_id": obj.id}
