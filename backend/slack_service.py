@@ -53,8 +53,12 @@ def notify_reply(
     requester_name: Optional[str] = None,
     requester_email: Optional[str] = None,
     sender_email: Optional[str] = None,
+    channel: str = "email",
 ) -> bool:
-    """Post a manufacturer-reply card to Slack. Returns True if delivered."""
+    """Post a manufacturer-response card to Slack. Returns True if delivered.
+
+    channel: "email" for an email reply, "call" for a phone-call answer.
+    """
     if not is_configured():
         return False
 
@@ -65,10 +69,15 @@ def notify_reply(
     label = f"Inquiry #{inquiry_id} — {manufacturer}"
     title = f"<{base}|{label}>" if base else f"*{label}*"
 
+    if channel == "call":
+        header = "\U0001F4DE New response received from manufacturer (phone call)"
+    else:
+        header = "\U0001F4E9 New response received from manufacturer"
+
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "\U0001F4E9 New response received from manufacturer", "emoji": True},
+            "text": {"type": "plain_text", "text": header, "emoji": True},
         },
         {
             "type": "section",

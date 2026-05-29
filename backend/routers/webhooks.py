@@ -131,4 +131,30 @@ async def elevenlabs_post_call(
             pass
 
     db.commit()
+
+    # Post to Slack only when the call produced a real answer (mirror of the email path).
+    # "answered" = agent captured a clinical answer; "completed" = we extracted one from
+    # the transcript. Everything else (voicemail, no_answer, wrong_number, call_back_later,
+    # follow_up_via_email) is not a real manufacturer response, so it's not posted.
+    if (
+        obj.status == "call_completed"
+        and obj.final_answer
+        and obj.call_provider_status in ("answered", "completed")
+    ):
+        try:
+            import slack_service
+            if slack_service.is_configured():
+                slack_service.notify_reply(
+                    inquiry_id=obj.id,
+                    manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
+                    subject=obj.subject,
+                    question=obj.question,
+                    answer=obj.final_answer,
+                    requester_name=obj.requester_name,
+                    requester_email=obj.requester_email,
+                    channel="call",
+                )
+        except Exception:
+            pass
+
     return {"matched": True, "inquiry_id": obj.id}
