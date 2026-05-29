@@ -111,12 +111,12 @@ def _get_body(msg: dict) -> str:
     return content
 
 
-def _process_message(db, token: str, mailbox: str, msg: dict) -> bool:
-    """Process one Graph message. Returns True if the inquiry was updated."""
+def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
+    """Process one Graph message. Returns reply data if the inquiry was updated, else None."""
     subject = msg.get("subject", "") or ""
     m = _SUBJECT_TAG.search(subject)
     if not m:
-        return False
+        return None
 
     inquiry_id = int(m.group(1))
 
@@ -124,20 +124,21 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> bool:
     obj = db.get(Inquiry, inquiry_id)
     if not obj:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
-        return False
+        return None
     if obj.status == "closed":
-        return False
+        return None
     if obj.email_response:
         _mark_read(token, mailbox, msg["id"])
-        return False
+        return None
 
     body = _get_body(msg)
     reply = _strip_quoted(body)
     if not reply:
         log.info("Inquiry %s reply had no extractable body; skipping", inquiry_id)
-        return False
+        return None
 
     sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
+    mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
 
     obj.email_response = reply
     obj.email_response_at = datetime.now(timezone.utc)
@@ -148,7 +149,6 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> bool:
     final = reply
     if summary_service.is_configured():
         try:
-            mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
             final = summary_service.extract_answer_from_email(
                 question=obj.question,
                 manufacturer=mfr_name,
@@ -159,7 +159,16 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> bool:
 
     obj.final_answer = final
     log.info("Captured Graph email reply for inquiry %s from %s", inquiry_id, sender)
-    return True
+    return {
+        "inquiry_id": inquiry_id,
+        "manufacturer": mfr_name,
+        "subject": obj.subject,
+        "question": obj.question,
+        "answer": final,
+        "requester_name": obj.requester_name,
+        "requester_email": obj.requester_email,
+        "sender_email": sender,
+    }
 
 
 def _mark_read(token: str, mailbox: str, message_id: str) -> None:
@@ -223,6 +232,12 @@ def poll_once() -> int:
                 db.commit()
                 updated += 1
                 _mark_read(token, mailbox, msg["id"])
+                try:
+                    import slack_service
+                    if slack_service.is_configured():
+                        slack_service.notify_reply(**changed)
+                except Exception:
+                    log.exception("Slack notify failed for inquiry %s", changed.get("inquiry_id"))
     finally:
         db.close()
 
