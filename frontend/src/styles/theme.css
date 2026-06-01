@@ -786,9 +786,11 @@ tbody tr:last-child td {
   color: var(--muted);
   pointer-events: none;
 }
-.mfr-combo-input {
+/* Specificity bump: .field input has (0,1,1) and would otherwise win over a
+   single .mfr-combo-input class. Pairing with .mfr-combo gives us (0,2,0). */
+.mfr-combo .mfr-combo-input {
   width: 100%;
-  padding: 9px 12px 9px 34px;
+  padding: 9px 12px 9px 36px;
   font-size: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -797,7 +799,7 @@ tbody tr:last-child td {
   font-family: inherit;
   box-sizing: border-box;
 }
-.mfr-combo-input:focus {
+.mfr-combo .mfr-combo-input:focus {
   outline: none;
   border-color: var(--brand-orange);
   box-shadow: 0 0 0 3px rgba(245, 130, 32, 0.12);
