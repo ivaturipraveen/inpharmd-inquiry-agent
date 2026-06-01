@@ -6,6 +6,7 @@ interface Props {
   inquiry: Inquiry;
   onSendEmail: () => Promise<void>;
   onCallTriggered: () => void;
+  onTestCallTriggered?: (phone: string) => void;
   onClose: () => void;
 }
 
@@ -16,15 +17,19 @@ interface HoursInfo {
   phone?: string | null;
 }
 
+type Busy = "email" | "call" | "test" | null;
+
 const ChannelChooser: FC<Props> = ({
   inquiry,
   onSendEmail,
   onCallTriggered,
+  onTestCallTriggered,
   onClose,
 }) => {
   const [hours, setHours] = useState<HoursInfo | null>(null);
-  const [busy, setBusy] = useState<"email" | "call" | null>(null);
+  const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [testPhone, setTestPhone] = useState("");
 
   useEffect(() => {
     api.inquiries.businessHours(inquiry.id).then(setHours).catch(() => {});
@@ -33,6 +38,7 @@ const ChannelChooser: FC<Props> = ({
   const m = inquiry.manufacturer;
   const emailTarget = m?.official_mi_email || m?.team_verified_email;
   const phoneTarget = hours?.phone || m?.mi_phone;
+  const callInFlight = inquiry.status === "call_pending";
 
   const handleEmail = async () => {
     setBusy("email");
@@ -54,7 +60,6 @@ const ChannelChooser: FC<Props> = ({
       onCallTriggered();
     } catch (e: any) {
       const msg = e?.message ?? "Failed to place call.";
-      // ElevenLabs config missing
       if (msg.includes("503")) {
         setError(
           "ElevenLabs is not configured yet. Add ELEVENLABS_API_KEY / " +
@@ -76,9 +81,27 @@ const ChannelChooser: FC<Props> = ({
     }
   };
 
+  const handleTestCall = async () => {
+    const trimmed = testPhone.trim();
+    if (!trimmed) {
+      setError("Enter a phone number to receive the test call.");
+      return;
+    }
+    setBusy("test");
+    setError(null);
+    try {
+      await api.inquiries.testCall(inquiry.id, trimmed);
+      onTestCallTriggered?.(trimmed);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to place test call.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
             <div className="meta-text">Inquiry #{inquiry.id} created</div>
@@ -174,10 +197,55 @@ const ChannelChooser: FC<Props> = ({
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={!phoneTarget || busy !== null}
+                disabled={!phoneTarget || busy !== null || callInFlight}
                 onClick={() => handleCall(false)}
               >
-                {busy === "call" ? "Dialing…" : "Call Agent Now"}
+                {callInFlight
+                  ? "Call in progress…"
+                  : busy === "call"
+                  ? "Dialing…"
+                  : "Call Agent Now"}
+              </button>
+            </div>
+
+            {/* Test Call card */}
+            <div className="channel-card channel-card-test">
+              <div className="channel-icon channel-icon-test">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2v4" />
+                  <path d="M12 18v4" />
+                  <path d="M4.93 4.93l2.83 2.83" />
+                  <path d="M16.24 16.24l2.83 2.83" />
+                  <path d="M2 12h4" />
+                  <path d="M18 12h4" />
+                  <path d="M4.93 19.07l2.83-2.83" />
+                  <path d="M16.24 7.76l2.83-2.83" />
+                </svg>
+              </div>
+              <div className="channel-title">Test Call</div>
+              <div className="channel-sub">
+                Dial <strong>your own number</strong> with this inquiry's question
+                and manufacturer context. Hear exactly how the agent would speak
+                to a real MI desk — no status changes.
+              </div>
+              <input
+                type="tel"
+                className="channel-test-input"
+                placeholder="+1 770 555 1234"
+                value={testPhone}
+                onChange={(e) => setTestPhone(e.target.value)}
+                disabled={busy !== null}
+              />
+              <div className="channel-test-hint">
+                Use E.164 format. The call won't affect inquiry #{inquiry.id}.
+              </div>
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={busy !== null || !testPhone.trim()}
+                onClick={handleTestCall}
+              >
+                {busy === "test" ? "Dialing…" : "Call My Number"}
               </button>
             </div>
           </div>

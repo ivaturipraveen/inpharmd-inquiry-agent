@@ -73,6 +73,11 @@ export const api = {
         `/api/inquiries/${id}/trigger-call${force ? "?force=true" : ""}`,
         { method: "POST" }
       ),
+    testCall: (id: number, phoneNumber: string) =>
+      request<Inquiry>(`/api/inquiries/${id}/test-call`, {
+        method: "POST",
+        body: JSON.stringify({ phone_number: phoneNumber }),
+      }),
     businessHours: (id: number) =>
       request<{
         known: boolean;

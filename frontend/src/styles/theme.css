@@ -1123,7 +1123,7 @@ tbody tr:last-child td {
 /* ---------- Channel chooser ---------- */
 .channel-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 12px;
 }
@@ -1162,6 +1162,38 @@ tbody tr:last-child td {
 .channel-icon-call {
   background: var(--green-soft);
   color: var(--green);
+}
+.channel-icon-test {
+  background: rgba(124, 92, 255, 0.10);
+  color: #6448e0;
+}
+.channel-card-test {
+  border-style: dashed;
+}
+.channel-card-test:hover {
+  border-color: #6448e0;
+  box-shadow: 0 6px 18px rgba(100, 72, 224, 0.10);
+}
+.channel-test-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.channel-test-input:focus {
+  outline: none;
+  border-color: #6448e0;
+  box-shadow: 0 0 0 3px rgba(100, 72, 224, 0.12);
+}
+.channel-test-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: -4px;
 }
 .channel-title {
   font-size: 16px;
@@ -1217,7 +1249,7 @@ tbody tr:last-child td {
   margin-top: 6px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 980px) {
   .channel-grid {
     grid-template-columns: 1fr;
   }

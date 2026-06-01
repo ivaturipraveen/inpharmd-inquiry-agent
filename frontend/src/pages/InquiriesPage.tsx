@@ -66,6 +66,27 @@ export default function InquiriesPage() {
     if (fresh && fresh !== selected) setSelected(fresh);
   }, [inquiries, selected]);
 
+  // Auto-refresh while anything is in-flight (call dialing, email awaiting reply).
+  // Polls every 5s; stops as soon as nothing is transient anymore.
+  const hasInFlight = useMemo(
+    () =>
+      inquiries.some((i) =>
+        ["call_pending", "email_sent"].includes(i.status)
+      ),
+    [inquiries]
+  );
+
+  useEffect(() => {
+    if (!hasInFlight) return;
+    const id = setInterval(() => {
+      api.inquiries
+        .list()
+        .then(setInquiries)
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, [hasInFlight]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return inquiries.filter((i) => {
@@ -322,6 +343,10 @@ export default function InquiriesPage() {
             setSuccess("Call placed. The agent is dialing now.");
             setPendingChoice(null);
             load();
+          }}
+          onTestCallTriggered={(phone) => {
+            setSuccess(`Test call dialing ${phone}. Your phone should ring shortly.`);
+            setPendingChoice(null);
           }}
         />
       )}

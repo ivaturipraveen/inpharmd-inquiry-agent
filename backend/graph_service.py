@@ -42,6 +42,16 @@ _QUOTE_MARKERS = (
     re.compile(r"^\[InpharmD #\d+\]", re.IGNORECASE),
 )
 
+# Lines that mark the start of a sign-off / signature block. Once we see one,
+# we cut from there to the end (assuming the meaningful body is above it).
+_SIGNATURE_MARKERS = (
+    re.compile(r"^--\s*$"),                            # RFC standard separator
+    re.compile(r"^(thanks|thank you|regards|best regards|best|sincerely|kind regards|cheers|warm regards|respectfully)[,!.]?\s*$", re.IGNORECASE),
+    re.compile(r"^(this (e-?mail|message) (is intended|contains|and any attachments))", re.IGNORECASE),
+    re.compile(r"^(confidentiality\s+notice|disclaimer)\b", re.IGNORECASE),
+    re.compile(r"^\*+\s*confidentiality", re.IGNORECASE),
+)
+
 
 def is_configured() -> bool:
     return bool(
@@ -102,6 +112,57 @@ def _strip_quoted(text: str) -> str:
     return cleaned if cleaned else text.strip()
 
 
+def _strip_signature(text: str) -> str:
+    """Cut everything from the first signature marker onward. Keeps the body
+    above it. Falls back to the original text if nothing matched."""
+    lines = text.split("\n")
+    cut_at = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if any(m.match(stripped) for m in _SIGNATURE_MARKERS):
+            cut_at = i
+            break
+    if cut_at is None:
+        return text.strip()
+    cleaned = "\n".join(lines[:cut_at]).strip()
+    return cleaned if cleaned else text.strip()
+
+
+def _collapse_blank_lines(text: str) -> str:
+    """Collapse 3+ consecutive blank lines down to a single blank line."""
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+_SIG_LEFTOVER_PATTERNS = (
+    re.compile(r"\bPharm\.?\s*D\.?\b", re.IGNORECASE),
+    re.compile(r"\bM\.?\s*D\.?\b"),
+    re.compile(r"\bMedical (Information|Affairs)\b", re.IGNORECASE),
+    re.compile(r"\bCONFIDENTIAL\b"),
+    re.compile(r"\bDISCLAIMER\b", re.IGNORECASE),
+    re.compile(r"\b\(\d{3}\)\s*\d{3}-\d{4}\b"),    # phone like (404) 555-1212
+    re.compile(r"\b\d{3}-\d{3}-\d{4}\b"),          # phone like 404-555-1212
+)
+
+
+def _signature_likely_remains(text: str) -> bool:
+    """Heuristic: did the manual strip miss a signature block?"""
+    return sum(1 for p in _SIG_LEFTOVER_PATTERNS if p.search(text)) >= 2
+
+
+def clean_reply_body(text: str) -> str:
+    """Full pipeline: drop quoted history, drop signature, tidy whitespace.
+
+    If OpenAI is configured AND signature markers still remain after the
+    regex pass, hand off to summary_service.strip_signature_with_ai for a
+    second pass. The AI is instructed to preserve the answer text verbatim
+    — it only removes the signature/disclaimer block.
+    """
+    cleaned = _collapse_blank_lines(_strip_signature(_strip_quoted(text)))
+    if cleaned and summary_service.is_configured() and _signature_likely_remains(cleaned):
+        cleaned = summary_service.strip_signature_with_ai(cleaned)
+    return cleaned
+
+
 def _get_body(msg: dict) -> str:
     body = msg.get("body", {})
     content = body.get("content", "")
@@ -132,7 +193,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         return None
 
     body = _get_body(msg)
-    reply = _strip_quoted(body)
+    reply = clean_reply_body(body)
     if not reply:
         log.info("Inquiry %s reply had no extractable body; skipping", inquiry_id)
         return None
@@ -146,25 +207,17 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     obj.next_retry_at = None
     obj.call_scheduled_for = None
 
-    final = reply
-    if summary_service.is_configured():
-        try:
-            final = summary_service.extract_answer_from_email(
-                question=obj.question,
-                manufacturer=mfr_name,
-                reply_text=reply,
-            )
-        except summary_service.SummaryConfigError:
-            final = reply
-
-    obj.final_answer = final
+    # For email we show the manufacturer's actual words (cleaned of quoted
+    # history + signature) rather than an LLM rewrite. Call replies still get
+    # AI extraction because transcripts have far more filler.
+    obj.final_answer = reply
     log.info("Captured Graph email reply for inquiry %s from %s", inquiry_id, sender)
     return {
         "inquiry_id": inquiry_id,
         "manufacturer": mfr_name,
         "subject": obj.subject,
         "question": obj.question,
-        "answer": final,
+        "answer": reply,
         "requester_name": obj.requester_name,
         "requester_email": obj.requester_email,
         "sender_email": sender,

@@ -64,7 +64,7 @@ def _place_retry(db, obj: Inquiry) -> None:
         return
 
     try:
-        resp = call_service.place_inquiry_call(
+        resp = call_service.place_inquiry_call_sync(
             inquiry_id=obj.id,
             to_number=mfr.mi_phone,
             manufacturer_name=mfr.manufacturer,

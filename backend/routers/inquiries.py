@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 import call_service
@@ -17,6 +18,10 @@ from schemas import (
     InquiryOut,
     InquiryUpdate,
 )
+
+
+class TestCallPayload(BaseModel):
+    phone_number: str = Field(..., min_length=7, description="Number to dial in E.164 format, e.g. +17705551234")
 
 router = APIRouter(prefix="/api/inquiries", tags=["inquiries"])
 
@@ -171,7 +176,7 @@ def business_hours_check(inquiry_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{inquiry_id}/trigger-call", response_model=InquiryOut)
-def trigger_call(
+async def trigger_call(
     inquiry_id: int,
     force: bool = Query(False, description="Place the call even if outside business hours"),
     db: Session = Depends(get_db),
@@ -184,6 +189,11 @@ def trigger_call(
         raise HTTPException(
             status_code=409,
             detail=f"Cannot trigger call from status '{obj.status}'",
+        )
+    if obj.status == "call_pending":
+        raise HTTPException(
+            status_code=409,
+            detail="A call is already in progress for this inquiry. Wait for it to complete before placing another.",
         )
     # call_completed (with non-answered outcome) and needs_attention are valid retry sources
     if obj.status == "call_completed" and obj.call_provider_status == "answered":
@@ -215,7 +225,7 @@ def trigger_call(
         )
 
     try:
-        resp = call_service.place_inquiry_call(
+        resp = await call_service.place_inquiry_call(
             inquiry_id=obj.id,
             to_number=mfr.mi_phone,
             manufacturer_name=mfr.manufacturer,
@@ -242,6 +252,46 @@ def trigger_call(
     obj.call_provider_status = resp.get("status") or "initiated"
     obj.next_retry_at = None  # manual trigger cancels any pending auto-retry
     db.commit()
+    return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/test-call", response_model=InquiryOut)
+async def test_call(
+    inquiry_id: int,
+    payload: TestCallPayload,
+    db: Session = Depends(get_db),
+):
+    """Dial an arbitrary phone number using THIS inquiry's question/manufacturer
+    context. Lets the team test how the agent would speak to a real MI desk
+    without bothering the manufacturer. Does not change inquiry status."""
+    obj = _get_or_404(db, inquiry_id)
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+
+    try:
+        await call_service.place_inquiry_call(
+            inquiry_id=obj.id,
+            to_number=payload.phone_number,
+            manufacturer_name=mfr.manufacturer,
+            subject=obj.subject,
+            question=obj.question,
+            requester_name=obj.requester_name,
+            requester_email=obj.requester_email,
+            is_test=True,
+        )
+    except call_service.CallConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ElevenLabs rejected the call: {e.response.status_code} {e.response.text}",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to place test call: {e}")
+
+    # Deliberately do NOT mutate obj.status or store conversation_id — test calls
+    # should not interfere with the real inquiry's lifecycle.
     return _get_or_404(db, inquiry_id)
 
 

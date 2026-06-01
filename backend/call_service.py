@@ -9,6 +9,7 @@ needing a custom agent per inquiry.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -163,7 +164,7 @@ def is_within_business_hours(text: Optional[str], now_utc: Optional[datetime] = 
 
 # ---------- Outbound call ----------
 
-def place_inquiry_call(
+def _build_call_payload(
     *,
     inquiry_id: int,
     to_number: str,
@@ -172,31 +173,31 @@ def place_inquiry_call(
     question: str,
     requester_name: Optional[str] = None,
     requester_email: Optional[str] = None,
+    is_test: bool = False,
 ) -> Dict[str, Any]:
-    """Place an outbound call via ElevenLabs (which uses Twilio under the hood).
+    # Warmer, less scripted opener — the agent will continue from here naturally
+    # using its system prompt. We deliberately don't list the question in the
+    # opener; the agent should small-talk into it.
+    if is_test:
+        first_message = (
+            f"Hi, this is a test call from the InpharmD medical information line. "
+            f"I'm reaching out as if I were calling {manufacturer_name} with a "
+            f"pharmacist's question — feel free to play along."
+        )
+    else:
+        first_message = (
+            f"Hi there — this is the medical information line at InpharmD. "
+            f"Do you have a moment to help me with a quick clinical question from "
+            f"one of our pharmacists?"
+        )
 
-    Returns the JSON response from ElevenLabs (includes a `conversation_id` we
-    store on the inquiry so we can match the post-call webhook back).
-    """
-    api_key = _required("ELEVENLABS_API_KEY")
-    agent_id = _agent_id()
-    phone_number_id = _phone_number_id()
-
-    first_message = (
-        f"Hello, this is the InpharmD medical information line calling on behalf of"
-        f" a pharmacist with an inquiry regarding {manufacturer_name}. "
-        f"I need to ask about: {subject}. Is this a good time?"
-    )
-
-    payload: Dict[str, Any] = {
-        "agent_id": agent_id,
-        "agent_phone_number_id": phone_number_id,
+    return {
+        "agent_id": _agent_id(),
+        "agent_phone_number_id": _phone_number_id(),
         "to_number": to_number,
         "conversation_initiation_client_data": {
             "conversation_config_override": {
-                "agent": {
-                    "first_message": first_message,
-                },
+                "agent": {"first_message": first_message},
             },
             "dynamic_variables": {
                 "inquiry_id": str(inquiry_id),
@@ -205,21 +206,48 @@ def place_inquiry_call(
                 "inquiry_question": question,
                 "requester_name": requester_name or "",
                 "requester_email": requester_email or "",
+                "is_test_call": "true" if is_test else "false",
             },
         },
     }
 
+
+async def place_inquiry_call(
+    *,
+    inquiry_id: int,
+    to_number: str,
+    manufacturer_name: str,
+    subject: str,
+    question: str,
+    requester_name: Optional[str] = None,
+    requester_email: Optional[str] = None,
+    is_test: bool = False,
+) -> Dict[str, Any]:
+    """Place an outbound call via ElevenLabs (which uses Twilio under the hood).
+
+    Returns the JSON response from ElevenLabs (includes a `conversation_id` we
+    store on the inquiry so we can match the post-call webhook back).
+    """
+    api_key = _required("ELEVENLABS_API_KEY")
+    payload = _build_call_payload(
+        inquiry_id=inquiry_id,
+        to_number=to_number,
+        manufacturer_name=manufacturer_name,
+        subject=subject,
+        question=question,
+        requester_name=requester_name,
+        requester_email=requester_email,
+        is_test=is_test,
+    )
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
 
-    # Log the exact payload (with API key redacted) so we can verify variables in Render logs
     log.info(
-        "ElevenLabs outbound-call payload for inquiry %s:\n%s",
-        inquiry_id,
-        json.dumps(payload, indent=2),
+        "ElevenLabs outbound-call payload for inquiry %s (test=%s):\n%s",
+        inquiry_id, is_test, json.dumps(payload, indent=2),
     )
 
-    with httpx.Client(timeout=30) as client:
-        r = client.post(
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
             f"{ELEVEN_BASE}/convai/twilio/outbound-call",
             headers=headers,
             json=payload,
@@ -230,3 +258,8 @@ def place_inquiry_call(
         resp_json = r.json()
         log.info("ElevenLabs accepted: %s", json.dumps(resp_json))
         return resp_json
+
+
+def place_inquiry_call_sync(**kwargs) -> Dict[str, Any]:
+    """Sync wrapper for callers running outside an event loop (e.g. APScheduler)."""
+    return asyncio.run(place_inquiry_call(**kwargs))

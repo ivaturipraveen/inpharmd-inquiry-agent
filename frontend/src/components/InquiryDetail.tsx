@@ -29,10 +29,14 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
 
   const m = inquiry.manufacturer;
 
+  const callInFlight = inquiry.status === "call_pending";
   const canSendEmail = ["draft", "failed"].includes(inquiry.status);
   const canRecordEmail = inquiry.status === "email_sent";
   // Allow manual call from any not-yet-answered state. Retries reuse this same trigger.
+  // While a call is in flight we still render the button (disabled) so the user
+  // sees the in-progress state instead of the button disappearing.
   const canTriggerCall =
+    callInFlight ||
     ["email_sent", "draft", "needs_attention"].includes(inquiry.status) ||
     (inquiry.status === "call_completed" &&
       inquiry.call_provider_status !== "answered" &&
@@ -43,12 +47,13 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const retryCount = inquiry.retry_count ?? 0;
   const maxRetries = inquiry.max_retries ?? 2;
   const nextRetry = inquiry.next_retry_at ? new Date(inquiry.next_retry_at) : null;
-  const retryButtonLabel =
-    inquiry.status === "needs_attention"
-      ? "Retry Call Manually"
-      : retryCount > 0
-      ? `Trigger Call (retried ${retryCount}/${maxRetries})`
-      : "Trigger Call Now";
+  const retryButtonLabel = callInFlight
+    ? "Call in progress…"
+    : inquiry.status === "needs_attention"
+    ? "Retry Call Manually"
+    : retryCount > 0
+    ? `Trigger Call (retried ${retryCount}/${maxRetries})`
+    : "Trigger Call Now";
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -319,7 +324,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     : "btn btn-ghost"
                 }
                 type="button"
-                disabled={busy}
+                disabled={busy || callInFlight}
                 onClick={() => run(() => onAction("triggerCall"))}
               >
                 {retryButtonLabel}
