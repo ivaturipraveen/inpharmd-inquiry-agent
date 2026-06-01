@@ -1,4 +1,12 @@
-import { FC, FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  FC,
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { InquiryInput, ManufacturerContact } from "../types";
 
 interface Props {
@@ -18,6 +26,8 @@ const FALLBACK_PRESETS = [
 
 const PRESET_HOURS = FALLBACK_PRESETS.map((p) => p.hours);
 
+const MAX_RESULTS = 50;
+
 const InquiryForm: FC<Props> = ({
   manufacturers,
   defaultManufacturerId,
@@ -27,6 +37,12 @@ const InquiryForm: FC<Props> = ({
   const [manufacturerId, setManufacturerId] = useState<number | "">(
     defaultManufacturerId ?? ""
   );
+  const [mfrQuery, setMfrQuery] = useState("");
+  const [mfrOpen, setMfrOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const mfrWrapRef = useRef<HTMLDivElement | null>(null);
+  const mfrInputRef = useRef<HTMLInputElement | null>(null);
+
   const [subject, setSubject] = useState("");
   const [question, setQuestion] = useState("");
   const [requesterName, setRequesterName] = useState("");
@@ -46,6 +62,69 @@ const InquiryForm: FC<Props> = ({
     () => manufacturers.find((m) => m.id === manufacturerId),
     [manufacturers, manufacturerId]
   );
+
+  // Filter manufacturers by query (case-insensitive substring on name + parent).
+  const filtered = useMemo(() => {
+    const q = mfrQuery.trim().toLowerCase();
+    if (!q) return manufacturers.slice(0, MAX_RESULTS);
+    return manufacturers
+      .filter((m) => {
+        const hay = `${m.manufacturer} ${m.parent_owner ?? ""}`.toLowerCase();
+        return hay.includes(q);
+      })
+      .slice(0, MAX_RESULTS);
+  }, [manufacturers, mfrQuery]);
+
+  // Close the dropdown when clicking outside the combobox.
+  useEffect(() => {
+    if (!mfrOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!mfrWrapRef.current) return;
+      if (!mfrWrapRef.current.contains(e.target as Node)) {
+        setMfrOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [mfrOpen]);
+
+  // Reset the highlighted row whenever the filtered list changes.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [mfrQuery, mfrOpen]);
+
+  const pickManufacturer = (m: ManufacturerContact) => {
+    setManufacturerId(m.id);
+    setMfrQuery("");
+    setMfrOpen(false);
+  };
+
+  const clearManufacturer = () => {
+    setManufacturerId("");
+    setMfrQuery("");
+    setTimeout(() => {
+      mfrInputRef.current?.focus();
+      setMfrOpen(true);
+    }, 0);
+  };
+
+  const handleMfrKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setMfrOpen(true);
+      setActiveIndex((i) => Math.min(i + 1, Math.max(0, filtered.length - 1)));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(0, i - 1));
+    } else if (e.key === "Enter") {
+      if (mfrOpen && filtered[activeIndex]) {
+        e.preventDefault();
+        pickManufacturer(filtered[activeIndex]);
+      }
+    } else if (e.key === "Escape") {
+      setMfrOpen(false);
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -103,22 +182,105 @@ const InquiryForm: FC<Props> = ({
                 <label>
                   Manufacturer<span className="req">*</span>
                 </label>
-                <select
-                  value={manufacturerId}
-                  onChange={(e) =>
-                    setManufacturerId(
-                      e.target.value ? Number(e.target.value) : ""
-                    )
-                  }
-                  required
-                >
-                  <option value="">— Select a manufacturer —</option>
-                  {manufacturers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.manufacturer}
-                    </option>
-                  ))}
-                </select>
+
+                {selected ? (
+                  <div className="mfr-selected">
+                    <div className="mfr-selected-main">
+                      <span className="mfr-selected-check">✓</span>
+                      <div>
+                        <div className="mfr-selected-name">
+                          {selected.manufacturer}
+                        </div>
+                        {selected.parent_owner && (
+                          <div className="mfr-selected-parent">
+                            {selected.parent_owner}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="mfr-clear"
+                      onClick={clearManufacturer}
+                      aria-label="Change manufacturer"
+                      title="Change manufacturer"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mfr-combo" ref={mfrWrapRef}>
+                    <div className="mfr-combo-input-wrap">
+                      <svg
+                        className="mfr-combo-icon"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <circle cx="9" cy="9" r="6" />
+                        <path d="m17 17-3.5-3.5" />
+                      </svg>
+                      <input
+                        ref={mfrInputRef}
+                        type="text"
+                        className="mfr-combo-input"
+                        placeholder={`Search ${manufacturers.length} manufacturers…`}
+                        value={mfrQuery}
+                        onChange={(e) => {
+                          setMfrQuery(e.target.value);
+                          setMfrOpen(true);
+                        }}
+                        onFocus={() => setMfrOpen(true)}
+                        onKeyDown={handleMfrKeyDown}
+                        autoComplete="off"
+                      />
+                    </div>
+                    {mfrOpen && (
+                      <div className="mfr-combo-menu">
+                        {filtered.length === 0 ? (
+                          <div className="mfr-combo-empty">
+                            No manufacturers match "{mfrQuery}".
+                          </div>
+                        ) : (
+                          <>
+                            {filtered.map((m, idx) => (
+                              <button
+                                type="button"
+                                key={m.id}
+                                className={`mfr-combo-item ${
+                                  idx === activeIndex
+                                    ? "mfr-combo-item-active"
+                                    : ""
+                                }`}
+                                onMouseEnter={() => setActiveIndex(idx)}
+                                onClick={() => pickManufacturer(m)}
+                              >
+                                <span className="mfr-combo-name">
+                                  {m.manufacturer}
+                                </span>
+                                {m.parent_owner && (
+                                  <span className="mfr-combo-parent">
+                                    {m.parent_owner}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                            {filtered.length === MAX_RESULTS && (
+                              <div className="mfr-combo-empty">
+                                Showing first {MAX_RESULTS} matches — refine your
+                                search to narrow further.
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {selected && (
                   <div className="hint-row">
                     {selected.official_mi_email && (

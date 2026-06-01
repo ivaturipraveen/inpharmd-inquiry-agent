@@ -769,6 +769,141 @@ tbody tr:last-child td {
 }
 
 /* ---------- Inquiry form extras ---------- */
+/* Manufacturer search combobox */
+.mfr-combo {
+  position: relative;
+}
+.mfr-combo-input-wrap {
+  position: relative;
+}
+.mfr-combo-icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.mfr-combo-input {
+  width: 100%;
+  padding: 9px 12px 9px 34px;
+  font-size: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.mfr-combo-input:focus {
+  outline: none;
+  border-color: var(--brand-orange);
+  box-shadow: 0 0 0 3px rgba(245, 130, 32, 0.12);
+}
+.mfr-combo-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.10);
+  z-index: 30;
+  padding: 4px;
+}
+.mfr-combo-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--ink);
+}
+.mfr-combo-item:hover,
+.mfr-combo-item-active {
+  background: rgba(245, 130, 32, 0.08);
+}
+.mfr-combo-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+.mfr-combo-parent {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+.mfr-combo-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Selected-manufacturer pill */
+.mfr-selected {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.mfr-selected-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.mfr-selected-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--green-soft);
+  color: var(--green);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.mfr-selected-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.mfr-selected-parent {
+  font-size: 11px;
+  color: var(--muted);
+}
+.mfr-clear {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.mfr-clear:hover {
+  color: var(--ink);
+  background: rgba(15, 23, 42, 0.05);
+}
+
 .hint-row {
   display: flex;
   flex-wrap: wrap;
