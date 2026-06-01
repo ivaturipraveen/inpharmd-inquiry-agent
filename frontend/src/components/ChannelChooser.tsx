@@ -19,6 +19,17 @@ interface HoursInfo {
 
 type Busy = "email" | "call" | "test" | null;
 
+const COUNTRY_CODES = [
+  { code: "+1", label: "+1 US / CA" },
+  { code: "+91", label: "+91 IN" },
+  { code: "+44", label: "+44 UK" },
+  { code: "+61", label: "+61 AU" },
+  { code: "+49", label: "+49 DE" },
+];
+
+// Strip every non-digit. Used for both validation and final E.164 assembly.
+const digitsOnly = (s: string) => s.replace(/\D+/g, "");
+
 const ChannelChooser: FC<Props> = ({
   inquiry,
   onSendEmail,
@@ -29,7 +40,9 @@ const ChannelChooser: FC<Props> = ({
   const [hours, setHours] = useState<HoursInfo | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
-  const [testPhone, setTestPhone] = useState("");
+  const [countryCode, setCountryCode] = useState("+1");
+  const [testLocal, setTestLocal] = useState("");
+  const [testDialedTo, setTestDialedTo] = useState<string | null>(null);
 
   useEffect(() => {
     api.inquiries.businessHours(inquiry.id).then(setHours).catch(() => {});
@@ -39,6 +52,20 @@ const ChannelChooser: FC<Props> = ({
   const emailTarget = m?.official_mi_email || m?.team_verified_email;
   const phoneTarget = hours?.phone || m?.mi_phone;
   const callInFlight = inquiry.status === "call_pending";
+  // Treat "hours known and explicitly out-of-hours" as blocking. Unknown hours
+  // are still allowed — we can't prove it's wrong, and many manufacturer rows
+  // have no hours text.
+  const outOfHours = hours?.known === true && hours?.in_hours === false;
+  const callDisabled =
+    !phoneTarget || busy !== null || callInFlight || outOfHours;
+
+  const testDigits = digitsOnly(testLocal);
+  const fullTestNumber = `${countryCode}${testDigits}`;
+  // E.164 max is 15 digits including country code. Local portion needs at
+  // least 7 digits to be a plausible phone number.
+  const testValid =
+    testDigits.length >= 7 &&
+    fullTestNumber.replace("+", "").length <= 15;
 
   const handleEmail = async () => {
     setBusy("email");
@@ -52,11 +79,12 @@ const ChannelChooser: FC<Props> = ({
     }
   };
 
-  const handleCall = async (force = false) => {
+  const handleCall = async () => {
+    if (outOfHours) return;
     setBusy("call");
     setError(null);
     try {
-      await api.inquiries.triggerCall(inquiry.id, force);
+      await api.inquiries.triggerCall(inquiry.id, false);
       onCallTriggered();
     } catch (e: any) {
       const msg = e?.message ?? "Failed to place call.";
@@ -65,14 +93,6 @@ const ChannelChooser: FC<Props> = ({
           "ElevenLabs is not configured yet. Add ELEVENLABS_API_KEY / " +
             "ELEVENLABS_AGENT_ID / ELEVENLABS_AGENT_PHONE_NUMBER_ID to backend/.env and restart."
         );
-      } else if (msg.includes("out_of_hours") && !force) {
-        if (
-          confirm(
-            `${m?.manufacturer} is outside business hours (${hours?.hours_text ?? "unknown"}). Call anyway?`
-          )
-        ) {
-          return handleCall(true);
-        }
       } else {
         setError(msg);
       }
@@ -82,16 +102,20 @@ const ChannelChooser: FC<Props> = ({
   };
 
   const handleTestCall = async () => {
-    const trimmed = testPhone.trim();
-    if (!trimmed) {
-      setError("Enter a phone number to receive the test call.");
+    if (!testValid) {
+      setError("Enter a valid phone number (at least 7 digits).");
       return;
     }
     setBusy("test");
     setError(null);
+    setTestDialedTo(null);
     try {
-      await api.inquiries.testCall(inquiry.id, trimmed);
-      onTestCallTriggered?.(trimmed);
+      await api.inquiries.testCall(inquiry.id, fullTestNumber);
+      setTestDialedTo(fullTestNumber);
+      // Notify the parent for a toast, but DO NOT close the modal — the user
+      // typically wants to test first and then send the real email / place
+      // the real call from the same view.
+      onTestCallTriggered?.(fullTestNumber);
     } catch (e: any) {
       setError(e?.message ?? "Failed to place test call.");
     } finally {
@@ -119,6 +143,13 @@ const ChannelChooser: FC<Props> = ({
 
         <div className="modal-body">
           {error && <div className="error-banner">{error}</div>}
+          {testDialedTo && (
+            <div className="success-banner">
+              ✓ Test call dialing <strong>{testDialedTo}</strong> — your phone
+              should ring shortly. You can now choose Send Email or Call Agent
+              Now to actually contact the manufacturer.
+            </div>
+          )}
 
           <div className="channel-grid">
             {/* Email card */}
@@ -197,11 +228,18 @@ const ChannelChooser: FC<Props> = ({
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={!phoneTarget || busy !== null || callInFlight}
-                onClick={() => handleCall(false)}
+                disabled={callDisabled}
+                title={
+                  outOfHours
+                    ? `Outside ${m?.manufacturer ?? "manufacturer"} business hours (${hours?.hours_text ?? "unknown"}). Use Test Call to verify the agent, or wait until in-hours.`
+                    : undefined
+                }
+                onClick={handleCall}
               >
                 {callInFlight
                   ? "Call in progress…"
+                  : outOfHours
+                  ? "Outside business hours"
                   : busy === "call"
                   ? "Dialing…"
                   : "Call Agent Now"}
@@ -224,25 +262,43 @@ const ChannelChooser: FC<Props> = ({
               </div>
               <div className="channel-title">Test Call</div>
               <div className="channel-sub">
-                Dial <strong>your own number</strong> with this inquiry's question
-                and manufacturer context. Hear exactly how the agent would speak
-                to a real MI desk — no status changes.
+                Dial <strong>your own number</strong> with this inquiry's
+                question and manufacturer context. Hear exactly how the agent
+                would speak to a real MI desk — no status changes, no business-
+                hours check.
               </div>
-              <input
-                type="tel"
-                className="channel-test-input"
-                placeholder="+1 770 555 1234"
-                value={testPhone}
-                onChange={(e) => setTestPhone(e.target.value)}
-                disabled={busy !== null}
-              />
+              <div className="phone-input-row">
+                <select
+                  className="phone-cc-select"
+                  value={countryCode}
+                  onChange={(e) => setCountryCode(e.target.value)}
+                  disabled={busy !== null}
+                  aria-label="Country code"
+                >
+                  {COUNTRY_CODES.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  className="channel-test-input"
+                  placeholder="phone number"
+                  value={testLocal}
+                  onChange={(e) => setTestLocal(e.target.value)}
+                  disabled={busy !== null}
+                />
+              </div>
               <div className="channel-test-hint">
-                Use E.164 format. The call won't affect inquiry #{inquiry.id}.
+                Dialing: <strong>{testValid ? fullTestNumber : "—"}</strong>{" "}
+                · won't affect inquiry #{inquiry.id}.
               </div>
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={busy !== null || !testPhone.trim()}
+                disabled={busy !== null || !testValid}
                 onClick={handleTestCall}
               >
                 {busy === "test" ? "Dialing…" : "Call My Number"}
@@ -258,7 +314,7 @@ const ChannelChooser: FC<Props> = ({
 
         <div className="modal-footer">
           <button type="button" className="btn btn-ghost" onClick={onClose}>
-            Save as Draft
+            {testDialedTo ? "Done" : "Save as Draft"}
           </button>
         </div>
       </div>

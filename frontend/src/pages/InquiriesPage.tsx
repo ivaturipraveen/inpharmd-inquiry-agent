@@ -345,8 +345,9 @@ export default function InquiriesPage() {
             load();
           }}
           onTestCallTriggered={(phone) => {
+            // Keep the channel chooser OPEN so the user can still send the
+            // real email or place the real call after verifying via test.
             setSuccess(`Test call dialing ${phone}. Your phone should ring shortly.`);
-            setPendingChoice(null);
           }}
         />
       )}

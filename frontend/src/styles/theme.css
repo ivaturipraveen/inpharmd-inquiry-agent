@@ -1174,7 +1174,29 @@ tbody tr:last-child td {
   border-color: #6448e0;
   box-shadow: 0 6px 18px rgba(100, 72, 224, 0.10);
 }
+.phone-input-row {
+  display: flex;
+  gap: 6px;
+}
+.phone-cc-select {
+  flex: 0 0 auto;
+  padding: 8px 8px;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  cursor: pointer;
+  min-width: 96px;
+}
+.phone-cc-select:focus {
+  outline: none;
+  border-color: #6448e0;
+  box-shadow: 0 0 0 3px rgba(100, 72, 224, 0.12);
+}
 .channel-test-input {
+  flex: 1 1 auto;
   width: 100%;
   padding: 8px 10px;
   font-size: 13px;

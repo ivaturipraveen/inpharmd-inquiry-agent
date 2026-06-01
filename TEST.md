@@ -26,105 +26,138 @@ End-to-end tests you can run against the deployed services without disturbing th
 
 Copy any of these into the form to simulate real pharmacist queries. They're realistic enough to test the voice-agent prompt and the email template.
 
-Each example also includes a **Sample Answer** that you can read aloud when the voice agent calls you — that way the agent captures a realistic-sounding response and you can verify the end-to-end flow (transcript → `submit_answer` → "Final Answer" card → AI extraction if needed).
+The set is intentionally a **mix of simple and multi-part questions** so you can verify both flows on the same agent:
+
+- **Single question** (#1, #3, #6) — checks the basic ask → answer → submit flow
+- **Two-part** (#2, #4) — checks that the agent asks the second part only AFTER the rep finishes the first
+- **Three-part** (#5, #7, #8) — checks the full "one question at a time, take a beat, then ask the next" pacing from the system prompt
+
+Each example also includes a **Sample Answer** you can read aloud when the voice agent calls you. For multi-part questions the answer is split per sub-question — say each chunk only after the agent asks that specific part, so you can verify the agent isn't dumping everything at once.
 
 > ⚠ The sample answers below are **fictional test scripts**. Case IDs, study names, and percentages are made up for testing purposes only. Do not use them as real medical guidance.
 
-### 1. Stability / Temperature Excursion — Humira (adalimumab)
+### 1. Stability / Temperature Excursion — Humira (adalimumab)  *(single question)*
 
 **Subject:** `Stability data for Humira after temperature excursion`
 
 **Question:**
 
-> A pharmacy received a shipment of Humira (adalimumab 40 mg/0.4 mL pre-filled syringes) that was exposed to ambient temperatures of approximately 30 °C for 6 hours during last-mile delivery. The package insert states 'store refrigerated at 36–46 °F (2–8 °C); do not freeze'. Is there stability data supporting that the product can still be dispensed after this excursion? Please reference the specific PI section or stability study if available.
+> Is Humira (adalimumab 40 mg pre-filled syringe) still safe to dispense after a 6-hour temperature excursion at around 30 °C during last-mile delivery?
 
 **Sample Answer (read aloud during the test call):**
 
-> Based on our stability data, Humira retains potency for up to 14 days at room temperature, up to 25 degrees Celsius, when stored in its original carton. A 6-hour excursion at 30 degrees is outside the labeled handling but our internal study shows no measurable impact for brief exposures under 8 hours. We recommend dispensing the product if the patient will use it within the next 14 days. Reference: AbbVie stability study number H-U-2023-S-T-B-zero-one-eight.
+> Yes — Humira retains potency for up to 14 days at room temperature, up to 25 degrees Celsius, when stored in its original carton. A 6-hour excursion at 30 degrees is outside the labeled handling, but our internal study shows no measurable impact for brief exposures under 8 hours. Safe to dispense if the patient uses it within the next 14 days. Reference: AbbVie stability study H-U-2023-S-T-B-018.
 
-### 2. Y-Site Compatibility — Protonix + vancomycin
+### 2. Y-Site Compatibility — Protonix + vancomycin  *(two-part)*
 
 **Subject:** `Y-site compatibility — Protonix (pantoprazole) with vancomycin in 0.9% NaCl`
 
 **Question:**
 
-> Looking for compatibility data: can Protonix (pantoprazole) be infused via Y-site alongside vancomycin in 0.9% normal saline? Specifically need visual compatibility, pH compatibility, and any precipitation data over a 4-hour co-infusion window. Patient is in ICU and we are trying to minimize line access.
+> 1. Is Protonix (pantoprazole) compatible with vancomycin at Y-site in 0.9% normal saline?
+> 2. If they're not compatible, what should we do for an ICU patient where we're trying to minimize line access?
 
-**Sample Answer (read aloud during the test call):**
+**Sample Answer (read aloud during the test call — split per sub-question):**
 
-> Per our compatibility database, Protonix and vancomycin are physically incompatible at Y-site in normal saline. A white precipitate forms within about 15 minutes due to the pH mismatch — Protonix is alkaline, vancomycin is acidic. We recommend using separate infusion lines, or if a single line is unavoidable, flushing thoroughly between administrations with at least 20 mL of saline. Reference: Pfizer Compatibility Database, section 4.2.
+> **Part 1:** No, they're physically incompatible. A white precipitate forms within about 15 minutes because of the pH mismatch — Protonix is alkaline and vancomycin is acidic. Reference: Pfizer Compatibility Database, section 4.2.
+>
+> **Part 2:** We recommend using separate infusion lines. If a single line is truly unavoidable, flush thoroughly between administrations with at least 20 mL of saline — but separate lines are strongly preferred.
 
-### 3. Renal Dosing — Eliquis (apixaban)
+### 3. Renal Dosing — Eliquis (apixaban)  *(single question)*
 
 **Subject:** `Eliquis (apixaban) dosing in CrCl 22 mL/min`
 
 **Question:**
 
-> Recommended dose of Eliquis (apixaban) for atrial fibrillation in a 68-year-old patient with CrCl of 22 mL/min, weight 74 kg, and stable hepatic function? The PI lists dose-reduction criteria (age ≥80, weight ≤60 kg, SCr ≥1.5) but our patient meets only the renal criterion. Is there a published study or unpublished company data supporting dosing in the CrCl 15–29 mL/min band?
+> What's the recommended Eliquis (apixaban) dose for atrial fibrillation in a 68-year-old patient with CrCl of 22 mL/min and weight 74 kg?
 
 **Sample Answer (read aloud during the test call):**
 
-> For your patient with CrCl of 22 milliliters per minute, the recommended dose is 5 milligrams twice daily — the standard dose. Dose reduction to 2.5 milligrams twice daily only applies if the patient meets at least two of the three criteria, which yours does not. The ARISTOTLE trial sub-analysis published in 2018 supports the 5-milligram dose in CrCl 15 to 29, with comparable efficacy and bleeding rates to patients with normal renal function. Reference: Eliquis PI section 2.1 and the ARISTOTLE renal sub-study.
+> The recommended dose is 5 milligrams twice daily — the standard dose. Dose reduction to 2.5 milligrams twice daily only applies if the patient meets at least two of the three reduction criteria — age 80 or older, weight 60 kilograms or less, or serum creatinine 1.5 or higher. Your patient meets only the renal criterion, so they stay on the standard dose. Reference: Eliquis PI section 2.1.
 
-### 4. Off-Label Pediatric Use — Prograf (tacrolimus)
+### 4. Off-Label Pediatric Use — Prograf (tacrolimus)  *(two-part)*
 
 **Subject:** `Off-label pediatric use of Prograf — 9-year-old, 28 kg post-transplant`
 
 **Question:**
 
-> The transplant team is initiating Prograf (tacrolimus) for a 9-year-old, 28 kg patient post-liver transplant. The granule formulation is approved for peds but our hospital only stocks the IR capsules. Does the manufacturer have pediatric pharmacokinetic data, case series, or expanded-access program experience that supports using opened-capsule/sprinkle dosing of the IR formulation in this age/weight range?
+> 1. Does the manufacturer have pediatric data on opening Prograf (tacrolimus) IR capsules and sprinkling them for a 9-year-old, 28 kg liver transplant patient?
+> 2. If opened capsules aren't recommended, is there a granule formulation we should be ordering instead?
 
-**Sample Answer (read aloud during the test call):**
+**Sample Answer (read aloud during the test call — split per sub-question):**
 
-> Opening Prograf IR capsules is off-label and we cannot recommend it, but we do have a 2019 case series of 23 pediatric liver transplant patients where the capsule contents were mixed with apple sauce. Trough levels were comparable to the granule formulation when adjusted for weight. We strongly recommend ordering the granules formulation if possible, but if your hospital must use opened capsules, monitor whole-blood trough levels twice weekly for the first month. Reference: Astellas Medical Information case series M-I-C-2019-T-zero-four-two.
+> **Part 1:** Opening the IR capsules is off-label, but we do have a 2019 case series of 23 pediatric liver transplant patients where capsule contents were mixed with apple sauce. Trough levels were comparable to the granule formulation when adjusted for weight. If you must go that route, monitor whole-blood troughs twice weekly for the first month. Reference: Astellas Medical Information case series M-I-C-2019-T-042.
+>
+> **Part 2:** Yes — there's an FDA-approved Prograf granules formulation specifically for pediatric use. That's what we'd recommend ordering. Your wholesaler should be able to source it.
 
-### 5. Drug Interaction — Pacerone (amiodarone) + Coumadin (warfarin)
+### 5. Drug Interaction — Pacerone (amiodarone) + Coumadin (warfarin)  *(three-part)*
 
 **Subject:** `Interaction — initiating Pacerone in patient on stable Coumadin`
 
 **Question:**
 
-> Patient is 78 years old, on Coumadin (warfarin) 5 mg daily with stable INR 2.4 over the last 6 months. Pacerone (amiodarone) 200 mg daily is being added for new-onset atrial fibrillation. PI notes warfarin interaction. What's the typical magnitude and onset of INR elevation we should expect, and does the manufacturer recommend a pre-emptive warfarin dose reduction (and by what %) or simply increased INR monitoring frequency?
+> A 78-year-old patient is on Coumadin (warfarin) 5 mg daily with a stable INR around 2.4. We're starting Pacerone (amiodarone) 200 mg daily for new-onset atrial fibrillation. Three questions:
+> 1. What's the typical magnitude of INR elevation we should expect?
+> 2. How soon after starting amiodarone do we usually see the peak effect?
+> 3. Does the manufacturer recommend a pre-emptive warfarin dose reduction, or just more frequent INR monitoring?
 
-**Sample Answer (read aloud during the test call):**
+**Sample Answer (read aloud during the test call — split per sub-question):**
 
-> Amiodarone potentiates warfarin by inhibiting CYP2C9 and CYP3A4. The expected INR rise is in the range of 30 to 50 percent, with the peak effect appearing between one and three weeks after starting amiodarone. We recommend a pre-emptive reduction of the warfarin dose by 30 to 50 percent at amiodarone initiation, and monitoring INR weekly for the first 4 to 6 weeks, then every 2 weeks until stable. Reference: Pacerone prescribing information, section 7.5.
+> **Part 1:** The expected INR rise is in the range of 30 to 50 percent above baseline. Amiodarone inhibits CYP2C9 and CYP3A4, which slows warfarin metabolism.
+>
+> **Part 2:** The peak effect typically shows up between one and three weeks after starting amiodarone — it's not immediate.
+>
+> **Part 3:** We recommend a pre-emptive reduction of the warfarin dose by 30 to 50 percent at amiodarone initiation, plus weekly INR monitoring for the first 4 to 6 weeks, then every 2 weeks until stable. Reference: Pacerone prescribing information, section 7.5.
 
-### 6. Reconstitution / Compounding — Zosyn (piperacillin-tazobactam)
+### 6. Reconstitution / Compounding — Zosyn (piperacillin-tazobactam)  *(single question)*
 
 **Subject:** `Zosyn beyond-use date in elastomeric pump for ambulatory OPAT`
 
 **Question:**
 
-> Pharmacy wants to compound Zosyn (piperacillin-tazobactam) 3.375 g in an elastomeric infusion pump for 24-hour ambulatory OPAT (outpatient parenteral antimicrobial therapy) at body-adjacent temperature (~32 °C). The official PI gives stability data for refrigerated storage but limited in-use data for elastomeric devices at warmer temperatures. Does the manufacturer have stability data supporting 24-hour BUD under these conditions?
+> Is Zosyn (piperacillin-tazobactam) 3.375 g stable in an elastomeric infusion pump for 24 hours at body-adjacent temperature, around 32 °C, for ambulatory OPAT?
 
 **Sample Answer (read aloud during the test call):**
 
-> Yes, we have stability data for that exact use case. Zosyn 3.375 grams in 100 milliliters of normal saline is stable for up to 24 hours in elastomeric pumps at body-adjacent temperatures up to 32 degrees Celsius — both potency and sterility are maintained. For runs longer than 24 hours, we'd recommend refrigerated storage between doses or switching to a continuous-infusion protocol. Reference: Pfizer stability study Z-O-S-2022-zero-one-four.
+> Yes — Zosyn 3.375 grams in 100 milliliters of normal saline is stable for up to 24 hours in elastomeric pumps at body-adjacent temperatures up to 32 degrees Celsius. Both potency and sterility are maintained. For runs longer than 24 hours, we'd recommend refrigerated storage between doses. Reference: Pfizer stability study Z-O-S-2022-014.
 
-### 7. Therapeutic Substitution — Synthroid → generic levothyroxine
+### 7. Therapeutic Substitution — Synthroid → generic levothyroxine  *(three-part)*
 
 **Subject:** `Switching from Synthroid to generic levothyroxine — NTI concern`
 
 **Question:**
 
-> Patient with Hashimoto's hypothyroidism has been stable on brand Synthroid 125 mcg daily for 8 months (TSH 1.8 mIU/L). The formulary is switching to AB-rated generic levothyroxine. Levothyroxine is widely flagged as a narrow-therapeutic-index drug. Does the manufacturer have any documented case series of clinically meaningful TSH fluctuation in patients switched from Synthroid to AB-rated generics, beyond the standard 80–125% bioequivalence range?
+> A Hashimoto's patient stable on brand Synthroid 125 mcg daily is being switched to AB-rated generic levothyroxine. Three things I'd like to confirm:
+> 1. Does the manufacturer have case data showing clinically meaningful TSH fluctuation after a brand-to-generic switch?
+> 2. If so, roughly what percentage of patients end up outside their target TSH range?
+> 3. How soon after the switch should we recheck TSH?
 
-**Sample Answer (read aloud during the test call):**
+**Sample Answer (read aloud during the test call — split per sub-question):**
 
-> While AB-rated generics meet bioequivalence standards, we do have documented cases of TSH fluctuation outside the target range after brand-to-generic switches. In a 2021 case series we sponsored, 156 stable hypothyroid patients were followed for 6 months post-switch — approximately 12 percent had TSH shifts outside their target range within 3 months. We recommend rechecking TSH 6 to 8 weeks after the switch and adjusting the levothyroxine dose if needed. For Hashimoto's patients specifically, the rate was slightly higher at about 15 percent. Reference: AbbVie Synthroid Medical Information case series S-Y-N-2021-C-S-zero-zero-eight.
+> **Part 1:** Yes — even though AB-rated generics meet bioequivalence standards, we have documented TSH fluctuation post-switch. In a 2021 case series we sponsored, 156 stable hypothyroid patients were followed for 6 months. Reference: AbbVie Synthroid case series S-Y-N-2021-C-S-008.
+>
+> **Part 2:** About 12 percent of patients had TSH shifts outside their target range within 3 months. For Hashimoto's patients specifically, the rate was slightly higher at about 15 percent.
+>
+> **Part 3:** We recommend rechecking TSH 6 to 8 weeks after the switch and adjusting the dose if needed.
 
-### 8. Adverse Event Follow-up — Lamictal + Depakote rash
+### 8. Adverse Event Follow-up — Lamictal + Depakote rash  *(three-part)*
 
 **Subject:** `Reported adverse event — patient on Lamictal and Depakote`
 
 **Question:**
 
-> Patient initiated Lamictal (lamotrigine) 14 days ago for new-onset partial seizures, also on stable Depakote (valproate). Developed a maculopapular rash on day 11 — trunk only, no mucosal involvement, no fever, no eosinophilia. PI lists rash as common and warns valproate ↑ lamotrigine levels by ~2x. Should we hold Lamictal and reassess, or is this consistent with benign rash that resolves? Any manufacturer guidance on re-titration after non-severe rash in patients on concomitant valproate?
+> A patient on day 11 of Lamictal (lamotrigine), also taking stable Depakote (valproate), developed a maculopapular rash on the trunk only — no mucosal involvement, no fever, no eosinophilia. Three questions:
+> 1. Should we hold the Lamictal, or can we keep going since the rash looks benign?
+> 2. If we hold it and the rash resolves, can we attempt re-titration?
+> 3. If we can re-titrate, what starting dose and titration speed do you recommend on concomitant valproate?
 
-**Sample Answer (read aloud during the test call):**
+**Sample Answer (read aloud during the test call — split per sub-question):**
 
-> Valproate inhibits glucuronidation and roughly doubles lamotrigine concentrations, which significantly elevates the risk of serious rash including Stevens-Johnson syndrome. Even a benign-appearing rash on concomitant valproate warrants holding Lamictal immediately. Once the rash resolves, you can attempt re-titration but at half the standard speed — starting at 12.5 milligrams every other day, increasing every two weeks, with a maximum maintenance dose of 100 milligrams per day on concomitant valproate. If the rash recurs at any point, discontinue permanently. Reference: Lamictal prescribing information section 5.1 and GSK medical information letter M-I-L-2022-L-zero-one-nine.
+> **Part 1:** Hold the Lamictal. Valproate inhibits glucuronidation and roughly doubles lamotrigine concentrations, so even a benign-looking rash on concomitant valproate carries a real risk of progressing to Stevens-Johnson syndrome. Better to err on the side of caution.
+>
+> **Part 2:** Yes, re-titration is acceptable after the rash fully resolves — provided it was non-severe with no mucosal or systemic involvement, which yours sounds like.
+>
+> **Part 3:** Start at 12.5 milligrams every other day, increase every 2 weeks, and cap the maintenance dose at 100 milligrams per day while on valproate. If the rash recurs at any point, discontinue permanently. Reference: Lamictal PI section 5.1 and GSK medical information letter M-I-L-2022-L-019.
 
 ---
 
