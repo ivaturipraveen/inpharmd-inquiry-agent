@@ -421,43 +421,6 @@ function StatTile({ label, value, sub, tone = "neutral" }: StatTileProps) {
   );
 }
 
-/* ----------------------------- pdf card ----------------------------- */
-
-interface PdfCardProps {
-  url?: string | null;
-  filename?: string | null;
-  summary?: string | null;
-}
-
-function PdfCard({ url, filename, summary }: PdfCardProps) {
-  return (
-    <article className="gm-pdf">
-      <header className="gm-pdf-head">
-        <div className="gm-pdf-icon" aria-hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <path d="M14 2v6h6" />
-          </svg>
-        </div>
-        <div className="gm-pdf-meta">
-          <div className="gm-pdf-title">{filename || "Attached document"}</div>
-          <div className="gm-pdf-sub">Manufacturer-provided PDF · AI summary below</div>
-        </div>
-        {url && (
-          <a href={url} target="_blank" rel="noreferrer" className="btn btn-primary gm-pdf-btn">
-            Open PDF
-          </a>
-        )}
-      </header>
-      {summary && (
-        <div className="gm-pdf-body">
-          <div className="gm-pdf-section-label">Summary</div>
-          <div className="gm-pdf-summary">{summary}</div>
-        </div>
-      )}
-    </article>
-  );
-}
 
 /* ----------------------------- reader ----------------------------- */
 
@@ -510,7 +473,9 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
         direction="out"
       />
 
-      {/* Incoming — manufacturer -> us */}
+      {/* Incoming — manufacturer -> us. We show three distinct blocks when a
+          PDF is attached: direct reply body, AI summary of the PDF, then the
+          PDF link at the bottom. */}
       {hasReply ? (
         <>
           <Message
@@ -523,14 +488,10 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
             body={replyBody ?? ""}
             direction="in"
             highlight
+            summary={inquiry.pdf_summary}
+            pdfUrl={inquiry.pdf_url}
+            pdfFilename={inquiry.pdf_filename}
           />
-          {(inquiry.pdf_url || inquiry.pdf_summary) && (
-            <PdfCard
-              url={inquiry.pdf_url}
-              filename={inquiry.pdf_filename}
-              summary={inquiry.pdf_summary}
-            />
-          )}
         </>
       ) : (
         <div className="gm-awaiting">
@@ -560,6 +521,9 @@ interface MessageProps {
   body: string;
   direction: "in" | "out";
   highlight?: boolean;
+  summary?: string | null;
+  pdfUrl?: string | null;
+  pdfFilename?: string | null;
 }
 
 function Message(p: MessageProps) {
@@ -579,6 +543,23 @@ function Message(p: MessageProps) {
         <div className="gm-msg-time">{p.timestamp}</div>
       </header>
       <div className="gm-msg-body">{p.body}</div>
+
+      {p.summary && (
+        <div className="gm-msg-section">
+          <div className="gm-msg-section-label">PDF Summary</div>
+          <div className="gm-msg-section-body">{p.summary}</div>
+        </div>
+      )}
+
+      {p.pdfUrl && (
+        <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="gm-msg-pdf-link">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6" />
+          </svg>
+          <span>{p.pdfFilename || "Open attached PDF"}</span>
+        </a>
+      )}
     </article>
   );
 }

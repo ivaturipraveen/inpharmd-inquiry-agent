@@ -1,4 +1,4 @@
-import { FC, useState } from "react";
+import { FC, useEffect, useState } from "react";
 import StatusBadge from "./StatusBadge";
 import type { Inquiry } from "../types";
 
@@ -17,6 +17,19 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [emailReply, setEmailReply] = useState("");
   const [callSummary, setCallSummary] = useState("");
   const [callTranscript, setCallTranscript] = useState("");
+
+  // When opened via a Slack "View transcript" deep-link (#inquiries?id=N&focus=transcript)
+  // scroll the transcript into view after the modal renders.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1] || "");
+    if (params.get("focus") !== "transcript") return;
+    const t = setTimeout(() => {
+      document
+        .getElementById("call-transcript")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [inquiry.id]);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -104,14 +117,38 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             <div className="detail-prose">{inquiry.question}</div>
           </div>
 
-          {/* Final Answer shows automatically once the agent or AI has captured one */}
-          {inquiry.final_answer && (
+          {/* Final Answer shows automatically once the agent or AI has captured one.
+              When the reply included a PDF, we surface three distinct pieces
+              top-to-bottom: the manufacturer's direct response, the AI summary
+              of the PDF, and the link to download the PDF. */}
+          {(inquiry.final_answer || inquiry.pdf_summary || inquiry.pdf_url) && (
             <div className="detail-section answer-box answer-box-prominent">
               <div className="answer-label">
                 <span className="answer-icon">✓</span>
                 Final Answer
               </div>
-              <div className="detail-prose">{inquiry.final_answer}</div>
+              {inquiry.final_answer && (
+                <div className="detail-prose">{inquiry.final_answer}</div>
+              )}
+
+              {inquiry.pdf_summary && (
+                <div className="answer-subsection">
+                  <div className="answer-sublabel">PDF Summary</div>
+                  <div className="detail-prose">{inquiry.pdf_summary}</div>
+                </div>
+              )}
+
+              {inquiry.pdf_url && (
+                <div className="answer-pdf-link">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <path d="M14 2v6h6" />
+                  </svg>
+                  <a href={inquiry.pdf_url} target="_blank" rel="noreferrer">
+                    {inquiry.pdf_filename || "Open attached PDF"}
+                  </a>
+                </div>
+              )}
             </div>
           )}
 
@@ -198,7 +235,16 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                         `scheduled ${fmtDate(inquiry.call_scheduled_for) ?? ""}`}
                     </div>
                     {inquiry.call_transcript && (
-                      <details className="transcript-toggle">
+                      <details
+                        id="call-transcript"
+                        className="transcript-toggle"
+                        open={
+                          typeof window !== "undefined" &&
+                          new URLSearchParams(
+                            window.location.hash.split("?")[1] || ""
+                          ).get("focus") === "transcript"
+                        }
+                      >
                         <summary>View full call transcript</summary>
                         <pre>{inquiry.call_transcript}</pre>
                       </details>

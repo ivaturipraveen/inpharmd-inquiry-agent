@@ -43,13 +43,16 @@ def _requester_line(name: Optional[str], email: Optional[str]) -> str:
     return name or email or "Unknown"
 
 
-def _inquiry_url(inquiry_id: int) -> Optional[str]:
-    """Deep-link to the inquiry detail in the InpharmD UI, if APP_BASE_URL is set."""
+def _inquiry_url(inquiry_id: int, *, focus: Optional[str] = None) -> Optional[str]:
+    """Deep-link to the inquiry detail in the InpharmD UI, if APP_BASE_URL is set.
+
+    focus='transcript' auto-expands and scrolls to the call transcript.
+    """
     base = (os.getenv("APP_BASE_URL") or "").rstrip("/")
     if not base:
         return None
-    # Hash route + ?id= so the SPA can open the detail panel.
-    return f"{base}/#inquiries?id={inquiry_id}"
+    suffix = f"&focus={focus}" if focus else ""
+    return f"{base}/#inquiries?id={inquiry_id}{suffix}"
 
 
 def notify_reply(
@@ -77,7 +80,10 @@ def notify_reply(
     webhook = os.getenv("SLACK_WEBHOOK_URL")
     requester = _requester_line(requester_name, requester_email)
 
-    inquiry_url = _inquiry_url(inquiry_id)
+    # Call links jump straight to the transcript; email links open the thread view.
+    inquiry_url = _inquiry_url(
+        inquiry_id, focus="transcript" if channel == "call" else None
+    )
     label = f"Inquiry #{inquiry_id} — {manufacturer}"
     title = f"<{inquiry_url}|{label}>" if inquiry_url else f"*{label}*"
 

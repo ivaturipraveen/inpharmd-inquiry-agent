@@ -2090,62 +2090,13 @@ tbody tr:last-child td {
   word-wrap: break-word;
 }
 
-.gm-pdf {
-  margin: 16px 24px 0;
-  border: 1px solid #fde6c4;
-  background: #fffbf3;
-  border-radius: var(--radius-lg);
-  padding: 14px 16px 16px;
-}
-.gm-pdf-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px dashed #fde6c4;
-}
-.gm-pdf-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid #fde6c4;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--brand-orange);
-  flex-shrink: 0;
-}
-.gm-pdf-icon svg {
-  width: 18px;
-  height: 18px;
-}
-.gm-pdf-meta {
-  flex: 1;
-  min-width: 0;
-}
-.gm-pdf-title {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: #0f172a;
-  word-break: break-all;
-}
-.gm-pdf-sub {
-  margin-top: 2px;
-  font-size: 11.5px;
-  color: var(--brand-orange-strong);
-  letter-spacing: 0.02em;
-}
-.gm-pdf-btn {
-  padding: 6px 12px;
-  font-size: 12.5px;
-  flex-shrink: 0;
-  text-decoration: none;
-}
-.gm-pdf-body {
+/* Inline summary block & PDF link inside a message card */
+.gm-msg-section {
+  margin-top: 14px;
   padding-top: 12px;
+  border-top: 1px dashed var(--gm-border-soft);
 }
-.gm-pdf-section-label {
+.gm-msg-section-label {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -2153,11 +2104,78 @@ tbody tr:last-child td {
   color: var(--brand-orange-strong);
   margin-bottom: 4px;
 }
-.gm-pdf-summary {
+.gm-msg-section-body {
   font-size: 13.5px;
   line-height: 1.65;
   color: #1e293b;
   white-space: pre-wrap;
+}
+.gm-msg-pdf-link {
+  margin-top: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #fde6c4;
+  background: #fffbf3;
+  border-radius: 8px;
+  color: var(--brand-orange-strong);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  word-break: break-all;
+}
+.gm-msg-pdf-link:hover {
+  background: #fff3e0;
+  border-color: var(--brand-orange);
+}
+.gm-msg-pdf-link svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* Sub-sections inside the prominent "Final Answer" card in InquiryDetail */
+.answer-subsection {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(245, 130, 32, 0.3);
+}
+.answer-sublabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--brand-orange-strong);
+  margin-bottom: 6px;
+}
+.answer-pdf-link {
+  margin-top: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid var(--brand-orange);
+  border-radius: 8px;
+  color: var(--brand-orange-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+.answer-pdf-link svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--brand-orange);
+}
+.answer-pdf-link a {
+  color: inherit;
+  text-decoration: none;
+  word-break: break-all;
+}
+.answer-pdf-link a:hover {
+  text-decoration: underline;
 }
 
 .gm-awaiting {

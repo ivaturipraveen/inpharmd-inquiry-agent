@@ -3,9 +3,12 @@
 These endpoints exist so the agent can report structured results back to
 us without waiting for the post-call webhook. Authentication is a shared
 secret in the `X-Agent-Secret` header (set in ElevenLabs tool config + in
-backend/.env as AGENT_TOOLS_SECRET)."""
+backend/.env as AGENT_TOOLS_SECRET). When AGENT_TOOLS_SECRET is unset,
+the endpoint accepts unauthenticated requests (a startup warning is logged
+so this isn't accidental in production)."""
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -18,7 +21,16 @@ from database import get_db
 from models import Inquiry
 from scheduler import schedule_retry_after_failure
 
+log = logging.getLogger("inquiry.agent_tools")
+
 router = APIRouter(prefix="/api/agent-tools", tags=["agent-tools"])
+
+if not os.getenv("AGENT_TOOLS_SECRET"):
+    log.warning(
+        "AGENT_TOOLS_SECRET is not set — /api/agent-tools/* endpoints are "
+        "PUBLIC. Anyone who knows the URL can submit answers. Set the env "
+        "var to re-enable shared-secret auth."
+    )
 
 
 def _check_secret(provided: Optional[str]) -> None:
