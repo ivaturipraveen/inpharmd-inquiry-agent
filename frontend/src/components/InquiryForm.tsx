@@ -45,8 +45,8 @@ const InquiryForm: FC<Props> = ({
 
   const [subject, setSubject] = useState("");
   const [question, setQuestion] = useState("");
-  const [requesterName, setRequesterName] = useState("");
-  const [requesterEmail, setRequesterEmail] = useState("");
+  const [requesterName, setRequesterName] = useState("Leah");
+  const [requesterEmail, setRequesterEmail] = useState("druginfo@inpharmd.com");
   const [fallbackHours, setFallbackHours] = useState(24);
   const [customMode, setCustomMode] = useState(false);
   const [customValue, setCustomValue] = useState(24);

@@ -53,6 +53,19 @@ export default function InquiriesPage() {
     load();
   }, [load]);
 
+  // If the hash carries ?id=NN (e.g. from a Slack deep-link), pop open that inquiry
+  // once the list is loaded.
+  useEffect(() => {
+    if (loading || inquiries.length === 0 || selected) return;
+    const qs = window.location.hash.split("?")[1];
+    if (!qs) return;
+    const params = new URLSearchParams(qs);
+    const idStr = params.get("id");
+    if (!idStr) return;
+    const target = inquiries.find((i) => i.id === Number(idStr));
+    if (target) setSelected(target);
+  }, [loading, inquiries, selected]);
+
   useEffect(() => {
     if (!success) return;
     const t = setTimeout(() => setSuccess(null), 2500);
@@ -180,7 +193,7 @@ export default function InquiriesPage() {
   return (
     <>
       <section className="page-head">
-        <h1>Inquiries</h1>
+        <h1>Manufacturer Outreach</h1>
         <p>
           Send a question to a manufacturer by email. If they don't respond
           within your fallback window, our voice agent calls them and brings

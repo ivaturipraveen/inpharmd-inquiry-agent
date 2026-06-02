@@ -186,3 +186,64 @@ def strip_signature_with_ai(reply_text: str) -> str:
 
 def is_configured() -> bool:
     return bool(os.getenv("OPENAI_API_KEY"))
+
+
+_PDF_SUMMARY_SYSTEM = (
+    "You are summarizing a manufacturer-supplied medical-information PDF for a "
+    "pharmacist. Read the attached document text and write ONE concise, clinically-"
+    "useful answer to the inquiry. Be specific: include doses, durations, stability "
+    "data, study references, or other concrete details mentioned in the document. "
+    "Do not invent anything that is not in the text. If the document does not "
+    "directly answer the question, say so and summarize what it DOES contain. "
+    "Return plain prose — no preamble like 'Sure' or 'Here is'."
+)
+
+
+def summarize_pdf(question: str, manufacturer: str, pdf_text: str) -> str:
+    """Summarize PDF body text into an answer to the inquiry. Caller handles
+    'not configured' by checking is_configured() up front."""
+    if not is_configured():
+        raise SummaryConfigError("OPENAI_API_KEY not set")
+    client = _get_client()
+    # Cap input — these PDFs can be huge, and we don't need every page to write
+    # a useful summary. ~24k chars ≈ 6k tokens, comfortable for any current model.
+    snippet = (pdf_text or "").strip()
+    if len(snippet) > 24_000:
+        snippet = snippet[:24_000] + "\n…[truncated]"
+    user = (
+        f"Inquiry sent to {manufacturer}:\n\n{question.strip()}\n\n"
+        f"PDF the manufacturer replied with:\n\n{snippet}"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": _PDF_SUMMARY_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        log.info("PDF summary produced: %d chars from %d chars", len(out), len(snippet))
+        return out
+    except Exception as e:
+        log.warning("PDF summary failed: %s", e)
+        raise
+
+
+def extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract plain text from a PDF using pypdf. Returns "" on failure."""
+    try:
+        from pypdf import PdfReader
+        from io import BytesIO
+        reader = PdfReader(BytesIO(pdf_bytes))
+        chunks = []
+        for page in reader.pages:
+            try:
+                chunks.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n\n".join(c for c in chunks if c.strip())
+    except Exception as e:
+        log.warning("PDF text extract failed: %s", e)
+        return ""

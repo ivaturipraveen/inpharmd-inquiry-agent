@@ -61,12 +61,23 @@ def get_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
     return _get_or_404(db, inquiry_id)
 
 
+DEFAULT_REQUESTER_NAME = "Leah"
+DEFAULT_REQUESTER_EMAIL = "druginfo@inpharmd.com"
+
+
 @router.post("", response_model=InquiryOut, status_code=201)
 def create_inquiry(payload: InquiryCreate, db: Session = Depends(get_db)):
     mfr = db.get(ManufacturerContact, payload.manufacturer_id)
     if not mfr:
         raise HTTPException(status_code=400, detail="Unknown manufacturer_id")
-    obj = Inquiry(**payload.model_dump(), status="draft")
+    data = payload.model_dump()
+    # Inquiries always come from the InpharmD Drug Info inbox — backfill
+    # defaults so older clients / API consumers don't have to send them.
+    if not (data.get("requester_name") or "").strip():
+        data["requester_name"] = DEFAULT_REQUESTER_NAME
+    if not (data.get("requester_email") or "").strip():
+        data["requester_email"] = DEFAULT_REQUESTER_EMAIL
+    obj = Inquiry(**data, status="draft")
     db.add(obj)
     db.commit()
     return _get_or_404(db, obj.id)

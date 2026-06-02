@@ -66,6 +66,9 @@ export interface Inquiry {
   max_retries?: number;
   next_retry_at?: string | null;
   final_answer?: string | null;
+  pdf_url?: string | null;
+  pdf_filename?: string | null;
+  pdf_summary?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   manufacturer?: ManufacturerSummary | null;

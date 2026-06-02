@@ -43,6 +43,15 @@ def _requester_line(name: Optional[str], email: Optional[str]) -> str:
     return name or email or "Unknown"
 
 
+def _inquiry_url(inquiry_id: int) -> Optional[str]:
+    """Deep-link to the inquiry detail in the InpharmD UI, if APP_BASE_URL is set."""
+    base = (os.getenv("APP_BASE_URL") or "").rstrip("/")
+    if not base:
+        return None
+    # Hash route + ?id= so the SPA can open the detail panel.
+    return f"{base}/#inquiries?id={inquiry_id}"
+
+
 def notify_reply(
     *,
     inquiry_id: int,
@@ -54,10 +63,13 @@ def notify_reply(
     requester_email: Optional[str] = None,
     sender_email: Optional[str] = None,
     channel: str = "email",
+    pdf_url: Optional[str] = None,
+    pdf_filename: Optional[str] = None,
 ) -> bool:
     """Post a manufacturer-response card to Slack. Returns True if delivered.
 
     channel: "email" for an email reply, "call" for a phone-call answer.
+    pdf_url: optional link to a manufacturer-attached PDF.
     """
     if not is_configured():
         return False
@@ -65,9 +77,9 @@ def notify_reply(
     webhook = os.getenv("SLACK_WEBHOOK_URL")
     requester = _requester_line(requester_name, requester_email)
 
-    base = (os.getenv("APP_BASE_URL") or "").rstrip("/")
+    inquiry_url = _inquiry_url(inquiry_id)
     label = f"Inquiry #{inquiry_id} — {manufacturer}"
-    title = f"<{base}|{label}>" if base else f"*{label}*"
+    title = f"<{inquiry_url}|{label}>" if inquiry_url else f"*{label}*"
 
     if channel == "call":
         header = "\U0001F4DE New response received from manufacturer (phone call)"
@@ -99,6 +111,33 @@ def notify_reply(
             "text": {"type": "mrkdwn", "text": f"*Manufacturer response*\n{_truncate(answer)}"},
         },
     ]
+
+    # Action button row: UI link (transcript for calls / thread for emails)
+    # plus a PDF button when an attachment was captured.
+    action_elements = []
+    if inquiry_url:
+        action_elements.append({
+            "type": "button",
+            "text": {
+                "type": "plain_text",
+                "text": "View transcript" if channel == "call" else "View thread",
+                "emoji": True,
+            },
+            "url": inquiry_url,
+            "style": "primary",
+        })
+    if pdf_url:
+        action_elements.append({
+            "type": "button",
+            "text": {
+                "type": "plain_text",
+                "text": f"\U0001F4CE {pdf_filename or 'Download PDF'}",
+                "emoji": True,
+            },
+            "url": pdf_url,
+        })
+    if action_elements:
+        blocks.append({"type": "actions", "elements": action_elements})
 
     if sender_email:
         blocks.append(

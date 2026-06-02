@@ -1,18 +1,20 @@
 import { FC } from "react";
 
-export type TabKey = "manufacturers" | "inquiries";
+export type TabKey = "manufacturers" | "inquiries" | "emails";
 
 interface Props {
   active: TabKey;
   onChange: (tab: TabKey) => void;
+  onLogout?: () => void;
 }
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "manufacturers", label: "Manufacturers" },
-  { key: "inquiries", label: "Inquiries" },
+  { key: "inquiries", label: "Manufacturer Outreach" },
+  { key: "emails", label: "Emails" },
 ];
 
-const Header: FC<Props> = ({ active, onChange }) => (
+const Header: FC<Props> = ({ active, onChange, onLogout }) => (
   <header className="site-header">
     <div className="site-header-inner">
       <div className="brand">
@@ -30,6 +32,16 @@ const Header: FC<Props> = ({ active, onChange }) => (
             {t.label}
           </button>
         ))}
+        {onLogout && (
+          <button
+            type="button"
+            className="tab tab-logout"
+            onClick={onLogout}
+            title="Sign out"
+          >
+            Sign out
+          </button>
+        )}
       </nav>
     </div>
   </header>

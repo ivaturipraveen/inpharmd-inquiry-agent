@@ -175,20 +175,24 @@ def _build_call_payload(
     requester_email: Optional[str] = None,
     is_test: bool = False,
 ) -> Dict[str, Any]:
+    # Configurable pharmacist transfer target. Env-driven so it can change
+    # without a redeploy. Defaults are safe placeholders.
+    transfer_name = os.getenv("TRANSFER_PHARMACIST_NAME", "Leah")
+    transfer_phone = os.getenv("TRANSFER_PHARMACIST_PHONE", "+15134906650")
+
     # Warmer, less scripted opener — the agent will continue from here naturally
     # using its system prompt. We deliberately don't list the question in the
     # opener; the agent should small-talk into it.
     if is_test:
         first_message = (
-            f"Hi, this is a test call from the InpharmD medical information line. "
-            f"I'm reaching out as if I were calling {manufacturer_name} with a "
-            f"pharmacist's question — feel free to play along."
+            f"Hi, this is Ivy from InpharmD — this is a test call. "
+            f"I'm reaching out as if I were calling {manufacturer_name} on behalf "
+            f"of one of our researchers — feel free to play along."
         )
     else:
         first_message = (
-            f"Hi there — this is the medical information line at InpharmD. "
-            f"Do you have a moment to help me with a quick clinical question from "
-            f"one of our pharmacists?"
+            f"Hello, this is Ivy from InpharmD calling on behalf of our researcher. "
+            f"Do you have a moment to help me with a quick clinical question?"
         )
 
     return {
@@ -207,6 +211,8 @@ def _build_call_payload(
                 "requester_name": requester_name or "",
                 "requester_email": requester_email or "",
                 "is_test_call": "true" if is_test else "false",
+                "transfer_name": transfer_name,
+                "transfer_phone": transfer_phone,
             },
         },
     }

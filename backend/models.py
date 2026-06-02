@@ -100,6 +100,12 @@ class Inquiry(Base):
 
     final_answer = Column(Text)
 
+    # PDF attachment that came back with an email reply.
+    # url = presigned/public link to the file in object storage (S3, R2, etc.)
+    pdf_url = Column(Text)
+    pdf_filename = Column(String(512))
+    pdf_summary = Column(Text)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

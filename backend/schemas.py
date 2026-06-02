@@ -115,6 +115,9 @@ class InquiryOut(InquiryBase):
     max_retries: int = 2
     next_retry_at: Optional[datetime] = None
     final_answer: Optional[str] = None
+    pdf_url: Optional[str] = None
+    pdf_filename: Optional[str] = None
+    pdf_summary: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     manufacturer: Optional[ManufacturerSummary] = None

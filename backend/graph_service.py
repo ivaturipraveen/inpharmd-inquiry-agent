@@ -24,6 +24,7 @@ from typing import Optional
 
 import httpx
 
+import s3_service
 import summary_service
 from database import SessionLocal
 
@@ -194,34 +195,127 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
 
     body = _get_body(msg)
     reply = clean_reply_body(body)
-    if not reply:
-        log.info("Inquiry %s reply had no extractable body; skipping", inquiry_id)
-        return None
 
     sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
     mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
 
-    obj.email_response = reply
+    # ---- PDF attachment (optional) ----
+    pdf_url: Optional[str] = None
+    pdf_filename: Optional[str] = None
+    pdf_summary: Optional[str] = None
+
+    if msg.get("hasAttachments"):
+        pdf = _fetch_pdf_attachment(token, mailbox, msg["id"])
+        if pdf:
+            log.info("Inquiry %s reply has PDF '%s' (%d bytes)",
+                     inquiry_id, pdf["name"], len(pdf["bytes"]))
+            pdf_filename = pdf["name"]
+            # Upload to S3 (no-op if not configured)
+            pdf_url = s3_service.upload_pdf(
+                pdf["bytes"], original_name=pdf["name"], inquiry_id=inquiry_id
+            )
+            # Summarize PDF body so the dashboard has an immediate human-readable
+            # answer rather than just "see attached".
+            if summary_service.is_configured():
+                pdf_text = summary_service.extract_pdf_text(pdf["bytes"])
+                if pdf_text:
+                    try:
+                        pdf_summary = summary_service.summarize_pdf(
+                            question=obj.question,
+                            manufacturer=mfr_name,
+                            pdf_text=pdf_text,
+                        )
+                    except Exception as e:
+                        log.warning("PDF summary unavailable for inquiry %s: %s", inquiry_id, e)
+
+    # If the email body is essentially empty (e.g. "Please see attached.") but a
+    # PDF was provided, fall back to the PDF summary as the final answer.
+    final_answer = reply
+    if pdf_summary and (not reply or len(reply.strip()) < 40):
+        final_answer = pdf_summary
+
+    if not final_answer and not pdf_url:
+        log.info("Inquiry %s reply had no extractable body and no PDF; skipping", inquiry_id)
+        return None
+
+    obj.email_response = reply or pdf_summary or ""
     obj.email_response_at = datetime.now(timezone.utc)
     obj.status = "email_responded"
     obj.next_retry_at = None
     obj.call_scheduled_for = None
-
-    # For email we show the manufacturer's actual words (cleaned of quoted
-    # history + signature) rather than an LLM rewrite. Call replies still get
-    # AI extraction because transcripts have far more filler.
-    obj.final_answer = reply
-    log.info("Captured Graph email reply for inquiry %s from %s", inquiry_id, sender)
+    obj.final_answer = final_answer or pdf_summary or ""
+    obj.pdf_url = pdf_url
+    obj.pdf_filename = pdf_filename
+    obj.pdf_summary = pdf_summary
+    log.info("Captured Graph email reply for inquiry %s from %s (pdf=%s)",
+             inquiry_id, sender, bool(pdf_url))
     return {
         "inquiry_id": inquiry_id,
         "manufacturer": mfr_name,
         "subject": obj.subject,
         "question": obj.question,
-        "answer": reply,
+        "answer": obj.final_answer or "(See attached PDF.)",
         "requester_name": obj.requester_name,
         "requester_email": obj.requester_email,
         "sender_email": sender,
+        "pdf_url": pdf_url,
+        "pdf_filename": pdf_filename,
     }
+
+
+def _fetch_pdf_attachment(token: str, mailbox: str, message_id: str) -> Optional[dict]:
+    """Look at the message's attachments and return the first PDF (if any).
+
+    Returns a dict {'name': str, 'bytes': bytes} or None.
+    """
+    url = (
+        f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments"
+        f"?$select=id,name,contentType,size,@odata.type"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with httpx.Client(timeout=30) as client:
+            r = client.get(url, headers=headers)
+            r.raise_for_status()
+            items = r.json().get("value", [])
+    except Exception as e:
+        log.warning("Failed to list attachments for message %s: %s", message_id, e)
+        return None
+
+    pdf_meta = None
+    for a in items:
+        # Only handle simple file attachments — skip itemAttachment/referenceAttachment.
+        if a.get("@odata.type") != "#microsoft.graph.fileAttachment":
+            continue
+        name = (a.get("name") or "").lower()
+        ctype = (a.get("contentType") or "").lower()
+        if ctype == "application/pdf" or name.endswith(".pdf"):
+            pdf_meta = a
+            break
+    if not pdf_meta:
+        return None
+
+    # Fetch full attachment incl. contentBytes
+    att_id = pdf_meta["id"]
+    full_url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments/{att_id}"
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.get(full_url, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        log.warning("Failed to fetch PDF attachment %s: %s", att_id, e)
+        return None
+
+    import base64
+    try:
+        raw = base64.b64decode(data.get("contentBytes", ""))
+    except Exception as e:
+        log.warning("Could not b64-decode attachment %s: %s", att_id, e)
+        return None
+    if not raw:
+        return None
+    return {"name": data.get("name") or "attachment.pdf", "bytes": raw}
 
 
 def _mark_read(token: str, mailbox: str, message_id: str) -> None:
@@ -256,7 +350,7 @@ def poll_once() -> int:
     url = (
         f"{_GRAPH_BASE}/users/{mailbox}/messages"
         f"?$filter=isRead eq false"
-        f"&$select=id,subject,from,body"
+        f"&$select=id,subject,from,body,hasAttachments"
         f"&$top=25"
     )
 
