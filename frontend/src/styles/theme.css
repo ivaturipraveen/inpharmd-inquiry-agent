@@ -1525,6 +1525,12 @@ tbody tr:last-child td {
    Emails — Gmail-grade three-pane layout
    ============================================================ */
 
+/* When the Emails 3-pane is on the page, drop the global 80px padding-bottom
+   so the shell can fill more of the viewport without page scroll. */
+.page:has(.gm-shell) {
+  padding-bottom: 16px;
+}
+
 /* ----- stats strip (above the 3-pane) ----- */
 .gm-stats {
   display: grid;
@@ -1602,11 +1608,12 @@ tbody tr:last-child td {
   display: grid;
   grid-template-columns: 190px 360px 1fr;
   gap: 0;
-  /* Fill the remaining viewport. Chrome above: site header (~70px) +
-     page padding-top (~28px) + stats strip (~95px) + 12px gap = ~205px.
-     We subtract 220px to leave a small bottom breathing margin. */
-  height: calc(100vh - 220px);
-  min-height: 460px;
+  /* Chrome above the shell: site header (~66px) + page padding-top (32px) +
+     stats strip (~85px) + 12px gap = ~195px. The .page wrapper normally
+     reserves 80px of padding-bottom (for other pages) — we override that
+     to 16px below, so total chrome ≈ 215px. */
+  height: calc(100vh - 215px);
+  min-height: 440px;
   background: var(--surface);
   border: 1px solid var(--gm-border);
   border-radius: var(--radius-xl);
