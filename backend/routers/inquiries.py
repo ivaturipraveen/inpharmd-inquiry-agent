@@ -375,3 +375,76 @@ def close_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
     obj.status = "closed"
     db.commit()
     return _get_or_404(db, inquiry_id)
+
+
+@router.post("/{inquiry_id}/reprocess-pdf", response_model=InquiryOut)
+def reprocess_pdf(inquiry_id: int, db: Session = Depends(get_db)):
+    """Backfill: re-search the InpharmD mailbox for the original reply that
+    matches this inquiry's subject tag, pull the first PDF attachment, upload
+    + summarize it, and patch the inquiry. Use this if the email was already
+    processed but the PDF capture failed (e.g. earlier bug, S3 misconfig)."""
+    import os, httpx, base64
+    import graph_service
+    import s3_service
+    import summary_service
+
+    obj = _get_or_404(db, inquiry_id)
+
+    if not graph_service.is_configured():
+        raise HTTPException(status_code=503, detail="Graph API not configured")
+
+    mailbox = os.getenv("GRAPH_MAILBOX") or os.getenv("EMAIL_FROM", "druginfo@inpharmd.com")
+    token = graph_service._get_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    tag = f"[InpharmD #{inquiry_id}]"
+
+    # Find any message whose subject contains the tag. Don't filter by isRead;
+    # we want messages we've already marked read too. Use params= so httpx
+    # URL-encodes the search value (# is a URL fragment separator).
+    search_url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages"
+    with httpx.Client(timeout=20) as client:
+        r = client.get(
+            search_url,
+            headers={**headers, "ConsistencyLevel": "eventual"},
+            params={
+                "$search": f'"{tag}"',
+                "$select": "id,subject,hasAttachments",
+                "$top": "10",
+            },
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Graph search failed: {r.status_code} {r.text[:200]}")
+        msgs = r.json().get("value", [])
+
+    target = next((m for m in msgs if m.get("hasAttachments")), None)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"No message with attachments found for {tag}")
+
+    pdf = graph_service._fetch_pdf_attachment(token, mailbox, target["id"])
+    if not pdf:
+        raise HTTPException(status_code=404, detail="Message has attachments but no PDF")
+
+    obj.pdf_filename = pdf["name"]
+    obj.pdf_url = s3_service.upload_pdf(
+        pdf["bytes"], original_name=pdf["name"], inquiry_id=inquiry_id
+    )
+    import logging
+    log = logging.getLogger("reprocess_pdf")
+    if summary_service.is_configured():
+        text = summary_service.extract_pdf_text(pdf["bytes"])
+        log.info("Extracted %d chars from PDF for inquiry %s", len(text or ""), inquiry_id)
+        if text:
+            try:
+                obj.pdf_summary = summary_service.summarize_pdf(
+                    question=obj.question,
+                    manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
+                    pdf_text=text,
+                )
+                log.info("Summary length: %d chars", len(obj.pdf_summary or ""))
+            except Exception as e:
+                log.exception("Summarize failed: %s", e)
+    else:
+        log.warning("summary_service.is_configured() == False — OPENAI_API_KEY missing in running process")
+
+    db.commit()
+    return _get_or_404(db, inquiry_id)

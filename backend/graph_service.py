@@ -268,9 +268,12 @@ def _fetch_pdf_attachment(token: str, mailbox: str, message_id: str) -> Optional
 
     Returns a dict {'name': str, 'bytes': bytes} or None.
     """
+    # Graph rejects `@odata.type` inside $select (metadata field, not a real
+    # property). It still comes back on every item automatically, so we just
+    # ask for the regular properties and read it from the JSON.
     url = (
         f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments"
-        f"?$select=id,name,contentType,size,@odata.type"
+        f"?$select=id,name,contentType,size"
     )
     headers = {"Authorization": f"Bearer {token}"}
     try:
