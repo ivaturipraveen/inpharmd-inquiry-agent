@@ -86,8 +86,16 @@ const ManufacturerForm: FC<Props> = ({ initial, onClose, onSubmit }) => {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        // Only close when the mousedown started on the backdrop itself —
+        // otherwise dragging from inside an input (e.g. text selection) past
+        // the edge would dismiss the dialog mid-edit.
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
         <form onSubmit={handleSubmit}>
           <div className="modal-header">
             <h2>{initial ? "Edit Manufacturer" : "Add New Manufacturer"}</h2>

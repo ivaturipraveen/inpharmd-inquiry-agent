@@ -124,8 +124,13 @@ const ChannelChooser: FC<Props> = ({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal modal-wide" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
             <div className="meta-text">Inquiry #{inquiry.id} created</div>

@@ -56,8 +56,13 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
     : "Trigger Call Now";
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal modal-wide" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
             <div className="detail-head-meta">
