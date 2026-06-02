@@ -305,7 +305,21 @@ export default function InquiriesPage() {
               </thead>
               <tbody>
                 {filtered.map((i) => (
-                  <tr key={i.id} onClick={() => setSelected(i)}>
+                  <tr
+                    key={i.id}
+                    onClick={async () => {
+                      // Optimistic open with cached row, then re-fetch the
+                      // single inquiry so any background updates (PDF summary,
+                      // call transcript, etc.) appear immediately.
+                      setSelected(i);
+                      try {
+                        const fresh = await api.inquiries.get(i.id);
+                        setSelected((cur) => (cur && cur.id === fresh.id ? fresh : cur));
+                      } catch {
+                        /* fall back to cached row */
+                      }
+                    }}
+                  >
                     <td className="cell-muted">#{i.id}</td>
                     <td>
                       <div className="cell-primary">{i.subject}</div>

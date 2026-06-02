@@ -428,11 +428,8 @@ def reprocess_pdf(inquiry_id: int, db: Session = Depends(get_db)):
     obj.pdf_url = s3_service.upload_pdf(
         pdf["bytes"], original_name=pdf["name"], inquiry_id=inquiry_id
     )
-    import logging
-    log = logging.getLogger("reprocess_pdf")
     if summary_service.is_configured():
         text = summary_service.extract_pdf_text(pdf["bytes"])
-        log.info("Extracted %d chars from PDF for inquiry %s", len(text or ""), inquiry_id)
         if text:
             try:
                 obj.pdf_summary = summary_service.summarize_pdf(
@@ -440,11 +437,8 @@ def reprocess_pdf(inquiry_id: int, db: Session = Depends(get_db)):
                     manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
                     pdf_text=text,
                 )
-                log.info("Summary length: %d chars", len(obj.pdf_summary or ""))
-            except Exception as e:
-                log.exception("Summarize failed: %s", e)
-    else:
-        log.warning("summary_service.is_configured() == False — OPENAI_API_KEY missing in running process")
+            except Exception:
+                pass
 
     db.commit()
     return _get_or_404(db, inquiry_id)
