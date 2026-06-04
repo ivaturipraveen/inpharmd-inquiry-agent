@@ -1,5 +1,7 @@
-import { FC, FormEvent, useEffect, useState } from "react";
+import { FC, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { ClientTools } from "@elevenlabs/react";
 import type { ManufacturerContact, ManufacturerContactInput } from "../types";
+import VoiceFillButton from "./VoiceFillButton";
 
 interface Props {
   initial?: ManufacturerContact | null;
@@ -33,6 +35,7 @@ const ManufacturerForm: FC<Props> = ({ initial, onClose, onSubmit }) => {
   const [form, setForm] = useState<ManufacturerContactInput>(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
     if (initial) {
@@ -63,6 +66,85 @@ const ManufacturerForm: FC<Props> = ({ initial, onClose, onSubmit }) => {
     (key: keyof ManufacturerContactInput) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
       setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  // Map of fields the voice agent may set, with light value normalization.
+  const VOICE_FIELDS: Record<
+    string,
+    { label: string; normalize?: (v: string) => string | null }
+  > = useMemo(
+    () => ({
+      manufacturer: { label: "Manufacturer name" },
+      parent_owner: { label: "Parent / owner" },
+      preferred_channel: {
+        label: "Preferred channel",
+        normalize: (v) => {
+          const lower = v.toLowerCase();
+          const match = CHANNELS.find((c) => c.toLowerCase() === lower);
+          return match ?? v;
+        },
+      },
+      official_mi_email: { label: "Official MI email" },
+      team_verified_email: { label: "Team-verified email" },
+      email_deliverable: {
+        label: "Email deliverable",
+        normalize: (v) => {
+          const m = YES_NO.find((x) => x.toLowerCase() === v.toLowerCase());
+          return m ?? v;
+        },
+      },
+      mi_web_form_url: { label: "MI web-form URL" },
+      mi_phone: { label: "MI phone" },
+      mi_phone_hours: { label: "MI phone hours" },
+      mi_fax: { label: "MI fax" },
+      hcp_portal_url: { label: "HCP portal URL" },
+      hcp_registration_required: {
+        label: "HCP registration required",
+        normalize: (v) => {
+          const m = YES_NO.find((x) => x.toLowerCase() === v.toLowerCase());
+          return m ?? v;
+        },
+      },
+      typical_response_sla: { label: "Typical SLA" },
+      last_outreach_date: { label: "Last outreach date" },
+      last_outreach_status: { label: "Last outreach status" },
+      notes: { label: "Notes" },
+    }),
+    []
+  );
+
+  const voiceTools: ClientTools = useMemo(
+    () => ({
+      set_field: async (params) => {
+        const field = String(params?.field ?? "").trim();
+        const raw = params?.value;
+        const value = raw == null ? "" : String(raw);
+        const spec = VOICE_FIELDS[field];
+        if (!spec)
+          return `Unknown field "${field}". Valid fields: ${Object.keys(
+            VOICE_FIELDS
+          ).join(", ")}.`;
+        const normalized = spec.normalize ? spec.normalize(value) : value;
+        setForm((f) => ({ ...f, [field]: normalized }));
+        return `${spec.label} set.`;
+      },
+      submit_form: async () => {
+        if (!form.manufacturer?.trim())
+          return "Cannot submit — manufacturer name is required.";
+        formRef.current?.requestSubmit();
+        return "Submitting now.";
+      },
+    }),
+    [VOICE_FIELDS, form.manufacturer]
+  );
+
+  const voiceVars = useMemo(
+    () => ({
+      form_type: "manufacturer",
+      mode: initial ? "edit" : "create",
+      current_manufacturer: form.manufacturer || "(empty)",
+    }),
+    [initial, form.manufacturer]
+  );
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -96,17 +178,23 @@ const ManufacturerForm: FC<Props> = ({ initial, onClose, onSubmit }) => {
       }}
     >
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
-        <form onSubmit={handleSubmit}>
+        <form ref={formRef} onSubmit={handleSubmit}>
           <div className="modal-header">
             <h2>{initial ? "Edit Manufacturer" : "Add New Manufacturer"}</h2>
-            <button
-              type="button"
-              className="modal-close"
-              onClick={onClose}
-              aria-label="Close"
-            >
-              ×
-            </button>
+            <div className="modal-header-actions">
+              <VoiceFillButton
+                clientTools={voiceTools}
+                dynamicVariables={voiceVars}
+              />
+              <button
+                type="button"
+                className="modal-close"
+                onClick={onClose}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
           </div>
 
           <div className="modal-body">

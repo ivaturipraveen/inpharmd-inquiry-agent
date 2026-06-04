@@ -1,7 +1,14 @@
 import { FC, FormEvent, useState } from "react";
+import { api, session } from "../api";
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  display_name?: string | null;
+}
 
 interface Props {
-  onLogin: (user: { email: string }) => void;
+  onLogin: (user: AuthUser) => void;
 }
 
 const LoginPage: FC<Props> = ({ onLogin }) => {
@@ -13,13 +20,31 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (!email.trim() || !password) {
+      setError("Email and password are required.");
+      return;
+    }
     setSubmitting(true);
     try {
-      // TODO: replace with the real /api/auth/login endpoint when provided.
-      // For now: clicking Sign in always lets you in (no validation).
-      onLogin({ email: email.trim() || "guest@inpharmd.local" });
+      const res = await api.auth.login(email.trim(), password);
+      // Stash the session token so subsequent API calls auto-attach the header.
+      session.set(res.session_token);
+      onLogin({
+        id: res.user.id,
+        email: res.user.email,
+        display_name: res.user.display_name,
+      });
     } catch (err: any) {
-      setError(err?.message ?? "Login failed.");
+      // Backend already maps upstream 401/422 to "Invalid email or password."
+      const msg = err?.message ?? "Login failed.";
+      // Strip the leading "401 Unauthorized: " prefix the generic request() adds.
+      const clean = msg.replace(/^\d{3}\s+[^:]+:\s*/, "");
+      try {
+        const parsed = JSON.parse(clean);
+        setError(parsed.detail ?? clean);
+      } catch {
+        setError(clean);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -34,7 +59,7 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
         </div>
         <h1 className="auth-title">Sign in</h1>
         <p className="auth-tagline">
-          Welcome back. Sign in to manage manufacturer inquiries.
+          Sign in with your InpharmD credentials.
         </p>
 
         {error && <div className="error-banner">{error}</div>}
@@ -45,7 +70,7 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
             <input
               type="email"
               autoComplete="email"
-              placeholder="guest@inpharmd.ai"
+              placeholder="you@inpharmd.ai"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={submitting}

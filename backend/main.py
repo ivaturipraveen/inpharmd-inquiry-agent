@@ -8,7 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import scheduler
 from database import Base, engine
-from routers import agent_tools, email_inbound, inquiries, manufacturers, webhooks
+from routers import (
+    agent_tools,
+    auth,
+    email_inbound,
+    external_inquiries,
+    inquiries,
+    manufacturers,
+    voice,
+    webhooks,
+)
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -23,6 +32,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Expose cache + upstream-debug headers so the browser can show them.
+    expose_headers=["X-Cache", "X-Cache-Age", "X-Upstream-Error"],
 )
 
 
@@ -35,6 +46,8 @@ def _ensure_columns():
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pdf_url TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pdf_filename VARCHAR(512)",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pdf_summary TEXT",
+        # users table: handled by Base.metadata.create_all, but add columns
+        # here when the table grows in future iterations.
     ]
     with engine.begin() as conn:
         for sql in statements:
@@ -66,3 +79,6 @@ app.include_router(inquiries.router)
 app.include_router(webhooks.router)
 app.include_router(agent_tools.router)
 app.include_router(email_inbound.router)
+app.include_router(voice.router)
+app.include_router(auth.router)
+app.include_router(external_inquiries.router)

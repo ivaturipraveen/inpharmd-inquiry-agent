@@ -97,6 +97,7 @@ Each example also includes a **Sample Answer** you can read aloud when the voice
 **Question:**
 
 > A 78-year-old patient is on Coumadin (warfarin) 5 mg daily with a stable INR around 2.4. We're starting Pacerone (amiodarone) 200 mg daily for new-onset atrial fibrillation. Three questions:
+>
 > 1. What's the typical magnitude of INR elevation we should expect?
 > 2. How soon after starting amiodarone do we usually see the peak effect?
 > 3. Does the manufacturer recommend a pre-emptive warfarin dose reduction, or just more frequent INR monitoring?
@@ -128,6 +129,7 @@ Each example also includes a **Sample Answer** you can read aloud when the voice
 **Question:**
 
 > A Hashimoto's patient stable on brand Synthroid 125 mcg daily is being switched to AB-rated generic levothyroxine. Three things I'd like to confirm:
+>
 > 1. Does the manufacturer have case data showing clinically meaningful TSH fluctuation after a brand-to-generic switch?
 > 2. If so, roughly what percentage of patients end up outside their target TSH range?
 > 3. How soon after the switch should we recheck TSH?
@@ -147,6 +149,7 @@ Each example also includes a **Sample Answer** you can read aloud when the voice
 **Question:**
 
 > A patient on day 11 of Lamictal (lamotrigine), also taking stable Depakote (valproate), developed a maculopapular rash on the trunk only — no mucosal involvement, no fever, no eosinophilia. Three questions:
+>
 > 1. Should we hold the Lamictal, or can we keep going since the rash looks benign?
 > 2. If we hold it and the rash resolves, can we attempt re-titration?
 > 3. If we can re-titrate, what starting dose and titration speed do you recommend on concomitant valproate?

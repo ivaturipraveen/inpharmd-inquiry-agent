@@ -112,3 +112,33 @@ class Inquiry(Base):
     )
 
     manufacturer = relationship("ManufacturerContact", back_populates="inquiries")
+
+
+class User(Base):
+    """Local mirror of an authenticated InpharmD user.
+
+    We never expose the upstream `access_token` to the browser. Instead we
+    mint our own `session_token`, store both, and proxy staging API calls
+    server-side keyed by the session token."""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), nullable=False, index=True)
+
+    # Random opaque token sent to the browser as X-Session-Token.
+    session_token = Column(String(64), nullable=False, unique=True, index=True)
+
+    # The InpharmD platform access_token returned by /v2/login. Never
+    # leaves the server. Re-fetched on every login.
+    staging_token = Column(Text, nullable=False)
+
+    # Whatever the staging /v2/login response carries about the user. We
+    # store the id + a JSON blob for display so we don't refetch on every
+    # request.
+    staging_user_id = Column(String(64))
+    display_name = Column(String(255))
+    profile_json = Column(Text)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_login_at = Column(DateTime(timezone=True), server_default=func.now())

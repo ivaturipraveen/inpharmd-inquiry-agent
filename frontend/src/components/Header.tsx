@@ -1,6 +1,10 @@
 import { FC } from "react";
 
-export type TabKey = "manufacturers" | "inquiries" | "emails";
+export type TabKey =
+  | "manufacturers"
+  | "inquiries"
+  | "platform-inquiries"
+  | "emails";
 
 interface Props {
   active: TabKey;
@@ -11,6 +15,7 @@ interface Props {
 const TABS: { key: TabKey; label: string }[] = [
   { key: "manufacturers", label: "Manufacturers" },
   { key: "inquiries", label: "Manufacturer Outreach" },
+  { key: "platform-inquiries", label: "InpharmD Inquiries" },
   { key: "emails", label: "Emails" },
 ];
 
