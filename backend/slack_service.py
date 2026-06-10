@@ -68,6 +68,7 @@ def notify_reply(
     channel: str = "email",
     pdf_url: Optional[str] = None,
     pdf_filename: Optional[str] = None,
+    pdf_summary: Optional[str] = None,
 ) -> bool:
     """Post a manufacturer-response card to Slack. Returns True if delivered.
 
@@ -117,6 +118,17 @@ def notify_reply(
             "text": {"type": "mrkdwn", "text": f"*Manufacturer response*\n{_truncate(answer)}"},
         },
     ]
+
+    # PDF summary, when distinct from the reply text, goes in its own block so
+    # readers can see what the attachment actually says without opening it.
+    if pdf_summary and pdf_summary.strip() and pdf_summary.strip() != (answer or "").strip():
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*PDF summary*\n{_truncate(pdf_summary)}",
+            },
+        })
 
     # Action button row: UI link (transcript for calls / thread for emails)
     # plus a PDF button when an attachment was captured.

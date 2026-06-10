@@ -230,11 +230,11 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
                     except Exception as e:
                         log.warning("PDF summary unavailable for inquiry %s: %s", inquiry_id, e)
 
-    # If the email body is essentially empty (e.g. "Please see attached.") but a
-    # PDF was provided, fall back to the PDF summary as the final answer.
-    final_answer = reply
-    if pdf_summary and (not reply or len(reply.strip()) < 40):
-        final_answer = pdf_summary
+    # Keep the rep's actual reply text as the primary answer — even if it's
+    # short. The PDF summary is supplemental context, not a replacement.
+    # Only fall back to the PDF summary when there's literally no reply body
+    # (e.g. blank email with only an attachment).
+    final_answer = reply or pdf_summary or ""
 
     if not final_answer and not pdf_url:
         log.info("Inquiry %s reply had no extractable body and no PDF; skipping", inquiry_id)
@@ -245,18 +245,21 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     obj.status = "email_responded"
     obj.next_retry_at = None
     obj.call_scheduled_for = None
-    obj.final_answer = final_answer or pdf_summary or ""
+    obj.final_answer = final_answer
     obj.pdf_url = pdf_url
     obj.pdf_filename = pdf_filename
     obj.pdf_summary = pdf_summary
-    log.info("Captured Graph email reply for inquiry %s from %s (pdf=%s)",
-             inquiry_id, sender, bool(pdf_url))
+    log.info(
+        "Captured Graph email reply for inquiry %s from %s (reply=%d chars, pdf=%s)",
+        inquiry_id, sender, len(reply or ""), bool(pdf_url),
+    )
     return {
         "inquiry_id": inquiry_id,
         "manufacturer": mfr_name,
         "subject": obj.subject,
         "question": obj.question,
         "answer": obj.final_answer or "(See attached PDF.)",
+        "pdf_summary": pdf_summary,
         "requester_name": obj.requester_name,
         "requester_email": obj.requester_email,
         "sender_email": sender,
