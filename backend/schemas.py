@@ -70,6 +70,10 @@ class InquiryBase(BaseModel):
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
     fallback_after_hours: int = 24
+    # Set when this inquiry was forwarded from an InpharmD platform inquiry.
+    # We POST the manufacturer's response back to the legacy endpoint using
+    # this uuid once a final answer is captured.
+    source_inquiry_uuid: Optional[str] = None
 
 
 class InquiryCreate(InquiryBase):
@@ -118,6 +122,7 @@ class InquiryOut(InquiryBase):
     pdf_url: Optional[str] = None
     pdf_filename: Optional[str] = None
     pdf_summary: Optional[str] = None
+    legacy_response_posted_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     manufacturer: Optional[ManufacturerSummary] = None

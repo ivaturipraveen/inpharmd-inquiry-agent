@@ -24,9 +24,11 @@ from typing import Optional
 
 import httpx
 
+import legacy_response_service
 import s3_service
 import summary_service
 from database import SessionLocal
+from models import Inquiry
 
 log = logging.getLogger("inquiry.graph")
 
@@ -382,6 +384,16 @@ def poll_once() -> int:
                 db.commit()
                 updated += 1
                 _mark_read(token, mailbox, msg["id"])
+                # Forward to legacy if this inquiry came from InpharmD.
+                try:
+                    obj = db.get(Inquiry, changed.get("inquiry_id"))
+                    if obj is not None:
+                        legacy_response_service.maybe_post_for_inquiry(db, obj)
+                except Exception:
+                    log.exception(
+                        "Legacy POST after Graph poll failed for inquiry %s",
+                        changed.get("inquiry_id"),
+                    )
                 try:
                     import slack_service
                     if slack_service.is_configured():

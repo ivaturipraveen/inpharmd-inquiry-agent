@@ -20,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Form, Request, Response
 
+import legacy_response_service
 import summary_service
 from database import SessionLocal
 
@@ -127,6 +128,9 @@ async def sendgrid_inbound(request: Request) -> Response:
         obj.final_answer = final
         db.commit()
         log.info("Stored email reply for inquiry %s from %s", inquiry_id, sender)
+
+        # If this inquiry was forwarded from InpharmD, POST the reply back.
+        legacy_response_service.maybe_post_for_inquiry(db, obj)
 
     except Exception:
         log.exception("Failed to process inbound email for inquiry %s", inquiry_id)

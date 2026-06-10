@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 import call_service
 import email_service
+import legacy_response_service
 import summary_service
 from database import get_db
 from models import Inquiry, ManufacturerContact
@@ -162,6 +163,7 @@ def record_email_response(
     obj.email_response_at = _now()
     obj.final_answer = payload.response
     db.commit()
+    legacy_response_service.maybe_post_for_inquiry(db, obj)
     return _get_or_404(db, inquiry_id)
 
 
@@ -333,6 +335,7 @@ def extract_answer(inquiry_id: int, db: Session = Depends(get_db)):
     obj.call_summary = extracted
     obj.final_answer = extracted
     db.commit()
+    legacy_response_service.maybe_post_for_inquiry(db, obj)
     return _get_or_404(db, inquiry_id)
 
 
@@ -366,6 +369,7 @@ def record_call_result(
         obj.call_summary = payload.summary
         obj.final_answer = payload.summary
     db.commit()
+    legacy_response_service.maybe_post_for_inquiry(db, obj)
     return _get_or_404(db, inquiry_id)
 
 

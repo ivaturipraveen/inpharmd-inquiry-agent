@@ -14,6 +14,12 @@ import VoiceFillButton from "./VoiceFillButton";
 interface Props {
   manufacturers: ManufacturerContact[];
   defaultManufacturerId?: number;
+  defaultSubject?: string;
+  defaultQuestion?: string;
+  // Optional banner shown at the top of the form — used when this form is
+  // launched from a context like "Contact manufacturer about InpharmD #1234"
+  // so the user has a clear visual cue about what they're forwarding.
+  contextNote?: string;
   onClose: () => void;
   onSubmit: (data: InquiryInput) => Promise<void>;
 }
@@ -33,6 +39,9 @@ const MAX_RESULTS = 50;
 const InquiryForm: FC<Props> = ({
   manufacturers,
   defaultManufacturerId,
+  defaultSubject,
+  defaultQuestion,
+  contextNote,
   onClose,
   onSubmit,
 }) => {
@@ -45,8 +54,8 @@ const InquiryForm: FC<Props> = ({
   const mfrWrapRef = useRef<HTMLDivElement | null>(null);
   const mfrInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [subject, setSubject] = useState("");
-  const [question, setQuestion] = useState("");
+  const [subject, setSubject] = useState(defaultSubject ?? "");
+  const [question, setQuestion] = useState(defaultQuestion ?? "");
   const [requesterName, setRequesterName] = useState("Leah");
   const [requesterEmail, setRequesterEmail] = useState("druginfo@inpharmd.com");
   const [fallbackHours, setFallbackHours] = useState(24);
@@ -290,6 +299,12 @@ const InquiryForm: FC<Props> = ({
           </div>
 
           <div className="modal-body">
+            {contextNote && (
+              <div className="context-banner">
+                <span className="context-banner-icon" aria-hidden>↪</span>
+                <span>{contextNote}</span>
+              </div>
+            )}
             {error && <div className="error-banner">{error}</div>}
 
             <div className="form-grid">

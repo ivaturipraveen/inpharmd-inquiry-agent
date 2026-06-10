@@ -953,7 +953,7 @@ pre.raw-json {
    below the point of legibility. The outer .table-scroll already gives
    us horizontal scroll on narrow viewports. */
 .ext-table {
-  min-width: 1100px;
+  min-width: 1150px;
   table-layout: fixed;
 }
 .ext-table th, .ext-table td {
@@ -972,6 +972,15 @@ pre.raw-json {
 .ext-table .col-turnaround { width: 120px; }
 .ext-table .col-docs       { width: 50px; }
 .ext-table .col-age        { width: 100px; }
+.ext-table .col-actions    { width: 52px; }
+
+/* Row-action cell needs overflow:visible so the menu popover isn't clipped
+   by the table's own overflow:hidden on td. */
+.ext-table td.cell-actions {
+  overflow: visible;
+  text-align: center;
+  padding: 6px 8px;
+}
 
 .ext-nowrap { white-space: nowrap; }
 
@@ -2266,6 +2275,11 @@ pre.raw-json {
   border-right: 1px solid var(--gm-border);
   background: var(--surface);
   min-width: 0;
+  /* As a grid child, this MUST be allowed to shrink below its content size,
+     otherwise the inner .gm-list (flex:1 + overflow-y:auto) can't bound
+     itself and the whole page scrolls instead of just the list. */
+  min-height: 0;
+  overflow: hidden;
 }
 .gm-toolbar {
   display: flex;
@@ -2341,6 +2355,7 @@ pre.raw-json {
 
 .gm-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 .gm-row {
@@ -2500,6 +2515,10 @@ pre.raw-json {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* Same reason as .gm-list-pane — grid child must shrink below its content
+     for overflow-y:auto to actually scroll within the pane instead of
+     pushing the page. */
+  min-height: 0;
 }
 .gm-thread {
   padding: 0;
@@ -2759,13 +2778,50 @@ pre.raw-json {
 }
 @media (max-width: 820px) {
   .gm-shell {
+    /* Stack vertically but keep an overall bounded height so each pane can
+       still scroll on its own — otherwise the whole page scrolls and the
+       reader stretches to fit a long email. */
     grid-template-columns: 1fr;
-    height: auto;
-    min-height: unset;
+    grid-template-rows: 45vh 1fr;
+    height: calc(100vh - 215px);
+    min-height: 520px;
   }
   .gm-rail { display: none; }
-  .gm-list-pane { border-right: none; min-height: 50vh; }
-  .gm-reader { border-top: 1px solid var(--gm-border); }
+  .gm-list-pane { border-right: none; min-height: 0; }
+  .gm-reader { border-top: 1px solid var(--gm-border); min-height: 0; }
 }
 
+/* ---------- Context banner inside InquiryForm (used when forwarding) ---------- */
+.context-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #3730a3;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.context-banner-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* Floating toast version of success-banner — anchored bottom-right */
+.toast-banner.success-banner {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  margin: 0;
+  z-index: 60;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  animation: toast-in 0.18s ease-out;
+}
+@keyframes toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
 

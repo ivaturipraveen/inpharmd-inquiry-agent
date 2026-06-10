@@ -106,6 +106,13 @@ class Inquiry(Base):
     pdf_filename = Column(String(512))
     pdf_summary = Column(Text)
 
+    # When this inquiry was forwarded FROM the InpharmD platform (via the
+    # "Contact manufacturer" action on the Inpharmd Inquiries tab), we store
+    # the original staging-side UUID here so we can POST the manufacturer's
+    # response back to the legacy /api/legacy/manufacturing_response endpoint.
+    source_inquiry_uuid = Column(String(128), index=True)
+    legacy_response_posted_at = Column(DateTime(timezone=True))
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

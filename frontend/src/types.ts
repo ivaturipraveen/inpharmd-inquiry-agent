@@ -81,4 +81,8 @@ export interface InquiryInput {
   requester_name?: string | null;
   requester_email?: string | null;
   fallback_after_hours: number;
+  // When forwarded from the InpharmD Inquiries tab, the original platform
+  // UUID — used to POST the response back to the legacy endpoint once a
+  // manufacturer answers (by email or voice).
+  source_inquiry_uuid?: string | null;
 }

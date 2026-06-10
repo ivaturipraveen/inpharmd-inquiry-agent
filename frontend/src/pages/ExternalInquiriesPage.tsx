@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiMeta } from "../api";
+import InquiryForm from "../components/InquiryForm";
+import ChannelChooser from "../components/ChannelChooser";
+import type { Inquiry, InquiryInput, ManufacturerContact } from "../types";
 
 // Staging returns JSON:API with hyphenated attribute keys:
 //   {data: [{id, type, attributes: {question, status, "submitter-email",
@@ -166,6 +169,18 @@ export default function ExternalInquiriesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
+  // Row-action menu + "Contact manufacturer" flow.
+  // We reuse the same InquiryForm that powers Manufacturer Outreach — just
+  // pre-filled with subject/question from the InpharmD inquiry. After the
+  // user picks a manufacturer and submits, an internal inquiry is created
+  // and the ChannelChooser opens (same as the Outreach tab).
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
+  const [forwardRow, setForwardRow] = useState<Json | null>(null);
+  const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
+  const [actionBanner, setActionBanner] = useState<string | null>(null);
+  const menuWrapRef = useRef<HTMLDivElement | null>(null);
+
   const load = useCallback(async (forceFresh = false) => {
     setLoading(true);
     setError(null);
@@ -184,6 +199,58 @@ export default function ExternalInquiriesPage() {
   useEffect(() => {
     load(false);
   }, [load]);
+
+  // Pull the manufacturer list once so the "Contact manufacturer" form has
+  // the same searchable picker as the Outreach tab. Non-blocking — if this
+  // 500s the page still renders, the action menu just can't be used.
+  useEffect(() => {
+    api.manufacturers
+      .list()
+      .then(setManufacturers)
+      .catch(() => {
+        /* leave empty — InquiryForm will show "Search 0 manufacturers…" */
+      });
+  }, []);
+
+  // Close the row menu when clicking outside it.
+  useEffect(() => {
+    if (!openMenuId) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!menuWrapRef.current) return;
+      if (!menuWrapRef.current.contains(e.target as Node)) setOpenMenuId(null);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [openMenuId]);
+
+  // Auto-hide the success banner after a few seconds.
+  useEffect(() => {
+    if (!actionBanner) return;
+    const t = setTimeout(() => setActionBanner(null), 3500);
+    return () => clearTimeout(t);
+  }, [actionBanner]);
+
+  const startContactManufacturer = (row: Json) => {
+    setOpenMenuId(null);
+    setForwardRow(row);
+  };
+
+  const handleCreateFromExternal = async (data: InquiryInput) => {
+    // Stamp the platform UUID so the backend can POST the eventual
+    // manufacturer reply back to /api/legacy/manufacturing_response.
+    const uuid = forwardRow
+      ? String(pick(forwardRow, "uuid", "inquiry_uuid") ?? "").trim()
+      : "";
+    const payload: InquiryInput = uuid
+      ? { ...data, source_inquiry_uuid: uuid }
+      : data;
+    const created = await api.inquiries.create(payload);
+    setActionBanner(
+      `Inquiry #${created.id} created — choose how to reach the manufacturer.`,
+    );
+    setForwardRow(null);
+    setPendingChoice(created);
+  };
 
   // Tick once per minute so the "loaded N min ago" label stays current
   // without forcing a re-fetch.
@@ -522,6 +589,7 @@ export default function ExternalInquiriesPage() {
                 <col className="col-turnaround" />
                 <col className="col-docs" />
                 <col className="col-age" />
+                <col className="col-actions" />
               </colgroup>
               <thead>
                 <tr>
@@ -535,6 +603,7 @@ export default function ExternalInquiriesPage() {
                     📎
                   </th>
                   <th>Age</th>
+                  <th className="th-center" aria-label="Actions"></th>
                 </tr>
               </thead>
               <tbody>
@@ -598,6 +667,56 @@ export default function ExternalInquiriesPage() {
                       <td className="cell-muted ext-nowrap" title={fmtDateTime(created)}>
                         {fmtRelative(created)}
                       </td>
+                      <td
+                        className="cell-actions"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div
+                          className="row-menu"
+                          ref={openMenuId === String(id) + "-" + idx ? menuWrapRef : undefined}
+                        >
+                          <button
+                            type="button"
+                            className={`menu-trigger ${
+                              openMenuId === String(id) + "-" + idx ? "menu-trigger-open" : ""
+                            }`}
+                            aria-label="Row actions"
+                            title="Actions"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const key = String(id) + "-" + idx;
+                              setOpenMenuId(openMenuId === key ? null : key);
+                            }}
+                          >
+                            <svg viewBox="0 0 20 20" fill="currentColor">
+                              <circle cx="10" cy="4" r="1.6" />
+                              <circle cx="10" cy="10" r="1.6" />
+                              <circle cx="10" cy="16" r="1.6" />
+                            </svg>
+                          </button>
+                          {openMenuId === String(id) + "-" + idx && (
+                            <div className="menu-popover" role="menu">
+                              <button
+                                type="button"
+                                className="menu-item"
+                                onClick={() => startContactManufacturer(i)}
+                              >
+                                <svg
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M3 11l18-8-8 18-2-8-8-2z" />
+                                </svg>
+                                Contact manufacturer
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -616,8 +735,57 @@ export default function ExternalInquiriesPage() {
           onClose={closeModal}
         />
       )}
+
+      {forwardRow && (
+        <InquiryForm
+          manufacturers={manufacturers}
+          defaultSubject={deriveQuestionText(forwardRow)}
+          defaultQuestion={deriveQuestionText(forwardRow)}
+          contextNote={`Forwarding InpharmD inquiry #${String(pick(forwardRow, "id") ?? "?")} — pick a manufacturer and submit.`}
+          onClose={() => setForwardRow(null)}
+          onSubmit={handleCreateFromExternal}
+        />
+      )}
+
+      {pendingChoice && (
+        <ChannelChooser
+          inquiry={pendingChoice}
+          onClose={() => setPendingChoice(null)}
+          onSendEmail={async () => {
+            try {
+              await api.inquiries.sendEmail(pendingChoice.id);
+              setActionBanner(
+                `Email queued for ${pendingChoice.manufacturer?.manufacturer ?? "manufacturer"}.`,
+              );
+            } catch (e: any) {
+              setActionBanner(`Failed to send email: ${e?.message ?? "unknown"}`);
+            }
+            setPendingChoice(null);
+          }}
+          onCallTriggered={() => {
+            setActionBanner("Call placed — the agent is dialing now.");
+            setPendingChoice(null);
+          }}
+          onTestCallTriggered={(phone) => {
+            setActionBanner(`Test call dialing ${phone}.`);
+          }}
+        />
+      )}
+
+      {actionBanner && (
+        <div className="success-banner toast-banner" role="status">
+          {actionBanner}
+        </div>
+      )}
     </>
   );
+}
+
+// Both subject and question are just the raw staging question — no prefix,
+// no footer, no category line. The user wanted parity with the Outreach
+// flow: same form, same field semantics, no extra metadata.
+function deriveQuestionText(row: Json): string {
+  return String(pick(row, "question") ?? pick(row, "title") ?? "").trim();
 }
 
 // ───────────────────────── Cache badge ─────────────────────────

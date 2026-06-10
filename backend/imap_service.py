@@ -25,6 +25,7 @@ from email.header import decode_header, make_header
 from email.message import Message
 from typing import Optional
 
+import legacy_response_service
 import summary_service
 from database import SessionLocal
 from models import Inquiry
@@ -222,6 +223,16 @@ def poll_once() -> int:
                 if matched is not None:
                     db.commit()
                     updated += 1
+                    # Forward to legacy if this inquiry came from InpharmD.
+                    try:
+                        obj = db.get(Inquiry, matched)
+                        if obj is not None:
+                            legacy_response_service.maybe_post_for_inquiry(db, obj)
+                    except Exception:
+                        log.exception(
+                            "Legacy POST after IMAP poll failed for inquiry %s",
+                            matched,
+                        )
                     # Mark as read so we don't reprocess it next tick.
                     conn.store(mid, "+FLAGS", "\\Seen")
                 # Unmatched messages are left unseen for a human to handle.

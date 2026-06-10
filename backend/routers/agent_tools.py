@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
+import legacy_response_service
 from database import get_db
 from models import Inquiry
 from scheduler import schedule_retry_after_failure
@@ -125,6 +126,11 @@ def submit_answer(
             schedule_retry_after_failure(db, obj, delay_minutes=2)
 
     db.commit()
+
+    # Forward to legacy if this inquiry came from InpharmD (no-op otherwise).
+    if payload.outcome in ("answered", "follow_up_via_email"):
+        legacy_response_service.maybe_post_for_inquiry(db, obj)
+
     return {
         "success": True,
         "inquiry_id": obj.id,

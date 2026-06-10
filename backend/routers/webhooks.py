@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
 
+import legacy_response_service
 import summary_service
 from database import get_db
 from models import Inquiry
@@ -134,6 +135,9 @@ async def elevenlabs_post_call(
             pass
 
     db.commit()
+
+    # Forward to legacy if this inquiry came from InpharmD.
+    legacy_response_service.maybe_post_for_inquiry(db, obj)
 
     # Post to Slack when the call produced a real answer (mirror of the email path).
     # Denylist the outcomes that are NOT a real manufacturer response; everything
