@@ -22,6 +22,9 @@ log = logging.getLogger("inquiry.slack")
 
 # Slack hard-limits a single text object to 3000 chars; stay under it.
 _MAX_TEXT = 2900
+# Slack hard-limits plain_text inside a button to 75 chars — overshooting
+# returns 400 invalid_blocks for the whole message.
+_MAX_BUTTON_LABEL = 70
 
 
 def is_configured() -> bool:
@@ -145,11 +148,22 @@ def notify_reply(
             "style": "primary",
         })
     if pdf_url:
+        raw_label = f"\U0001F4CE {pdf_filename or 'Download PDF'}"
+        # Slack rejects the entire message with `invalid_blocks` when a
+        # plain_text button label exceeds 75 chars. Truncate from the FRONT
+        # of the filename (keeping the extension at the tail) so the user
+        # can still tell what kind of file it is.
+        if len(raw_label) > _MAX_BUTTON_LABEL:
+            head, _, ext = (pdf_filename or "").rpartition(".")
+            ext_tail = f".{ext}" if ext else ""
+            keep = _MAX_BUTTON_LABEL - len(ext_tail) - 4  # 4 = "📎 …"
+            short_name = (head or "").strip("_")[:keep].rstrip("_-. ") + "…"
+            raw_label = f"\U0001F4CE {short_name}{ext_tail}"
         action_elements.append({
             "type": "button",
             "text": {
                 "type": "plain_text",
-                "text": f"\U0001F4CE {pdf_filename or 'Download PDF'}",
+                "text": raw_label,
                 "emoji": True,
             },
             "url": pdf_url,
