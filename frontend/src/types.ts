@@ -72,6 +72,8 @@ export interface Inquiry {
   created_at?: string | null;
   updated_at?: string | null;
   manufacturer?: ManufacturerSummary | null;
+  // Set when forwarded from an InpharmD platform inquiry (MUE Excel grouping).
+  source_inquiry_uuid?: string | null;
 }
 
 export interface InquiryInput {
