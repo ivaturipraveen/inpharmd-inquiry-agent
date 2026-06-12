@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import InquiryForm from "../components/InquiryForm";
 import InquiryDetail from "../components/InquiryDetail";
@@ -111,6 +111,80 @@ export default function InquiriesPage() {
       return true;
     });
   }, [inquiries, statusFilter, search]);
+
+  // Group inquiries forwarded from the same MUE Excel together. The Outreach
+  // tab shows ONE collapsible "MUE" row per source_inquiry_uuid (with the N
+  // manufacturer children nested inside), and standalone single-manufacturer
+  // inquiries as ordinary rows.
+  type Row =
+    | { kind: "single"; inquiry: Inquiry }
+    | { kind: "group"; uuid: string; children: Inquiry[] };
+
+  const rows: Row[] = useMemo(() => {
+    const groups = new Map<string, Inquiry[]>();
+    const singles: Inquiry[] = [];
+    for (const i of filtered) {
+      const uuid = (i.source_inquiry_uuid ?? "").trim();
+      if (!uuid) {
+        singles.push(i);
+        continue;
+      }
+      const existing = groups.get(uuid);
+      if (existing) existing.push(i);
+      else groups.set(uuid, [i]);
+    }
+    const out: Row[] = [];
+    // Groups with more than one child first (sorted by newest first child).
+    const groupRows: Row[] = [];
+    for (const [uuid, children] of groups) {
+      if (children.length === 1) {
+        singles.push(children[0]);
+      } else {
+        // newest first inside the group
+        children.sort((a, b) =>
+          (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+        );
+        groupRows.push({ kind: "group", uuid, children });
+      }
+    }
+    groupRows.sort((a, b) => {
+      if (a.kind !== "group" || b.kind !== "group") return 0;
+      const ax = a.children[0]?.created_at ?? "";
+      const bx = b.children[0]?.created_at ?? "";
+      return bx.localeCompare(ax);
+    });
+    out.push(...groupRows);
+
+    // Singles, newest first.
+    singles.sort((a, b) =>
+      (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+    );
+    for (const s of singles) out.push({ kind: "single", inquiry: s });
+    return out;
+  }, [filtered]);
+
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (uuid: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(uuid)) next.delete(uuid);
+      else next.add(uuid);
+      return next;
+    });
+  };
+  // Auto-expand groups by default the first time they appear.
+  useEffect(() => {
+    const newSet = new Set(expandedGroups);
+    let changed = false;
+    for (const r of rows) {
+      if (r.kind === "group" && !newSet.has(r.uuid)) {
+        newSet.add(r.uuid);
+        changed = true;
+      }
+    }
+    if (changed) setExpandedGroups(newSet);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.length]);
 
   const stats = useMemo(() => {
     const counts = inquiries.reduce<Record<string, number>>((acc, i) => {
@@ -295,12 +369,12 @@ export default function InquiriesPage() {
           </div>
         ) : (
           <div className="table-scroll">
-            <table className="data-table">
+            <table className="data-table outreach-table">
               <colgroup>
-                <col style={{ width: 70 }} />
+                <col style={{ width: 90 }} />
                 <col />
-                <col style={{ width: "20%" }} />
-                <col style={{ width: 150 }} />
+                <col style={{ width: "22%" }} />
+                <col style={{ width: 160 }} />
                 <col style={{ width: 110 }} />
                 <col style={{ width: 110 }} />
               </colgroup>
@@ -315,34 +389,156 @@ export default function InquiriesPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((i) => (
-                  <tr
-                    key={i.id}
-                    onClick={async () => {
-                      // Optimistic open with cached row, then re-fetch the
-                      // single inquiry so any background updates (PDF summary,
-                      // call transcript, etc.) appear immediately.
-                      setSelected(i);
-                      try {
-                        const fresh = await api.inquiries.get(i.id);
-                        setSelected((cur) => (cur && cur.id === fresh.id ? fresh : cur));
-                      } catch {
-                        /* fall back to cached row */
-                      }
-                    }}
-                  >
-                    <td className="cell-muted">#{i.id}</td>
-                    <td>
-                      <div className="cell-primary">{i.subject}</div>
-                    </td>
-                    <td>{i.manufacturer?.manufacturer ?? "—"}</td>
-                    <td>
-                      <StatusBadge status={i.status} />
-                    </td>
-                    <td className="cell-muted">{fmtDate(i.created_at)}</td>
-                    <td className="cell-muted">{i.fallback_after_hours}h</td>
-                  </tr>
-                ))}
+                {rows.map((row) => {
+                  if (row.kind === "single") {
+                    const i = row.inquiry;
+                    return (
+                      <tr
+                        key={`s-${i.id}`}
+                        className="row-clickable"
+                        onClick={async () => {
+                          setSelected(i);
+                          try {
+                            const fresh = await api.inquiries.get(i.id);
+                            setSelected((cur) => (cur && cur.id === fresh.id ? fresh : cur));
+                          } catch {
+                            /* keep cached */
+                          }
+                        }}
+                      >
+                        <td className="cell-muted">#{i.id}</td>
+                        <td><div className="cell-primary">{i.subject}</div></td>
+                        <td>{i.manufacturer?.manufacturer ?? "—"}</td>
+                        <td><StatusBadge status={i.status} /></td>
+                        <td className="cell-muted">{fmtDate(i.created_at)}</td>
+                        <td className="cell-muted">{i.fallback_after_hours}h</td>
+                      </tr>
+                    );
+                  }
+
+                  const open = expandedGroups.has(row.uuid);
+                  const sample = row.children[0];
+                  const total = row.children.length;
+                  const responded = row.children.filter((c) =>
+                    ["email_responded", "call_completed", "closed"].includes(c.status),
+                  ).length;
+                  const sent = row.children.filter((c) =>
+                    ["email_sent", "call_pending"].includes(c.status),
+                  ).length;
+                  const drafts = row.children.filter((c) => c.status === "draft").length;
+                  const groupCreated = row.children
+                    .map((c) => c.created_at ?? "")
+                    .sort()[0];
+                  return (
+                    <Fragment key={`g-${row.uuid}`}>
+                      <tr
+                        className={`mue-group-row ${open ? "mue-group-open" : ""}`}
+                        onClick={() => toggleGroup(row.uuid)}
+                      >
+                        <td className="mue-group-id">
+                          <span className="mue-caret" aria-hidden>
+                            {open ? "▾" : "▸"}
+                          </span>
+                          <span className="mue-badge">MUE</span>
+                        </td>
+                        <td className="mue-subject-cell">
+                          <div className="mue-subject-line">
+                            <span className="cell-primary">{sample.subject}</span>
+                            <span className="mue-mfr-pill">
+                              <strong>{total}</strong> manufacturers
+                            </span>
+                          </div>
+                          <div className="mue-uuid-row">
+                            <span className="mue-uuid-label">SOURCE UUID</span>
+                            <span className="mue-uuid mono-small" title={row.uuid}>
+                              {row.uuid}
+                            </span>
+                            <button
+                              type="button"
+                              className="mue-uuid-copy"
+                              title="Copy UUID"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigator.clipboard?.writeText(row.uuid);
+                              }}
+                            >
+                              ⧉
+                            </button>
+                          </div>
+                        </td>
+                        <td className="mue-stats-cell">
+                          <div className="mue-stat-pills">
+                            <span className="mue-pill mue-pill-good">
+                              <strong>{responded}</strong> responded
+                            </span>
+                            {sent > 0 && (
+                              <span className="mue-pill mue-pill-info">
+                                <strong>{sent}</strong> awaiting
+                              </span>
+                            )}
+                            {drafts > 0 && (
+                              <span className="mue-pill mue-pill-muted">
+                                <strong>{drafts}</strong> draft
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="mue-progress">
+                            <div
+                              className="mue-progress-bar"
+                              style={{
+                                width: `${total ? (responded / total) * 100 : 0}%`,
+                              }}
+                            />
+                          </div>
+                          <div className="mue-progress-text">
+                            {responded} / {total} responses
+                          </div>
+                        </td>
+                        <td className="cell-muted">{fmtDate(groupCreated)}</td>
+                        <td className="cell-muted">{sample.fallback_after_hours}h</td>
+                      </tr>
+                      {open &&
+                        row.children.map((c) => (
+                          <tr
+                            key={`c-${c.id}`}
+                            className="row-clickable mue-child-row"
+                            onClick={async () => {
+                              setSelected(c);
+                              try {
+                                const fresh = await api.inquiries.get(c.id);
+                                setSelected((cur) =>
+                                  cur && cur.id === fresh.id ? fresh : cur,
+                                );
+                              } catch {
+                                /* keep cached */
+                              }
+                            }}
+                          >
+                            <td className="cell-muted mue-child-id">
+                              <span className="mue-child-rail" />
+                              #{c.id}
+                            </td>
+                            <td>
+                              <div className="mue-child-sub">
+                                {c.email_response
+                                  ? c.email_response.slice(0, 120) +
+                                    (c.email_response.length > 120 ? "…" : "")
+                                  : c.status === "draft"
+                                  ? "Not sent yet"
+                                  : "Waiting for reply"}
+                              </div>
+                            </td>
+                            <td>{c.manufacturer?.manufacturer ?? "—"}</td>
+                            <td><StatusBadge status={c.status} /></td>
+                            <td className="cell-muted">{fmtDate(c.created_at)}</td>
+                            <td className="cell-muted">{c.fallback_after_hours}h</td>
+                          </tr>
+                        ))}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
