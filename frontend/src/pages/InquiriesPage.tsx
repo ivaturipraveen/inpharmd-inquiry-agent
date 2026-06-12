@@ -119,15 +119,10 @@ export default function InquiriesPage() {
     }, {});
     return {
       total: inquiries.length,
-      open: inquiries.filter((i) =>
-        ["draft", "email_sent", "call_pending"].includes(i.status)
-      ).length,
+      drafts: counts["draft"] || 0,
       awaitingEmail: counts["email_sent"] || 0,
-      callQueued: counts["call_pending"] || 0,
-      resolved:
-        (counts["email_responded"] || 0) +
-        (counts["call_completed"] || 0) +
-        (counts["closed"] || 0),
+      responded:
+        (counts["email_responded"] || 0) + (counts["call_completed"] || 0),
     };
   }, [inquiries]);
 
@@ -202,22 +197,38 @@ export default function InquiriesPage() {
       </section>
 
       <div className="stats-grid stats-grid-4">
-        <div className="stat-card">
+        <button
+          type="button"
+          className={`stat-card stat-card-btn ${statusFilter === "" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter("")}
+        >
           <div className="stat-label">Total Inquiries</div>
           <div className="stat-value">{stats.total}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Open</div>
-          <div className="stat-value">{stats.open}</div>
-        </div>
-        <div className="stat-card">
+        </button>
+        <button
+          type="button"
+          className={`stat-card stat-card-btn ${statusFilter === "draft" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter(statusFilter === "draft" ? "" : "draft")}
+        >
+          <div className="stat-label">Drafts</div>
+          <div className="stat-value">{stats.drafts}</div>
+        </button>
+        <button
+          type="button"
+          className={`stat-card stat-card-btn ${statusFilter === "email_sent" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter(statusFilter === "email_sent" ? "" : "email_sent")}
+        >
           <div className="stat-label">Awaiting Email</div>
           <div className="stat-value">{stats.awaitingEmail}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Call Queued</div>
-          <div className="stat-value">{stats.callQueued}</div>
-        </div>
+        </button>
+        <button
+          type="button"
+          className={`stat-card stat-card-btn ${statusFilter === "email_responded" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter(statusFilter === "email_responded" ? "" : "email_responded")}
+        >
+          <div className="stat-label">Responded</div>
+          <div className="stat-value">{stats.responded}</div>
+        </button>
       </div>
 
       <div className="filter-bar">

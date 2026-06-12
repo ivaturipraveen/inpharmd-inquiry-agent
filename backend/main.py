@@ -49,6 +49,14 @@ def _ensure_columns():
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_inquiry_uuid VARCHAR(128)",
         "CREATE INDEX IF NOT EXISTS ix_inquiries_source_inquiry_uuid ON inquiries (source_inquiry_uuid)",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_response_posted_at TIMESTAMPTZ",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS ix_inquiries_user_id ON inquiries (user_id)",
+        # MUE excel attachment metadata + response writeback tracking
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_url TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_sheet VARCHAR(255)",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_row INTEGER",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS excel_response_url TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS excel_response_posted_at TIMESTAMPTZ",
         # users table: handled by Base.metadata.create_all, but add columns
         # here when the table grows in future iterations.
     ]

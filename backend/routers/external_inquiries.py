@@ -24,11 +24,16 @@ import logging
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 import cache_service
+import excel_service
 import inpharmd_service
-from models import User
+import s3_service
+from database import get_db
+from models import ManufacturerContact, User
 from routers.auth import get_current_user
 
 log = logging.getLogger("inquiry.external")
@@ -159,6 +164,108 @@ def get_external_inquiry(
         if e.status_code in (401, 403):
             raise HTTPException(status_code=401, detail="Staging access token expired. Please log in again.")
         raise HTTPException(status_code=502, detail=f"Staging error {e.status_code}: {e.message}")
+
+
+class ExtractManufacturersRequest(BaseModel):
+    doc_url: str
+    inquiry_uuid: Optional[str] = None
+
+
+class ExtractedManufacturerRow(BaseModel):
+    row_index: int
+    raw_name: str
+    matched_id: Optional[int] = None
+    matched_name: Optional[str] = None
+    confidence: str
+
+
+class ExtractManufacturersResponse(BaseModel):
+    sheet_name: str
+    header_row: int
+    header_value: str
+    rows: list[ExtractedManufacturerRow]
+    total: int
+    matched: int
+    # Our own S3 copy of the workbook — the bulk_create endpoint stamps this
+    # as `source_excel_url` on every inquiry so the response-writeback path
+    # always operates on our copy (no dependence on the 10s InpharmD signed URL).
+    excel_s3_url: Optional[str] = None
+
+
+@router.post("/extract-manufacturers", response_model=ExtractManufacturersResponse)
+def extract_manufacturers(
+    payload: ExtractManufacturersRequest = Body(...),
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Download the .xlsx at `doc_url`, find the 'Manufacturer' column, and
+    pair every row's value with the best match from our manufacturer DB.
+
+    Called by the Contact-Manufacturer page so the user gets a pre-populated
+    multi-select instead of typing each name."""
+    log.info(
+        "external.extract user_id=%s email=%s doc=%s",
+        current.id, current.email, payload.doc_url,
+    )
+    try:
+        xlsx = excel_service.download_excel(
+            payload.doc_url, access_token=current.staging_token
+        )
+    except Exception as e:
+        log.error("external.extract download failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Failed to download attachment: {e}")
+
+    try:
+        rows, loc = excel_service.extract_manufacturer_rows(xlsx)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        log.exception("external.extract parse failed")
+        raise HTTPException(status_code=422, detail=f"Could not parse spreadsheet: {e}")
+
+    mfrs = db.query(ManufacturerContact).all()
+    matches = excel_service.match_manufacturers(rows, mfrs)
+
+    # Mirror the workbook into our own S3 right now, before any responses
+    # arrive. Every inquiry created from this dispatch will point at this
+    # URL so writeback always works against our copy.
+    s3_url: Optional[str] = None
+    try:
+        from urllib.parse import urlparse, unquote
+        fname = unquote(urlparse(payload.doc_url).path.rsplit("/", 1)[-1] or "mue.xlsx")
+        if not fname.lower().endswith(".xlsx"):
+            fname = f"{fname}.xlsx"
+        s3_url = s3_service.upload_bytes(
+            xlsx,
+            original_name=fname,
+            inquiry_id=0,  # not yet associated with an inquiry; key includes a uuid
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            prefix="mue-source",
+        )
+    except Exception as e:
+        log.warning("external.extract S3 upload failed (will fall back to InpharmD url): %s", e)
+
+    out_rows = [
+        ExtractedManufacturerRow(
+            row_index=m.row_index,
+            raw_name=m.raw_name,
+            matched_id=m.matched_id,
+            matched_name=m.matched_name,
+            confidence=m.confidence,
+        )
+        for m in matches
+    ]
+    return ExtractManufacturersResponse(
+        sheet_name=loc.sheet_name,
+        header_row=loc.header_row,
+        header_value=loc.header_value,
+        rows=out_rows,
+        total=len(out_rows),
+        matched=sum(1 for r in out_rows if r.matched_id is not None),
+        excel_s3_url=s3_url,
+    )
 
 
 # Small debug endpoint so the frontend (and you) can see what's cached.

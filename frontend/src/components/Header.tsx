@@ -4,7 +4,10 @@ export type TabKey =
   | "manufacturers"
   | "inquiries"
   | "platform-inquiries"
-  | "emails";
+  | "emails"
+  // Sub-route of "platform-inquiries" — opens when the user clicks
+  // "Contact manufacturer" from a row. Not shown in the nav.
+  | "contact-manufacturer";
 
 interface Props {
   active: TabKey;
@@ -19,7 +22,12 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "emails", label: "Emails" },
 ];
 
-const Header: FC<Props> = ({ active, onChange, onLogout }) => (
+const Header: FC<Props> = ({ active, onChange, onLogout }) => {
+  // The Contact-manufacturer page is launched from the InpharmD Inquiries
+  // tab — visually it still belongs there, so keep that tab highlighted.
+  const visualActive: TabKey =
+    active === "contact-manufacturer" ? "platform-inquiries" : active;
+  return (
   <header className="site-header">
     <div className="site-header-inner">
       <div className="brand">
@@ -31,7 +39,7 @@ const Header: FC<Props> = ({ active, onChange, onLogout }) => (
           <button
             key={t.key}
             type="button"
-            className={`tab ${active === t.key ? "tab-active" : ""}`}
+            className={`tab ${visualActive === t.key ? "tab-active" : ""}`}
             onClick={() => onChange(t.key)}
           >
             {t.label}
@@ -50,6 +58,7 @@ const Header: FC<Props> = ({ active, onChange, onLogout }) => (
       </nav>
     </div>
   </header>
-);
+  );
+};
 
 export default Header;

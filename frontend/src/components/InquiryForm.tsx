@@ -20,6 +20,13 @@ interface Props {
   // launched from a context like "Contact manufacturer about InpharmD #1234"
   // so the user has a clear visual cue about what they're forwarding.
   contextNote?: string;
+  // "modal" = floating dialog over a backdrop (default, used by Outreach tab).
+  // "page"  = inline full-page form (used by Contact Manufacturer page).
+  variant?: "modal" | "page";
+  // Optional override for the form heading.
+  title?: string;
+  // Optional submit button label (defaults to "Create Inquiry").
+  submitLabel?: string;
   onClose: () => void;
   onSubmit: (data: InquiryInput) => Promise<void>;
 }
@@ -42,6 +49,9 @@ const InquiryForm: FC<Props> = ({
   defaultSubject,
   defaultQuestion,
   contextNote,
+  variant = "modal",
+  title = "New Inquiry",
+  submitLabel,
   onClose,
   onSubmit,
 }) => {
@@ -271,34 +281,29 @@ const InquiryForm: FC<Props> = ({
     }
   };
 
-  return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <form ref={formRef} onSubmit={handleSubmit}>
-          <div className="modal-header">
-            <h2>New Inquiry</h2>
-            <div className="modal-header-actions">
-              <VoiceFillButton
-                clientTools={voiceTools}
-                dynamicVariables={voiceVars}
-              />
-              <button
-                type="button"
-                className="modal-close"
-                onClick={onClose}
-                aria-label="Close"
-              >
-                ×
-              </button>
-            </div>
-          </div>
+  const inner = (
+    <form ref={formRef} onSubmit={handleSubmit}>
+      <div className={variant === "page" ? "page-form-header" : "modal-header"}>
+        <h2>{title}</h2>
+        <div className="modal-header-actions">
+          <VoiceFillButton
+            clientTools={voiceTools}
+            dynamicVariables={voiceVars}
+          />
+          {variant === "modal" && (
+            <button
+              type="button"
+              className="modal-close"
+              onClick={onClose}
+              aria-label="Close"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      </div>
 
-          <div className="modal-body">
+      <div className={variant === "page" ? "page-form-body" : "modal-body"}>
             {contextNote && (
               <div className="context-banner">
                 <span className="context-banner-icon" aria-hidden>↪</span>
@@ -562,27 +567,41 @@ const InquiryForm: FC<Props> = ({
               </div>
             </div>
 
-            <div className="form-foot">
-              <strong>What happens next?</strong> Once you click Create Inquiry,
-              you'll choose how to reach this manufacturer — send an email, or
-              have the voice agent call them now.
-            </div>
-          </div>
+        <div className="form-foot">
+          <strong>What happens next?</strong> Once you click {submitLabel ?? "Create Inquiry"},
+          you'll choose how to reach this manufacturer — send an email, or
+          have the voice agent call them now.
+        </div>
+      </div>
 
-          <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={onClose}
-              disabled={submitting}
-            >
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary" disabled={submitting}>
-              {submitting ? "Saving…" : "Create Inquiry"}
-            </button>
-          </div>
-        </form>
+      <div className={variant === "page" ? "page-form-footer" : "modal-footer"}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onClose}
+          disabled={submitting}
+        >
+          Cancel
+        </button>
+        <button type="submit" className="btn btn-primary" disabled={submitting}>
+          {submitting ? "Saving…" : submitLabel ?? "Create Inquiry"}
+        </button>
+      </div>
+    </form>
+  );
+
+  if (variant === "page") {
+    return <div className="page-form">{inner}</div>;
+  }
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        {inner}
       </div>
     </div>
   );

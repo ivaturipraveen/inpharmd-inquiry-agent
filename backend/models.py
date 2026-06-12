@@ -64,6 +64,16 @@ class Inquiry(Base):
     __tablename__ = "inquiries"
 
     id = Column(Integer, primary_key=True, index=True)
+    # Owner — the InpharmD user who created this outreach. The Outreach tab
+    # filters by this so each user only sees their own outreach inquiries.
+    # Nullable so legacy rows (created before this column existed) still load,
+    # but the API treats unowned rows as invisible.
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     manufacturer_id = Column(
         Integer,
         ForeignKey("manufacturer_contacts.id", ondelete="CASCADE"),
@@ -112,6 +122,17 @@ class Inquiry(Base):
     # response back to the legacy /api/legacy/manufacturing_response endpoint.
     source_inquiry_uuid = Column(String(128), index=True)
     legacy_response_posted_at = Column(DateTime(timezone=True))
+
+    # When the InpharmD inquiry was a Medication-Use Evaluation with an Excel
+    # attachment, we store the doc URL + the row this inquiry's manufacturer
+    # lives in, so the email-reply hook can update the "Manufacturer Response"
+    # column in that row and re-upload an updated copy.
+    source_excel_url = Column(Text)
+    source_excel_sheet = Column(String(255))
+    source_excel_row = Column(Integer)
+    # Where the updated Excel landed (S3) after we filled in the response.
+    excel_response_url = Column(Text)
+    excel_response_posted_at = Column(DateTime(timezone=True))
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

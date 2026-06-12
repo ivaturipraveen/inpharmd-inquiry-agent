@@ -193,6 +193,25 @@ export const api = {
       request<Inquiry>(`/api/inquiries/${id}/close`, { method: "POST" }),
     extractAnswer: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
+    bulkCreate: (data: {
+      targets: { manufacturer_id: number; source_excel_row?: number }[];
+      subject: string;
+      question: string;
+      requester_name?: string | null;
+      requester_email?: string | null;
+      fallback_after_hours: number;
+      source_inquiry_uuid?: string | null;
+      source_excel_url?: string | null;
+      source_excel_sheet?: string | null;
+      send_email?: boolean;
+    }) =>
+      request<{
+        created: Inquiry[];
+        failed: { manufacturer_id: number; error: string }[];
+      }>(`/api/inquiries/bulk`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
   voice: {
     signedUrl: () =>
@@ -250,5 +269,24 @@ export const api = {
         `/api/external/inquiries/${encodeURIComponent(String(id))}${suffix}`,
       );
     },
+    extractManufacturers: (doc_url: string, inquiry_uuid?: string | null) =>
+      request<{
+        sheet_name: string;
+        header_row: number;
+        header_value: string;
+        total: number;
+        matched: number;
+        excel_s3_url: string | null;
+        rows: {
+          row_index: number;
+          raw_name: string;
+          matched_id: number | null;
+          matched_name: string | null;
+          confidence: "exact" | "partial" | "loose" | "none";
+        }[];
+      }>(`/api/external/inquiries/extract-manufacturers`, {
+        method: "POST",
+        body: JSON.stringify({ doc_url, inquiry_uuid }),
+      }),
   },
 };

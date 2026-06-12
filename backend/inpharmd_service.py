@@ -7,8 +7,8 @@ and duration so the user can trace what we sent and what came back.
 Three endpoints in scope today:
 
 - POST /api/v2/login                                  → exchange email+password for an access_token
-- GET  /api/v2/inquiries?access_token=…               → list inquiries
-- GET  /api/v2/inquiries/{id}/submitter_details?…     → fetch a single inquiry's submitter details
+- GET  /api/v2/inquiries/open_mue_inquiries?access_token=…  → list open MUE inquiries
+- GET  /api/v2/inquiries/{id}/submitter_details?…           → fetch a single inquiry's submitter details (legacy)
 
 Anything that fails upstream is re-raised as `InpharmdAPIError` with the
 upstream status code and body so the router can turn it into a clean 4xx
@@ -165,8 +165,12 @@ def login(email: str, password: str, channel_id: Optional[str] = None) -> Dict[s
 
 def list_inquiries(access_token: str, **extra_params: Any) -> Any:
     params = {"access_token": access_token, **{k: v for k, v in extra_params.items() if v is not None}}
-    # List call gets the longer timeout — the payload is ~4MB and Heroku is slow.
-    return _call("GET", "/api/v2/inquiries", params=params, timeout=LIST_TIMEOUT_SECONDS)
+    # Open Medication Use Evaluation (MUE) inquiries with submitter attachments.
+    # Response shape (per swagger):
+    #   { data: [ { inquiry_uuid, title, inquiry_submitter, inquiry_types[],
+    #               attachments: [{id, file_name, doc_url}],
+    #               inquiry_submitter_details: {…} } ] }
+    return _call("GET", "/api/v2/inquiries/open_mue_inquiries", params=params, timeout=LIST_TIMEOUT_SECONDS)
 
 
 def get_inquiry_submitter_details(access_token: str, inquiry_id: str) -> Any:

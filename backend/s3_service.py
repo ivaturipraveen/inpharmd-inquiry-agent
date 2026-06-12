@@ -62,28 +62,47 @@ def _client():
 def _safe_filename(name: str) -> str:
     # Keep the original-ish filename for human readability but strip path
     # separators and anything that would break a URL.
-    base = (name or "attachment.pdf").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    base = (name or "attachment").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    # Drop any query string left over from a presigned URL.
+    base = base.split("?", 1)[0]
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_")
-    return base or "attachment.pdf"
+    return base or "attachment"
 
 
 def upload_pdf(content: bytes, *, original_name: str, inquiry_id: int) -> Optional[str]:
     """Upload PDF bytes; return a presigned GET URL (or None if not configured)."""
+    return upload_bytes(
+        content,
+        original_name=original_name or "attachment.pdf",
+        inquiry_id=inquiry_id,
+        content_type="application/pdf",
+    )
+
+
+def upload_bytes(
+    content: bytes,
+    *,
+    original_name: str,
+    inquiry_id: int,
+    content_type: str = "application/octet-stream",
+    prefix: Optional[str] = None,
+) -> Optional[str]:
+    """Generic upload helper. Returns a presigned GET URL (or None if not
+    configured). Used by both the PDF and Excel writeback paths."""
     if not is_configured():
-        log.info("S3 not configured; skipping PDF upload for inquiry %s", inquiry_id)
+        log.info("S3 not configured; skipping upload for inquiry %s", inquiry_id)
         return None
     bucket = os.environ["AWS_S3_BUCKET"]
-    prefix = os.getenv("AWS_S3_PREFIX", _DEFAULT_PREFIX).strip("/")
+    use_prefix = (prefix or os.getenv("AWS_S3_PREFIX", _DEFAULT_PREFIX)).strip("/")
     safe = _safe_filename(original_name)
-    # Include a UUID so two manufacturers sending "response.pdf" don't collide.
-    key = f"{prefix}/inquiry-{inquiry_id}/{uuid.uuid4().hex[:10]}-{safe}"
+    key = f"{use_prefix}/inquiry-{inquiry_id}/{uuid.uuid4().hex[:10]}-{safe}"
     try:
         client = _client()
         client.put_object(
             Bucket=bucket,
             Key=key,
             Body=content,
-            ContentType="application/pdf",
+            ContentType=content_type,
             ContentDisposition=f'inline; filename="{safe}"',
         )
         ttl = int(os.getenv("AWS_S3_URL_TTL_SECONDS", str(_DEFAULT_TTL)))
@@ -92,7 +111,7 @@ def upload_pdf(content: bytes, *, original_name: str, inquiry_id: int) -> Option
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=ttl,
         )
-        log.info("Uploaded PDF for inquiry %s to s3://%s/%s", inquiry_id, bucket, key)
+        log.info("Uploaded %s for inquiry %s to s3://%s/%s", content_type, inquiry_id, bucket, key)
         return url
     except Exception as e:
         log.exception("S3 upload failed for inquiry %s: %s", inquiry_id, e)

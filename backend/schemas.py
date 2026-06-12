@@ -74,10 +74,41 @@ class InquiryBase(BaseModel):
     # We POST the manufacturer's response back to the legacy endpoint using
     # this uuid once a final answer is captured.
     source_inquiry_uuid: Optional[str] = None
+    # Set when forwarded from a MUE inquiry with an Excel attachment, so the
+    # response writeback can find the right row to update.
+    source_excel_url: Optional[str] = None
+    source_excel_sheet: Optional[str] = None
+    source_excel_row: Optional[int] = None
 
 
 class InquiryCreate(InquiryBase):
     pass
+
+
+# ---------- Bulk dispatch (multiple manufacturers, one query) ----------
+class BulkTarget(BaseModel):
+    manufacturer_id: int
+    # Optional per-target row index in the source Excel.
+    source_excel_row: Optional[int] = None
+
+
+class BulkInquiryCreate(BaseModel):
+    targets: list[BulkTarget]
+    subject: str
+    question: str
+    requester_name: Optional[str] = None
+    requester_email: Optional[str] = None
+    fallback_after_hours: int = 24
+    source_inquiry_uuid: Optional[str] = None
+    source_excel_url: Optional[str] = None
+    source_excel_sheet: Optional[str] = None
+    # If true, send the email immediately after creating each inquiry.
+    send_email: bool = True
+
+
+class BulkInquiryResult(BaseModel):
+    created: list["InquiryOut"]
+    failed: list[dict]  # [{ manufacturer_id, error }]
 
 
 class InquiryUpdate(BaseModel):
@@ -104,6 +135,7 @@ class CallResultPayload(BaseModel):
 
 class InquiryOut(InquiryBase):
     id: int
+    user_id: Optional[int] = None
     status: InquiryStatus
     email_sent_at: Optional[datetime] = None
     email_message_id: Optional[str] = None
@@ -123,8 +155,15 @@ class InquiryOut(InquiryBase):
     pdf_filename: Optional[str] = None
     pdf_summary: Optional[str] = None
     legacy_response_posted_at: Optional[datetime] = None
+    excel_response_url: Optional[str] = None
+    excel_response_posted_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     manufacturer: Optional[ManufacturerSummary] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Resolve the forward reference (BulkInquiryResult → InquiryOut) now that
+# InquiryOut is defined.
+BulkInquiryResult.model_rebuild()

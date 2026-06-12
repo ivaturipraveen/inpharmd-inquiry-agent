@@ -4,6 +4,7 @@ import ManufacturersPage from "./pages/ManufacturersPage";
 import InquiriesPage from "./pages/InquiriesPage";
 import EmailsPage from "./pages/EmailsPage";
 import ExternalInquiriesPage from "./pages/ExternalInquiriesPage";
+import ContactManufacturerPage from "./pages/ContactManufacturerPage";
 import LoginPage, { AuthUser } from "./pages/LoginPage";
 import { api, session } from "./api";
 
@@ -13,7 +14,8 @@ const isTab = (v: string): v is TabKey =>
   v === "manufacturers" ||
   v === "inquiries" ||
   v === "emails" ||
-  v === "platform-inquiries";
+  v === "platform-inquiries" ||
+  v === "contact-manufacturer";
 
 const readHash = (): TabKey => {
   // hash can be "#inquiries" or "#inquiries?id=42" — extract just the tab part.
@@ -144,6 +146,7 @@ export default function App() {
         {tab === "manufacturers" && <ManufacturersPage />}
         {tab === "inquiries" && <InquiriesPage />}
         {tab === "platform-inquiries" && <ExternalInquiriesPage />}
+        {tab === "contact-manufacturer" && <ContactManufacturerPage />}
         {tab === "emails" && <EmailsPage />}
       </main>
     </>

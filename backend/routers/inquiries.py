@@ -11,8 +11,11 @@ import email_service
 import legacy_response_service
 import summary_service
 from database import get_db
-from models import Inquiry, ManufacturerContact
+from models import Inquiry, ManufacturerContact, User
+from routers.auth import get_current_user
 from schemas import (
+    BulkInquiryCreate,
+    BulkInquiryResult,
     CallResultPayload,
     EmailResponsePayload,
     InquiryCreate,
@@ -31,13 +34,19 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _get_or_404(db: Session, inquiry_id: int) -> Inquiry:
-    obj = (
+def _get_or_404(
+    db: Session, inquiry_id: int, current_user: Optional[User] = None
+) -> Inquiry:
+    """Fetch inquiry by id. When `current_user` is given, enforce ownership
+    (returns 404, not 403, so we don't leak existence to other users)."""
+    q = (
         db.query(Inquiry)
         .options(joinedload(Inquiry.manufacturer))
         .filter(Inquiry.id == inquiry_id)
-        .first()
     )
+    if current_user is not None:
+        q = q.filter(Inquiry.user_id == current_user.id)
+    obj = q.first()
     if not obj:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     return obj
@@ -48,8 +57,13 @@ def list_inquiries(
     status: Optional[str] = Query(None),
     manufacturer_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    q = db.query(Inquiry).options(joinedload(Inquiry.manufacturer))
+    q = (
+        db.query(Inquiry)
+        .options(joinedload(Inquiry.manufacturer))
+        .filter(Inquiry.user_id == current_user.id)
+    )
     if status:
         q = q.filter(Inquiry.status == status)
     if manufacturer_id:
@@ -58,8 +72,12 @@ def list_inquiries(
 
 
 @router.get("/{inquiry_id}", response_model=InquiryOut)
-def get_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
-    return _get_or_404(db, inquiry_id)
+def get_inquiry(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 DEFAULT_REQUESTER_NAME = "Leah"
@@ -67,7 +85,11 @@ DEFAULT_REQUESTER_EMAIL = "druginfo@inpharmd.com"
 
 
 @router.post("", response_model=InquiryOut, status_code=201)
-def create_inquiry(payload: InquiryCreate, db: Session = Depends(get_db)):
+def create_inquiry(
+    payload: InquiryCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     mfr = db.get(ManufacturerContact, payload.manufacturer_id)
     if not mfr:
         raise HTTPException(status_code=400, detail="Unknown manufacturer_id")
@@ -78,26 +100,125 @@ def create_inquiry(payload: InquiryCreate, db: Session = Depends(get_db)):
         data["requester_name"] = DEFAULT_REQUESTER_NAME
     if not (data.get("requester_email") or "").strip():
         data["requester_email"] = DEFAULT_REQUESTER_EMAIL
-    obj = Inquiry(**data, status="draft")
+    obj = Inquiry(**data, status="draft", user_id=current_user.id)
     db.add(obj)
     db.commit()
-    return _get_or_404(db, obj.id)
+    return _get_or_404(db, obj.id, current_user)
+
+
+@router.post("/bulk", response_model=BulkInquiryResult, status_code=201)
+def bulk_create_inquiries(
+    payload: BulkInquiryCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Create one Inquiry per target manufacturer with shared subject/question.
+
+    Used by the Contact-Manufacturer page after we auto-detect manufacturers
+    from the MUE Excel attachment. All created inquiries share the same
+    `source_inquiry_uuid` and `source_excel_url`, with a per-target
+    `source_excel_row` so the response-writeback can find the right row.
+
+    If `send_email=true`, attempts to send the email immediately and
+    captures per-target failures without aborting the batch.
+    """
+    if not payload.targets:
+        raise HTTPException(status_code=422, detail="At least one target is required")
+
+    requester_name = (payload.requester_name or "").strip() or DEFAULT_REQUESTER_NAME
+    requester_email = (payload.requester_email or "").strip() or DEFAULT_REQUESTER_EMAIL
+
+    created_objs: list[Inquiry] = []
+    failed: list[dict] = []
+
+    for tgt in payload.targets:
+        mfr = db.get(ManufacturerContact, tgt.manufacturer_id)
+        if not mfr:
+            failed.append({"manufacturer_id": tgt.manufacturer_id, "error": "Unknown manufacturer"})
+            continue
+        obj = Inquiry(
+            manufacturer_id=tgt.manufacturer_id,
+            subject=payload.subject,
+            question=payload.question,
+            requester_name=requester_name,
+            requester_email=requester_email,
+            fallback_after_hours=payload.fallback_after_hours,
+            source_inquiry_uuid=payload.source_inquiry_uuid,
+            source_excel_url=payload.source_excel_url,
+            source_excel_sheet=payload.source_excel_sheet,
+            source_excel_row=tgt.source_excel_row,
+            status="draft",
+            user_id=current_user.id,
+        )
+        db.add(obj)
+        db.flush()
+        created_objs.append(obj)
+
+    db.commit()
+
+    # Best-effort email send. We don't roll back creates on send failure —
+    # the user still has draft inquiries they can retry from the Outreach tab.
+    if payload.send_email:
+        for obj in list(created_objs):
+            mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+            if not mfr:
+                failed.append({"manufacturer_id": obj.manufacturer_id, "error": "Manufacturer disappeared after create"})
+                continue
+            to_email = mfr.official_mi_email or mfr.team_verified_email
+            if not to_email:
+                failed.append({
+                    "manufacturer_id": obj.manufacturer_id,
+                    "error": f"{mfr.manufacturer} has no email address on file",
+                })
+                continue
+            try:
+                message_id = email_service.send_inquiry_email(
+                    inquiry_id=obj.id,
+                    manufacturer_name=mfr.manufacturer,
+                    to_email=to_email,
+                    subject=obj.subject,
+                    question=obj.question,
+                    requester_name=obj.requester_name,
+                    requester_email=obj.requester_email,
+                )
+            except Exception as e:
+                failed.append({
+                    "manufacturer_id": obj.manufacturer_id,
+                    "error": f"Email send failed: {e}",
+                })
+                continue
+            now = _now()
+            obj.status = "email_sent"
+            obj.email_sent_at = now
+            obj.email_message_id = message_id
+            obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
+        db.commit()
+
+    refreshed = [_get_or_404(db, obj.id, current_user) for obj in created_objs]
+    return BulkInquiryResult(created=refreshed, failed=failed)
 
 
 @router.put("/{inquiry_id}", response_model=InquiryOut)
 def update_inquiry(
-    inquiry_id: int, payload: InquiryUpdate, db: Session = Depends(get_db)
+    inquiry_id: int,
+    payload: InquiryUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(obj, k, v)
     db.commit()
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.delete("/{inquiry_id}", status_code=204)
-def delete_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
-    obj = _get_or_404(db, inquiry_id)
+def delete_inquiry(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    obj = _get_or_404(db, inquiry_id, current_user)
     db.delete(obj)
     db.commit()
     return None
@@ -106,11 +227,15 @@ def delete_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
 # ---------- Lifecycle transitions ----------
 
 @router.post("/{inquiry_id}/send-email", response_model=InquiryOut)
-def send_email(inquiry_id: int, db: Session = Depends(get_db)):
+def send_email(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Send the inquiry via SendGrid to the manufacturer's MI email and schedule
     the fallback call window. Replies come back to our mailbox and are captured
     automatically by the IMAP poller."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     if obj.status not in ("draft", "email_sent", "failed"):
         raise HTTPException(
             status_code=409,
@@ -148,7 +273,7 @@ def send_email(inquiry_id: int, db: Session = Depends(get_db)):
     obj.email_message_id = message_id
     obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
     db.commit()
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/record-email-response", response_model=InquiryOut)
@@ -156,23 +281,28 @@ def record_email_response(
     inquiry_id: int,
     payload: EmailResponsePayload,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     obj.status = "email_responded"
     obj.email_response = payload.response
     obj.email_response_at = _now()
     obj.final_answer = payload.response
     db.commit()
     legacy_response_service.maybe_post_for_inquiry(db, obj)
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/business-hours")
-def business_hours_check(inquiry_id: int, db: Session = Depends(get_db)):
+def business_hours_check(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Returns whether the manufacturer is in business hours right now,
     based on the parsed `mi_phone_hours` text. Used by the UI to warn
     before placing a call."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     if not obj.manufacturer:
         return {"known": False, "reason": "no manufacturer"}
     hours_text = obj.manufacturer.mi_phone_hours if hasattr(obj.manufacturer, "mi_phone_hours") else None
@@ -193,11 +323,12 @@ async def trigger_call(
     inquiry_id: int,
     force: bool = Query(False, description="Place the call even if outside business hours"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Place an outbound ElevenLabs call to the manufacturer with this
     inquiry's context. Updates the inquiry's status, scheduled time, and
     stores the ElevenLabs `conversation_id` for the post-call webhook."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     if obj.status in ("email_responded", "closed"):
         raise HTTPException(
             status_code=409,
@@ -265,7 +396,7 @@ async def trigger_call(
     obj.call_provider_status = resp.get("status") or "initiated"
     obj.next_retry_at = None  # manual trigger cancels any pending auto-retry
     db.commit()
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/test-call", response_model=InquiryOut)
@@ -273,11 +404,12 @@ async def test_call(
     inquiry_id: int,
     payload: TestCallPayload,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Dial an arbitrary phone number using THIS inquiry's question/manufacturer
     context. Lets the team test how the agent would speak to a real MI desk
     without bothering the manufacturer. Does not change inquiry status."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
     if not mfr:
         raise HTTPException(status_code=400, detail="Manufacturer missing")
@@ -305,15 +437,19 @@ async def test_call(
 
     # Deliberately do NOT mutate obj.status or store conversation_id — test calls
     # should not interfere with the real inquiry's lifecycle.
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/extract-answer", response_model=InquiryOut)
-def extract_answer(inquiry_id: int, db: Session = Depends(get_db)):
+def extract_answer(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Manually trigger LLM extraction of a clean answer from the call transcript.
     Useful when the agent's submit_answer didn't fire and you want the AI to
     summarize what was said."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     if not obj.call_transcript:
         raise HTTPException(
             status_code=400,
@@ -336,20 +472,24 @@ def extract_answer(inquiry_id: int, db: Session = Depends(get_db)):
     obj.final_answer = extracted
     db.commit()
     legacy_response_service.maybe_post_for_inquiry(db, obj)
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/reset-retries", response_model=InquiryOut)
-def reset_retries(inquiry_id: int, db: Session = Depends(get_db)):
+def reset_retries(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Manual override — clear the retry counter so this inquiry can auto-retry
     again. Useful when a user manually edits the inquiry and wants a fresh chance."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     obj.retry_count = 0
     obj.next_retry_at = None
     if obj.status == "needs_attention":
         obj.status = "draft"
     db.commit()
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/record-call-result", response_model=InquiryOut)
@@ -357,10 +497,11 @@ def record_call_result(
     inquiry_id: int,
     payload: CallResultPayload,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Manual entry point: lets a human (or another integration) attach the
     call result without going through the ElevenLabs webhook."""
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
     obj.status = "call_completed"
     obj.call_completed_at = _now()
     if payload.transcript is not None:
@@ -370,19 +511,27 @@ def record_call_result(
         obj.final_answer = payload.summary
     db.commit()
     legacy_response_service.maybe_post_for_inquiry(db, obj)
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/close", response_model=InquiryOut)
-def close_inquiry(inquiry_id: int, db: Session = Depends(get_db)):
-    obj = _get_or_404(db, inquiry_id)
+def close_inquiry(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    obj = _get_or_404(db, inquiry_id, current_user)
     obj.status = "closed"
     db.commit()
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)
 
 
 @router.post("/{inquiry_id}/reprocess-pdf", response_model=InquiryOut)
-def reprocess_pdf(inquiry_id: int, db: Session = Depends(get_db)):
+def reprocess_pdf(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Backfill: re-search the InpharmD mailbox for the original reply that
     matches this inquiry's subject tag, pull the first PDF attachment, upload
     + summarize it, and patch the inquiry. Use this if the email was already
@@ -392,7 +541,7 @@ def reprocess_pdf(inquiry_id: int, db: Session = Depends(get_db)):
     import s3_service
     import summary_service
 
-    obj = _get_or_404(db, inquiry_id)
+    obj = _get_or_404(db, inquiry_id, current_user)
 
     if not graph_service.is_configured():
         raise HTTPException(status_code=503, detail="Graph API not configured")
@@ -445,4 +594,4 @@ def reprocess_pdf(inquiry_id: int, db: Session = Depends(get_db)):
                 pass
 
     db.commit()
-    return _get_or_404(db, inquiry_id)
+    return _get_or_404(db, inquiry_id, current_user)

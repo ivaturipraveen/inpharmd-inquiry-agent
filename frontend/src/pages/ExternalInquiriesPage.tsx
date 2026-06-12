@@ -1,156 +1,52 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiMeta } from "../api";
-import InquiryForm from "../components/InquiryForm";
-import ChannelChooser from "../components/ChannelChooser";
-import type { Inquiry, InquiryInput, ManufacturerContact } from "../types";
+import { startContactManufacturerFlow } from "./ContactManufacturerPage";
 
-// Staging returns JSON:API with hyphenated attribute keys:
-//   {data: [{id, type, attributes: {question, status, "submitter-email",
-//                                    "created-at", "all-documents", …}}]}
-// Detail returns a different shape:
-//   {inquiry_uuid, title, submitter_id, submitter_details: {…}}
+// Open MUE inquiries endpoint shape:
+//   { data: [ {
+//       inquiry_uuid: string,
+//       title: string,
+//       inquiry_submitter: string,
+//       inquiry_types: string[],
+//       attachments: [{ id, file_name, doc_url }],
+//       inquiry_submitter_details: { id, email, first_name, last_name, ... }
+//     } ] }
 
-type Json = Record<string, any>;
+type Attachment = { id: number; file_name: string; doc_url: string };
 
-const pick = (row: Json | null | undefined, ...keys: string[]): any => {
-  if (!row) return undefined;
-  const sources: Json[] = [row, row.attributes ?? {}];
-  for (const src of sources) {
-    for (const k of keys) {
-      const variants = [k, k.replace(/-/g, "_"), k.replace(/_/g, "-")];
-      for (const v of variants) {
-        if (src[v] !== undefined && src[v] !== null && src[v] !== "") return src[v];
-      }
-    }
+interface SubmitterDetails {
+  id?: number;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+  [k: string]: unknown;
+}
+
+interface MueInquiry {
+  inquiry_uuid: string;
+  title: string;
+  inquiry_submitter?: string;
+  inquiry_types?: string[];
+  attachments?: Attachment[];
+  inquiry_submitter_details?: SubmitterDetails;
+}
+
+const truncate = (s: string, n = 80): string =>
+  s.length <= n ? s : s.slice(0, n) + "…";
+
+const shortUuid = (uuid: string): string =>
+  uuid ? uuid.slice(0, 8) : "—";
+
+const submitterEmail = (i: MueInquiry): string =>
+  i.inquiry_submitter_details?.email ?? "";
+
+const submitterDisplay = (i: MueInquiry): string => {
+  const det = i.inquiry_submitter_details;
+  if (det?.first_name || det?.last_name) {
+    return `${det.first_name ?? ""} ${det.last_name ?? ""}`.trim();
   }
-  return undefined;
+  return i.inquiry_submitter ?? det?.email ?? "—";
 };
-
-const fmtTimestamp = (v: any): string => {
-  if (v == null || v === "") return "—";
-  if (typeof v === "number") {
-    const d = new Date(v * 1000);
-    return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString();
-  }
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? String(v) : d.toLocaleDateString();
-};
-
-const fmtDateTime = (v: any): string => {
-  if (v == null || v === "") return "—";
-  if (typeof v === "number") {
-    const d = new Date(v * 1000);
-    return isNaN(d.getTime()) ? String(v) : d.toLocaleString();
-  }
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? String(v) : d.toLocaleString();
-};
-
-const fmtRelative = (v: any): string => {
-  if (!v) return "—";
-  const seconds = typeof v === "number" ? v : Math.floor(new Date(v).getTime() / 1000);
-  if (!seconds || isNaN(seconds)) return "—";
-  const ageSec = Math.floor(Date.now() / 1000) - seconds;
-  if (ageSec < 60) return "just now";
-  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m ago`;
-  if (ageSec < 86400) return `${Math.floor(ageSec / 3600)}h ago`;
-  if (ageSec < 86400 * 30) return `${Math.floor(ageSec / 86400)}d ago`;
-  if (ageSec < 86400 * 365) return `${Math.floor(ageSec / (86400 * 30))}mo ago`;
-  return `${Math.floor(ageSec / (86400 * 365))}y ago`;
-};
-
-const truncate = (s: any, n = 120): string => {
-  const str = String(s ?? "");
-  return str.length <= n ? str : str.slice(0, n) + "…";
-};
-
-const prettyStatus = (s: string): string =>
-  s
-    .split(/[_\s-]+/)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
-
-// Map staging statuses → traffic-light groups so we can colour them
-// consistently across the page.
-const STATUS_GROUPS: Record<string, "good" | "warn" | "info" | "neutral" | "bad"> = {
-  complete: "good",
-  approved: "good",
-  published: "good",
-  response_formulation: "info",
-  literature_search: "warn",
-  review: "info",
-  reopened: "warn",
-  cancelled: "bad",
-  rejected: "bad",
-};
-
-const statusColor = (status: string): string => {
-  return STATUS_GROUPS[status.toLowerCase()] ?? "neutral";
-};
-
-const TURNAROUND_RANK: Record<string, number> = {
-  asap: 0,
-  one_day: 1,
-  a_week: 2,
-  not_urgent: 3,
-};
-
-const turnaroundLabel = (t: string): string => {
-  switch (t) {
-    case "asap":
-      return "ASAP";
-    case "one_day":
-      return "1 day";
-    case "a_week":
-      return "1 week";
-    case "not_urgent":
-      return "Not urgent";
-    default:
-      return prettyStatus(t);
-  }
-};
-
-const turnaroundClass = (t: string): string => {
-  if (t === "asap") return "ta-asap";
-  if (t === "one_day") return "ta-soon";
-  if (t === "a_week") return "ta-week";
-  return "ta-low";
-};
-
-const SOFT_SECRETS = new Set([
-  "password_digest",
-  "password_reset_token",
-  "password_reset_sent_at",
-  "one_time_password",
-  "one_time_password_sent_at",
-  "one_time_password_expires_at",
-  "remember_me_token",
-  "account_activation_token",
-  "magic_invite_code",
-]);
-
-const redact = (obj: any): any => {
-  if (Array.isArray(obj)) return obj.map(redact);
-  if (obj && typeof obj === "object") {
-    const out: Json = {};
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = SOFT_SECRETS.has(k) ? "[redacted in UI]" : redact(v);
-    }
-    return out;
-  }
-  return obj;
-};
-
-// Group statuses into "Open" vs "Completed" buckets for the headline stats.
-const OPEN_STATUSES = new Set([
-  "literature_search",
-  "response_formulation",
-  "review",
-  "reopened",
-]);
-const CLOSED_STATUSES = new Set(["complete", "approved", "published"]);
-
-type SortKey = "newest" | "oldest" | "urgency" | "status";
 
 export default function ExternalInquiriesPage() {
   const [raw, setRaw] = useState<any>(null);
@@ -159,26 +55,10 @@ export default function ExternalInquiriesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [turnaroundFilter, setTurnaroundFilter] = useState("");
-  const [unreadOnly, setUnreadOnly] = useState(false);
-  const [withDocsOnly, setWithDocsOnly] = useState(false);
-  const [sort, setSort] = useState<SortKey>("newest");
-  const [selected, setSelected] = useState<Json | null>(null);
-  const [selectedDetail, setSelectedDetail] = useState<any>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
-
-  // Row-action menu + "Contact manufacturer" flow.
-  // We reuse the same InquiryForm that powers Manufacturer Outreach — just
-  // pre-filled with subject/question from the InpharmD inquiry. After the
-  // user picks a manufacturer and submits, an internal inquiry is created
-  // and the ChannelChooser opens (same as the Outreach tab).
+  const [typeFilter, setTypeFilter] = useState("");
+  const [withAttachmentsOnly, setWithAttachmentsOnly] = useState(false);
+  const [selected, setSelected] = useState<MueInquiry | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
-  const [forwardRow, setForwardRow] = useState<Json | null>(null);
-  const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
-  const [actionBanner, setActionBanner] = useState<string | null>(null);
   const menuWrapRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async (forceFresh = false) => {
@@ -200,19 +80,7 @@ export default function ExternalInquiriesPage() {
     load(false);
   }, [load]);
 
-  // Pull the manufacturer list once so the "Contact manufacturer" form has
-  // the same searchable picker as the Outreach tab. Non-blocking — if this
-  // 500s the page still renders, the action menu just can't be used.
-  useEffect(() => {
-    api.manufacturers
-      .list()
-      .then(setManufacturers)
-      .catch(() => {
-        /* leave empty — InquiryForm will show "Search 0 manufacturers…" */
-      });
-  }, []);
-
-  // Close the row menu when clicking outside it.
+  // Close the row menu when clicking outside.
   useEffect(() => {
     if (!openMenuId) return;
     const onDocClick = (e: MouseEvent) => {
@@ -223,280 +91,167 @@ export default function ExternalInquiriesPage() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [openMenuId]);
 
-  // Auto-hide the success banner after a few seconds.
-  useEffect(() => {
-    if (!actionBanner) return;
-    const t = setTimeout(() => setActionBanner(null), 3500);
-    return () => clearTimeout(t);
-  }, [actionBanner]);
-
-  const startContactManufacturer = (row: Json) => {
-    setOpenMenuId(null);
-    setForwardRow(row);
-  };
-
-  const handleCreateFromExternal = async (data: InquiryInput) => {
-    // Stamp the platform UUID so the backend can POST the eventual
-    // manufacturer reply back to /api/legacy/manufacturing_response.
-    const uuid = forwardRow
-      ? String(pick(forwardRow, "uuid", "inquiry_uuid") ?? "").trim()
-      : "";
-    const payload: InquiryInput = uuid
-      ? { ...data, source_inquiry_uuid: uuid }
-      : data;
-    const created = await api.inquiries.create(payload);
-    setActionBanner(
-      `Inquiry #${created.id} created — choose how to reach the manufacturer.`,
-    );
-    setForwardRow(null);
-    setPendingChoice(created);
-  };
-
-  // Tick once per minute so the "loaded N min ago" label stays current
-  // without forcing a re-fetch.
+  // Tick once a while so "loaded N min ago" stays current.
   const [, forceTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => forceTick((n) => n + 1), 30_000);
     return () => clearInterval(id);
   }, []);
 
-  const inquiries: Json[] = useMemo(() => {
+  const inquiries: MueInquiry[] = useMemo(() => {
     if (!raw) return [];
-    if (Array.isArray(raw)) return raw;
-    if (Array.isArray(raw.data)) return raw.data;
-    if (Array.isArray(raw.inquiries)) return raw.inquiries;
-    if (Array.isArray(raw.results)) return raw.results;
-    return [];
+    const list: any[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw.data)
+      ? raw.data
+      : Array.isArray(raw.inquiries)
+      ? raw.inquiries
+      : Array.isArray(raw.results)
+      ? raw.results
+      : [];
+    return list
+      .map((row: any): MueInquiry | null => {
+        // Tolerate two shapes:
+        //   1) flat MUE shape: { inquiry_uuid, title, … }
+        //   2) JSON:API legacy: { id, type, attributes: { … } }
+        if (row?.inquiry_uuid || row?.title) {
+          return row as MueInquiry;
+        }
+        const a = row?.attributes ?? {};
+        if (!a.title && !a.question && !row.id) return null;
+        return {
+          inquiry_uuid: String(row.id ?? a.uuid ?? a.inquiry_uuid ?? ""),
+          title: String(a.title ?? a.question ?? ""),
+          inquiry_submitter: a.submitter ?? a["submitter-email"] ?? undefined,
+          inquiry_types: a["inquiry-types"] ?? a.inquiry_types ?? [],
+          attachments: a.attachments ?? a["all-documents"] ?? [],
+          inquiry_submitter_details: a["submitter-details"] ?? undefined,
+        };
+      })
+      .filter(Boolean) as MueInquiry[];
   }, [raw]);
 
   // ----- Stats -----
   const stats = useMemo(() => {
-    const byStatus: Record<string, number> = {};
-    const byTurnaround: Record<string, number> = {};
-    const byAssignee: Record<string, number> = {};
-    let open = 0,
-      closed = 0,
-      inReview = 0,
-      unread = 0,
-      withDocs = 0,
-      urgent = 0,
-      thisWeek = 0;
-    const now = Math.floor(Date.now() / 1000);
-    const weekAgo = now - 7 * 86400;
-
+    const byType: Record<string, number> = {};
+    const submitters = new Set<string>();
+    let withDocs = 0;
+    let totalAttachments = 0;
     for (const i of inquiries) {
-      const status = String(pick(i, "status") ?? "unknown");
-      byStatus[status] = (byStatus[status] || 0) + 1;
-      if (OPEN_STATUSES.has(status)) open++;
-      if (CLOSED_STATUSES.has(status)) closed++;
-      if (status === "review") inReview++;
-
-      const ta = String(pick(i, "turnaround-time") ?? "unknown");
-      byTurnaround[ta] = (byTurnaround[ta] || 0) + 1;
-      if (ta === "asap" || ta === "one_day") urgent++;
-
-      const assignee = String(pick(i, "assignee") ?? "").trim();
-      if (assignee) byAssignee[assignee] = (byAssignee[assignee] || 0) + 1;
-
-      if (pick(i, "is-unread")) unread++;
-      const docs = pick(i, "all-documents");
-      if (Array.isArray(docs) && docs.length > 0) withDocs++;
-
-      const created = Number(pick(i, "created-at") ?? 0);
-      if (created >= weekAgo) thisWeek++;
+      const types = i.inquiry_types ?? [];
+      for (const t of types) byType[t] = (byType[t] || 0) + 1;
+      const email = submitterEmail(i) || i.inquiry_submitter || "";
+      if (email) submitters.add(email);
+      const atts = i.attachments ?? [];
+      if (atts.length > 0) withDocs++;
+      totalAttachments += atts.length;
     }
-
     return {
       total: inquiries.length,
-      open,
-      closed,
-      inReview,
-      unread,
       withDocs,
-      urgent,
-      thisWeek,
-      byStatus,
-      byTurnaround,
-      topAssignees: Object.entries(byAssignee)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5),
+      submitters: submitters.size,
+      totalAttachments,
+      byType,
     };
   }, [inquiries]);
 
-  // ----- Filter + sort -----
+  const allTypes = useMemo(
+    () => Object.entries(stats.byType).sort((a, b) => b[1] - a[1]),
+    [stats.byType],
+  );
+
+  // ----- Filter -----
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const out = inquiries.filter((i) => {
-      if (statusFilter && String(pick(i, "status") ?? "") !== statusFilter) return false;
-      if (turnaroundFilter && String(pick(i, "turnaround-time") ?? "") !== turnaroundFilter) return false;
-      if (unreadOnly && !pick(i, "is-unread")) return false;
-      if (withDocsOnly) {
-        const docs = pick(i, "all-documents");
-        if (!Array.isArray(docs) || docs.length === 0) return false;
-      }
+    return inquiries.filter((i) => {
+      if (typeFilter && !(i.inquiry_types ?? []).includes(typeFilter)) return false;
+      if (withAttachmentsOnly && (i.attachments?.length ?? 0) === 0) return false;
       if (q) {
-        const haystack = [
-          pick(i, "question"),
-          pick(i, "title"),
-          pick(i, "submitter"),
-          pick(i, "submitter-email"),
-          pick(i, "assignee"),
-          pick(i, "reviewer"),
-          pick(i, "category"),
-          pick(i, "status"),
-          String(pick(i, "id") ?? ""),
+        const hay = [
+          i.title,
+          i.inquiry_submitter ?? "",
+          submitterEmail(i),
+          ...(i.inquiry_types ?? []),
+          ...(i.attachments ?? []).map((a) => a.file_name),
+          i.inquiry_uuid,
         ]
-          .filter(Boolean)
           .join(" ")
           .toLowerCase();
-        if (!haystack.includes(q)) return false;
+        if (!hay.includes(q)) return false;
       }
       return true;
     });
+  }, [inquiries, search, typeFilter, withAttachmentsOnly]);
 
-    out.sort((a, b) => {
-      if (sort === "newest" || sort === "oldest") {
-        const av = Number(pick(a, "created-at") ?? 0);
-        const bv = Number(pick(b, "created-at") ?? 0);
-        return sort === "newest" ? bv - av : av - bv;
-      }
-      if (sort === "urgency") {
-        const av = TURNAROUND_RANK[String(pick(a, "turnaround-time") ?? "")] ?? 99;
-        const bv = TURNAROUND_RANK[String(pick(b, "turnaround-time") ?? "")] ?? 99;
-        if (av !== bv) return av - bv;
-        return Number(pick(b, "created-at") ?? 0) - Number(pick(a, "created-at") ?? 0);
-      }
-      // status — group same statuses together, then newest first within
-      const av = String(pick(a, "status") ?? "");
-      const bv = String(pick(b, "status") ?? "");
-      if (av !== bv) return av.localeCompare(bv);
-      return Number(pick(b, "created-at") ?? 0) - Number(pick(a, "created-at") ?? 0);
+  const startContact = (i: MueInquiry) => {
+    setOpenMenuId(null);
+    startContactManufacturerFlow({
+      uuid: i.inquiry_uuid,
+      title: i.title,
+      submitter: submitterDisplay(i),
+      type: (i.inquiry_types ?? [])[0],
+      attachments: i.attachments,
     });
-    return out;
-  }, [inquiries, search, statusFilter, turnaroundFilter, unreadOnly, withDocsOnly, sort]);
-
-  const openDetail = async (row: Json) => {
-    const id = pick(row, "id", "uuid", "inquiry_id");
-    setSelected(row);
-    setSelectedDetail(null);
-    setDetailError(null);
-    if (id == null) {
-      setDetailError("This row has no id we can use to fetch details.");
-      return;
-    }
-    setDetailLoading(true);
-    try {
-      const { data } = await api.externalInquiries.get(id);
-      setSelectedDetail(data);
-    } catch (err: any) {
-      setDetailError(err?.message ?? "Failed to load detail.");
-    } finally {
-      setDetailLoading(false);
-    }
   };
-
-  const closeModal = () => {
-    setSelected(null);
-    setSelectedDetail(null);
-    setDetailError(null);
-  };
-
-  const allStatuses = useMemo(
-    () => Object.entries(stats.byStatus).sort((a, b) => b[1] - a[1]),
-    [stats.byStatus]
-  );
-  const allTurnarounds = useMemo(
-    () => Object.entries(stats.byTurnaround).sort((a, b) => b[1] - a[1]),
-    [stats.byTurnaround]
-  );
 
   return (
     <>
       <section className="page-head">
         <h1>InpharmD Inquiries</h1>
         <p>
-          Live feed from the InpharmD platform. {stats.total.toLocaleString()} total inquiries —
-          {" "}<strong>{stats.open}</strong> open,{" "}
-          <strong>{stats.closed}</strong> completed,{" "}
-          <strong>{stats.unread}</strong> unread.
+          Open Medication Use Evaluation (MUE) inquiries from the InpharmD
+          platform — {stats.total.toLocaleString()} total,{" "}
+          <strong>{stats.withDocs}</strong> with attachments,{" "}
+          <strong>{stats.submitters}</strong> unique submitters.
         </p>
         <CacheBadge meta={meta} loadedAt={lastLoadedAt} />
       </section>
 
-      {/* Headline stats — at-a-glance KPIs */}
+      {/* Headline stats */}
       <div className="ext-stats">
-        <StatTile label="Total"     value={stats.total}     tone="neutral" icon="list" />
-        <StatTile label="Open"      value={stats.open}      tone="warn"    icon="clock"
-                  sub="Lit search + formulation + review" />
-        <StatTile label="Completed" value={stats.closed}    tone="good"    icon="check" />
-        <StatTile label="In Review" value={stats.inReview}  tone="info"    icon="eye" />
-        <StatTile label="Unread"    value={stats.unread}    tone="info"    icon="dot" />
-        <StatTile label="Urgent"    value={stats.urgent}    tone="bad"     icon="bolt"
-                  sub="ASAP + 1-day" />
-        <StatTile label="With Docs" value={stats.withDocs}  tone="neutral" icon="paperclip" />
-        <StatTile label="New (7d)"  value={stats.thisWeek}  tone="info"    icon="sparkle" />
+        <StatTile label="Total inquiries" value={stats.total} tone="neutral" icon="list" />
+        <StatTile label="With attachments" value={stats.withDocs} tone="info" icon="paperclip" />
+        <StatTile label="Attachments" value={stats.totalAttachments} tone="neutral" icon="paperclip" />
+        <StatTile label="Submitters" value={stats.submitters} tone="info" icon="dot" />
+        <StatTile label="Inquiry types" value={allTypes.length} tone="neutral" icon="list" />
       </div>
 
-      {/* Status breakdown — clickable chips, doubles as filter */}
-      <div className="ext-section">
-        <div className="ext-section-head">
-          <h3>By status</h3>
-          {statusFilter && (
-            <button type="button" className="ext-clear" onClick={() => setStatusFilter("")}>
-              Clear filter
-            </button>
-          )}
-        </div>
-        <div className="ext-chips">
-          <button
-            type="button"
-            className={`ext-chip ${!statusFilter ? "ext-chip-active" : ""}`}
-            onClick={() => setStatusFilter("")}
-          >
-            All <span className="ext-chip-num">{stats.total}</span>
-          </button>
-          {allStatuses.map(([s, n]) => (
+      {/* By-type chip filters */}
+      {allTypes.length > 0 && (
+        <div className="ext-section">
+          <div className="ext-section-head">
+            <h3>By inquiry type</h3>
+            {typeFilter && (
+              <button type="button" className="ext-clear" onClick={() => setTypeFilter("")}>
+                Clear filter
+              </button>
+            )}
+          </div>
+          <div className="ext-chips">
             <button
-              key={s}
               type="button"
-              className={`ext-chip ext-chip-${statusColor(s)} ${
-                statusFilter === s ? "ext-chip-active" : ""
-              }`}
-              onClick={() => setStatusFilter(statusFilter === s ? "" : s)}
+              className={`ext-chip ${!typeFilter ? "ext-chip-active" : ""}`}
+              onClick={() => setTypeFilter("")}
             >
-              {prettyStatus(s)} <span className="ext-chip-num">{n}</span>
+              All <span className="ext-chip-num">{stats.total}</span>
             </button>
-          ))}
+            {allTypes.map(([t, n]) => (
+              <button
+                key={t}
+                type="button"
+                className={`ext-chip ext-chip-info ${
+                  typeFilter === t ? "ext-chip-active" : ""
+                }`}
+                onClick={() => setTypeFilter(typeFilter === t ? "" : t)}
+              >
+                {t} <span className="ext-chip-num">{n}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Turnaround breakdown */}
-      <div className="ext-section">
-        <div className="ext-section-head">
-          <h3>By turnaround</h3>
-          {turnaroundFilter && (
-            <button type="button" className="ext-clear" onClick={() => setTurnaroundFilter("")}>
-              Clear filter
-            </button>
-          )}
-        </div>
-        <div className="ext-chips">
-          {allTurnarounds.map(([t, n]) => (
-            <button
-              key={t}
-              type="button"
-              className={`ext-chip ${turnaroundClass(t)} ${
-                turnaroundFilter === t ? "ext-chip-active" : ""
-              }`}
-              onClick={() => setTurnaroundFilter(turnaroundFilter === t ? "" : t)}
-            >
-              {turnaroundLabel(t)} <span className="ext-chip-num">{n}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Search + sort + checkboxes */}
+      {/* Search + toggles */}
       <div className="filter-bar">
         <div className="filter-row">
           <div className="search-wrap">
@@ -514,37 +269,18 @@ export default function ExternalInquiriesPage() {
             </svg>
             <input
               className="search-input"
-              placeholder="Search question, submitter, assignee, id…"
+              placeholder="Search title, submitter, file name, uuid…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <select
-            className="filter-select"
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortKey)}
-            title="Sort"
-          >
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="urgency">Urgency (ASAP first)</option>
-            <option value="status">By status</option>
-          </select>
           <label className="ext-toggle">
             <input
               type="checkbox"
-              checked={unreadOnly}
-              onChange={(e) => setUnreadOnly(e.target.checked)}
+              checked={withAttachmentsOnly}
+              onChange={(e) => setWithAttachmentsOnly(e.target.checked)}
             />
-            Unread only
-          </label>
-          <label className="ext-toggle">
-            <input
-              type="checkbox"
-              checked={withDocsOnly}
-              onChange={(e) => setWithDocsOnly(e.target.checked)}
-            />
-            With docs only
+            With attachments
           </label>
           <div className="filter-spacer" />
           <button
@@ -559,8 +295,7 @@ export default function ExternalInquiriesPage() {
         <div className="filter-meta">
           Showing <strong>{filtered.length.toLocaleString()}</strong> of{" "}
           {stats.total.toLocaleString()} inquiries
-          {(statusFilter || turnaroundFilter || unreadOnly || withDocsOnly || search) &&
-            " (filtered)"}
+          {(typeFilter || withAttachmentsOnly || search) && " (filtered)"}
         </div>
       </div>
 
@@ -570,7 +305,6 @@ export default function ExternalInquiriesPage() {
         {loading ? (
           <div className="empty">
             <div className="empty-title">Loading from InpharmD…</div>
-            <div className="empty-sub">List response is a few MB — give it a moment.</div>
           </div>
         ) : filtered.length === 0 ? (
           <div className="empty">
@@ -584,72 +318,54 @@ export default function ExternalInquiriesPage() {
                 <col className="col-id" />
                 <col className="col-question" />
                 <col className="col-submitter" />
-                <col className="col-assignee" />
-                <col className="col-status" />
-                <col className="col-turnaround" />
+                <col className="col-type" />
                 <col className="col-docs" />
-                <col className="col-age" />
                 <col className="col-actions" />
               </colgroup>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Question</th>
+                  <th>UUID</th>
+                  <th>Title</th>
                   <th>Submitter</th>
-                  <th>Assignee</th>
-                  <th>Status</th>
-                  <th>Turnaround</th>
-                  <th className="th-center" title="Documents">
-                    📎
-                  </th>
-                  <th>Age</th>
+                  <th>Type</th>
+                  <th className="th-center" title="Attachments">📎</th>
                   <th className="th-center" aria-label="Actions"></th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((i, idx) => {
-                  const id = pick(i, "id") ?? `?`;
-                  const question = pick(i, "question") ?? pick(i, "title") ?? "(no question)";
-                  const submitterName = pick(i, "submitter") ?? pick(i, "submitter-email") ?? "—";
-                  const submitterEmail = pick(i, "submitter-email") ?? "";
-                  const assignee = pick(i, "assignee") ?? "—";
-                  const status = String(pick(i, "status") ?? "unknown");
-                  const ta = String(pick(i, "turnaround-time") ?? "");
-                  const docs = pick(i, "all-documents");
-                  const docCount = Array.isArray(docs) ? docs.length : 0;
-                  const created = pick(i, "created-at");
-                  const isUnread = !!pick(i, "is-unread");
+                {filtered.map((i) => {
+                  const docCount = i.attachments?.length ?? 0;
+                  const types = i.inquiry_types ?? [];
                   return (
                     <tr
-                      key={String(id) + "-" + idx}
-                      onClick={() => openDetail(i)}
-                      className={isUnread ? "ext-row-unread" : ""}
+                      key={i.inquiry_uuid}
+                      onClick={() => setSelected(i)}
                     >
                       <td className="ext-id-cell">
-                        {isUnread && <span className="ext-unread-dot" aria-label="Unread" />}
-                        <span className="ext-id">#{String(id)}</span>
+                        <span className="ext-id mono-small">
+                          {shortUuid(i.inquiry_uuid)}
+                        </span>
                       </td>
                       <td className="ext-question-cell">
-                        <div className="ext-question-text" title={String(question)}>
-                          {String(question)}
+                        <div className="ext-question-text" title={i.title}>
+                          {truncate(i.title, 120)}
                         </div>
                       </td>
                       <td className="ext-submitter-cell">
-                        <div className="ext-submitter-name">{String(submitterName)}</div>
-                        {submitterEmail && submitterEmail !== submitterName && (
-                          <div className="ext-submitter-email">{String(submitterEmail)}</div>
+                        <div className="ext-submitter-name">
+                          {submitterDisplay(i)}
+                        </div>
+                        {submitterEmail(i) && (
+                          <div className="ext-submitter-email">
+                            {submitterEmail(i)}
+                          </div>
                         )}
                       </td>
-                      <td className="cell-muted ext-nowrap">{String(assignee)}</td>
                       <td className="ext-pill-cell">
-                        <span className={`status-badge status-${statusColor(status)}`}>
-                          {prettyStatus(status)}
-                        </span>
-                      </td>
-                      <td className="ext-pill-cell">
-                        {ta ? (
-                          <span className={`ext-ta-pill ${turnaroundClass(ta)}`}>
-                            {turnaroundLabel(ta)}
+                        {types.length > 0 ? (
+                          <span className="ext-chip ext-chip-info ext-chip-static">
+                            {truncate(types[0], 32)}
+                            {types.length > 1 && ` +${types.length - 1}`}
                           </span>
                         ) : (
                           <span className="cell-muted">—</span>
@@ -664,28 +380,26 @@ export default function ExternalInquiriesPage() {
                           <span className="cell-muted">·</span>
                         )}
                       </td>
-                      <td className="cell-muted ext-nowrap" title={fmtDateTime(created)}>
-                        {fmtRelative(created)}
-                      </td>
                       <td
                         className="cell-actions"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div
                           className="row-menu"
-                          ref={openMenuId === String(id) + "-" + idx ? menuWrapRef : undefined}
+                          ref={openMenuId === i.inquiry_uuid ? menuWrapRef : undefined}
                         >
                           <button
                             type="button"
                             className={`menu-trigger ${
-                              openMenuId === String(id) + "-" + idx ? "menu-trigger-open" : ""
+                              openMenuId === i.inquiry_uuid ? "menu-trigger-open" : ""
                             }`}
                             aria-label="Row actions"
                             title="Actions"
                             onClick={(e) => {
                               e.stopPropagation();
-                              const key = String(id) + "-" + idx;
-                              setOpenMenuId(openMenuId === key ? null : key);
+                              setOpenMenuId(
+                                openMenuId === i.inquiry_uuid ? null : i.inquiry_uuid,
+                              );
                             }}
                           >
                             <svg viewBox="0 0 20 20" fill="currentColor">
@@ -694,12 +408,12 @@ export default function ExternalInquiriesPage() {
                               <circle cx="10" cy="16" r="1.6" />
                             </svg>
                           </button>
-                          {openMenuId === String(id) + "-" + idx && (
+                          {openMenuId === i.inquiry_uuid && (
                             <div className="menu-popover" role="menu">
                               <button
                                 type="button"
                                 className="menu-item"
-                                onClick={() => startContactManufacturer(i)}
+                                onClick={() => startContact(i)}
                               >
                                 <svg
                                   viewBox="0 0 24 24"
@@ -729,64 +443,114 @@ export default function ExternalInquiriesPage() {
       {selected && (
         <DetailModal
           inquiry={selected}
-          detail={selectedDetail}
-          detailLoading={detailLoading}
-          detailError={detailError}
-          onClose={closeModal}
-        />
-      )}
-
-      {forwardRow && (
-        <InquiryForm
-          manufacturers={manufacturers}
-          defaultSubject={deriveQuestionText(forwardRow)}
-          defaultQuestion={deriveQuestionText(forwardRow)}
-          contextNote={`Forwarding InpharmD inquiry #${String(pick(forwardRow, "id") ?? "?")} — pick a manufacturer and submit.`}
-          onClose={() => setForwardRow(null)}
-          onSubmit={handleCreateFromExternal}
-        />
-      )}
-
-      {pendingChoice && (
-        <ChannelChooser
-          inquiry={pendingChoice}
-          onClose={() => setPendingChoice(null)}
-          onSendEmail={async () => {
-            try {
-              await api.inquiries.sendEmail(pendingChoice.id);
-              setActionBanner(
-                `Email queued for ${pendingChoice.manufacturer?.manufacturer ?? "manufacturer"}.`,
-              );
-            } catch (e: any) {
-              setActionBanner(`Failed to send email: ${e?.message ?? "unknown"}`);
-            }
-            setPendingChoice(null);
-          }}
-          onCallTriggered={() => {
-            setActionBanner("Call placed — the agent is dialing now.");
-            setPendingChoice(null);
-          }}
-          onTestCallTriggered={(phone) => {
-            setActionBanner(`Test call dialing ${phone}.`);
+          onClose={() => setSelected(null)}
+          onContact={() => {
+            const i = selected;
+            setSelected(null);
+            startContact(i);
           }}
         />
-      )}
-
-      {actionBanner && (
-        <div className="success-banner toast-banner" role="status">
-          {actionBanner}
-        </div>
       )}
     </>
   );
 }
 
-// Both subject and question are just the raw staging question — no prefix,
-// no footer, no category line. The user wanted parity with the Outreach
-// flow: same form, same field semantics, no extra metadata.
-function deriveQuestionText(row: Json): string {
-  return String(pick(row, "question") ?? pick(row, "title") ?? "").trim();
-}
+// ───────────────────────── Detail modal ─────────────────────────
+
+const DetailModal = ({
+  inquiry,
+  onClose,
+  onContact,
+}: {
+  inquiry: MueInquiry;
+  onClose: () => void;
+  onContact: () => void;
+}) => {
+  const det = inquiry.inquiry_submitter_details ?? {};
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Inquiry details</h2>
+          <button
+            type="button"
+            className="modal-close"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div className="modal-body">
+          <div className="contact-context-card">
+            <div className="contact-context-row">
+              <span className="contact-context-label">Title</span>
+              <span className="contact-context-value">{inquiry.title || "—"}</span>
+            </div>
+            <div className="contact-context-row">
+              <span className="contact-context-label">UUID</span>
+              <span className="contact-context-value mono-small">
+                {inquiry.inquiry_uuid}
+              </span>
+            </div>
+            <div className="contact-context-row">
+              <span className="contact-context-label">Submitter</span>
+              <span className="contact-context-value">
+                {submitterDisplay(inquiry)}
+                {det.email && (
+                  <div className="ext-submitter-email">{det.email}</div>
+                )}
+              </span>
+            </div>
+            {(inquiry.inquiry_types ?? []).length > 0 && (
+              <div className="contact-context-row">
+                <span className="contact-context-label">Types</span>
+                <span className="contact-context-value">
+                  {(inquiry.inquiry_types ?? []).map((t) => (
+                    <span key={t} className="ext-chip ext-chip-info ext-chip-static">
+                      {t}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            )}
+            {(inquiry.attachments ?? []).length > 0 && (
+              <div className="contact-context-row">
+                <span className="contact-context-label">
+                  Attachments ({inquiry.attachments?.length})
+                </span>
+                <span className="contact-context-value">
+                  <ul className="contact-attachment-list">
+                    {(inquiry.attachments ?? []).map((a) => (
+                      <li key={a.id}>
+                        <a href={a.doc_url} target="_blank" rel="noreferrer">
+                          📎 {a.file_name}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            Close
+          </button>
+          <button type="button" className="btn btn-primary" onClick={onContact}>
+            Contact manufacturer →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ───────────────────────── Cache badge ─────────────────────────
 
@@ -805,15 +569,12 @@ interface CacheBadgeProps {
 const CacheBadge = ({ meta, loadedAt }: CacheBadgeProps) => {
   if (!meta || !loadedAt) return null;
   const loadedAge = Math.floor((Date.now() - loadedAt) / 1000);
-
   if (meta.cache === "STALE") {
     return (
       <div className="cache-badge cache-stale">
         <span className="cache-dot cache-dot-stale" />
         <strong>Showing stale cache</strong>
-        {meta.cacheAgeSeconds != null && (
-          <> · cached {fmtAge(meta.cacheAgeSeconds)}</>
-        )}
+        {meta.cacheAgeSeconds != null && <> · cached {fmtAge(meta.cacheAgeSeconds)}</>}
         {meta.upstreamError && (
           <> · upstream: <code>{meta.upstreamError}</code></>
         )}
@@ -844,25 +605,16 @@ const CacheBadge = ({ meta, loadedAt }: CacheBadgeProps) => {
 
 // ─────────────────────────── Stat tile ───────────────────────────
 
-type IconKey =
-  | "list"
-  | "clock"
-  | "check"
-  | "eye"
-  | "dot"
-  | "bolt"
-  | "paperclip"
-  | "sparkle";
+type IconKey = "list" | "paperclip" | "dot";
 
 interface StatTileProps {
   label: string;
   value: number;
-  sub?: string;
   tone: "good" | "warn" | "bad" | "info" | "neutral";
   icon: IconKey;
 }
 
-const StatTile = ({ label, value, sub, tone, icon }: StatTileProps) => (
+const StatTile = ({ label, value, tone, icon }: StatTileProps) => (
   <div className={`ext-stat ext-stat-${tone}`}>
     <div className="ext-stat-head">
       <div className="ext-stat-label">{label}</div>
@@ -871,7 +623,6 @@ const StatTile = ({ label, value, sub, tone, icon }: StatTileProps) => (
       </div>
     </div>
     <div className="ext-stat-value">{value.toLocaleString()}</div>
-    {sub && <div className="ext-stat-sub">{sub}</div>}
   </div>
 );
 
@@ -896,24 +647,10 @@ const StatIcon = ({ name }: { name: IconKey }) => {
           <circle cx="4" cy="18" r="1" />
         </svg>
       );
-    case "clock":
+    case "paperclip":
       return (
         <svg {...common}>
-          <circle cx="12" cy="12" r="9" />
-          <polyline points="12 7 12 12 15.5 14" />
-        </svg>
-      );
-    case "check":
-      return (
-        <svg {...common}>
-          <path d="M20 7L9 18l-5-5" />
-        </svg>
-      );
-    case "eye":
-      return (
-        <svg {...common}>
-          <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
-          <circle cx="12" cy="12" r="3" />
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48" />
         </svg>
       );
     case "dot":
@@ -923,177 +660,5 @@ const StatIcon = ({ name }: { name: IconKey }) => {
           <path d="M21 12.5V18a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3h5.5" />
         </svg>
       );
-    case "bolt":
-      return (
-        <svg {...common}>
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-        </svg>
-      );
-    case "paperclip":
-      return (
-        <svg {...common}>
-          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-        </svg>
-      );
-    case "sparkle":
-      return (
-        <svg {...common}>
-          <path d="M12 3l1.8 4.6L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.4L12 3z" />
-          <path d="M19 15l.7 1.7L21.5 17l-1.8.7L19 19l-.7-1.5L17 17l1.8-.6L19 15z" />
-        </svg>
-      );
   }
-};
-
-// ─────────────────────────── Detail modal ───────────────────────────
-
-interface DetailModalProps {
-  inquiry: Json;
-  detail: any;
-  detailLoading: boolean;
-  detailError: string | null;
-  onClose: () => void;
-}
-
-const DetailModal = ({
-  inquiry,
-  detail,
-  detailLoading,
-  detailError,
-  onClose,
-}: DetailModalProps) => {
-  const id = pick(inquiry, "id") ?? "?";
-  const question = pick(inquiry, "question") ?? pick(inquiry, "title") ?? "(no question)";
-  const status = String(pick(inquiry, "status") ?? "—");
-  const ta = String(pick(inquiry, "turnaround-time") ?? "");
-  const docs = pick(inquiry, "all-documents");
-  const team = pick(inquiry, "submitter-team");
-
-  return (
-    <div
-      className="modal-backdrop"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()} style={{ maxWidth: 980 }}>
-        <div className="modal-header">
-          <h2 style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            Inquiry #{String(id)}
-            <span className={`status-badge status-${statusColor(status)}`}>
-              {prettyStatus(status)}
-            </span>
-            {ta && <span className={`ext-ta-pill ${turnaroundClass(ta)}`}>{turnaroundLabel(ta)}</span>}
-          </h2>
-          <button type="button" className="modal-close" onClick={onClose}>
-            ×
-          </button>
-        </div>
-        <div className="modal-body">
-          {/* Question */}
-          <div className="answer-card" style={{ marginBottom: 18 }}>
-            <div className="answer-label">Question</div>
-            <div className="answer-text" style={{ whiteSpace: "pre-wrap" }}>
-              {String(question)}
-            </div>
-          </div>
-
-          {/* Meta grid */}
-          <div className="ext-meta-grid">
-            <Meta label="Submitter" value={pick(inquiry, "submitter")} />
-            <Meta label="Email" value={pick(inquiry, "submitter-email")} />
-            <Meta
-              label="Team"
-              value={typeof team === "object" ? team?.name ?? team?.["name"] : team}
-            />
-            <Meta label="Assignee" value={pick(inquiry, "assignee")} />
-            <Meta label="Reviewer" value={pick(inquiry, "reviewer-names") ?? pick(inquiry, "reviewer")} />
-            <Meta label="Category" value={pick(inquiry, "category")} />
-            <Meta label="Project type" value={pick(inquiry, "project-types")} />
-            <Meta label="Level of evidence" value={pick(inquiry, "level-of-evidence")} />
-            <Meta label="Created" value={fmtDateTime(pick(inquiry, "created-at"))} />
-            <Meta label="First read" value={fmtDateTime(pick(inquiry, "read-at"))} />
-            <Meta label="Approved" value={fmtDateTime(pick(inquiry, "approved-at"))} />
-            <Meta label="Published" value={fmtDateTime(pick(inquiry, "published-at"))} />
-            <Meta label="Comments" value={pick(inquiry, "comments-count")} />
-            <Meta label="Favourites" value={pick(inquiry, "favourite-count")} />
-            <Meta label="Star rating" value={pick(inquiry, "star-rating")} />
-            <Meta label="UUID" value={pick(inquiry, "uuid")} mono />
-          </div>
-
-          {/* Attachments */}
-          {Array.isArray(docs) && docs.length > 0 && (
-            <div style={{ marginTop: 18 }}>
-              <h3 style={{ marginTop: 0 }}>Attachments ({docs.length})</h3>
-              <ul className="ext-doc-list">
-                {docs.map((d: any, i: number) => {
-                  const name = d.file_file_name ?? d.file_name ?? d.name ?? "(unnamed)";
-                  const size = d.file_file_size
-                    ? `${Math.round(Number(d.file_file_size) / 1024)} KB`
-                    : "";
-                  const type = d.file_content_type ?? d.content_type ?? "";
-                  return (
-                    <li key={i}>
-                      <span className="ext-doc-name">📎 {name}</span>
-                      <span className="cell-muted" style={{ marginLeft: 8 }}>
-                        {type} {size && `• ${size}`}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-
-          {/* Submitter details (separate API call) */}
-          <details style={{ marginTop: 22 }}>
-            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-              Submitter account details (from /submitter_details)
-            </summary>
-            <div className="hint" style={{ margin: "8px 0" }}>
-              Password hashes and other secrets redacted in this view.
-            </div>
-            {detailLoading && <div className="empty">Loading…</div>}
-            {detailError && <div className="error-banner">{detailError}</div>}
-            {!detailLoading && !detailError && detail && (
-              <pre className="raw-json">{JSON.stringify(redact(detail), null, 2)}</pre>
-            )}
-          </details>
-
-          {/* Raw JSON (collapsed) */}
-          <details style={{ marginTop: 18 }}>
-            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-              Full raw JSON (debug)
-            </summary>
-            <pre className="raw-json" style={{ marginTop: 8 }}>
-              {JSON.stringify(inquiry, null, 2)}
-            </pre>
-          </details>
-        </div>
-        <div className="modal-footer">
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const Meta = ({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: any;
-  mono?: boolean;
-}) => {
-  const str = value == null || value === "" ? "—" : String(value);
-  return (
-    <div className="ext-meta-item">
-      <div className="ext-meta-label">{label}</div>
-      <div className={"ext-meta-value" + (mono ? " ext-meta-mono" : "")}>{str}</div>
-    </div>
-  );
 };
