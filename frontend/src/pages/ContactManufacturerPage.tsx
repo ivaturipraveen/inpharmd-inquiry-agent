@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
 import { api } from "../api";
+import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import type {
   Inquiry,
   InquiryInput,
@@ -544,18 +545,42 @@ export default function ContactManufacturerPage() {
                             <span className="cell-muted">No match in your manufacturer DB — add it first</span>
                           </div>
                         )}
-                        {matched && (
-                          <div className="bulk-row-mfr-meta">
-                            {email && <span>📧 {email}</span>}
-                            {mfr?.mi_phone && <span>📞 {mfr.mi_phone}</span>}
-                            {mfr?.typical_response_sla && (
-                              <span>⏱ {mfr.typical_response_sla}</span>
-                            )}
-                            {!email && (
-                              <span className="bulk-row-warn">No email on file — won't send</span>
-                            )}
-                          </div>
-                        )}
+                        {matched && (() => {
+                          const inHours = isWithinBusinessHoursNow(mfr?.mi_phone_hours);
+                          return (
+                            <div className="bulk-row-mfr-meta">
+                              {email && <span>📧 {email}</span>}
+                              {mfr?.mi_phone && <span>📞 {mfr.mi_phone}</span>}
+                              {mfr?.mi_phone_hours && (
+                                <span
+                                  className={
+                                    inHours === false
+                                      ? "bulk-row-hours bulk-row-hours-out"
+                                      : inHours === true
+                                      ? "bulk-row-hours bulk-row-hours-in"
+                                      : "bulk-row-hours"
+                                  }
+                                  title={
+                                    inHours === false
+                                      ? "Outside business hours right now — Call Agent will skip this number"
+                                      : inHours === true
+                                      ? "Inside business hours right now"
+                                      : undefined
+                                  }
+                                >
+                                  🕒 {mfr.mi_phone_hours}
+                                  {inHours === false && " · outside hours now"}
+                                </span>
+                              )}
+                              {mfr?.typical_response_sla && (
+                                <span>⏱ {mfr.typical_response_sla}</span>
+                              )}
+                              {!email && (
+                                <span className="bulk-row-warn">No email on file — won't send</span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </label>
                   );
@@ -617,10 +642,19 @@ export default function ContactManufacturerPage() {
               const m = r.matched_id ? mfrById[r.matched_id] : undefined;
               return !!(m?.official_mi_email || m?.team_verified_email);
             }).length;
-            const reachableByPhone = selectedMatched.filter((r) => {
+            const phoneRows = selectedMatched.filter((r) => {
               const m = r.matched_id ? mfrById[r.matched_id] : undefined;
               return !!m?.mi_phone;
+            });
+            const reachableByPhone = phoneRows.length;
+            // How many of those have hours we can determine to be out-of-window
+            // right now. Treat null (unknown) as still-callable since the
+            // backend will fall back to its own check.
+            const outOfHoursNow = phoneRows.filter((r) => {
+              const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+              return isWithinBusinessHoursNow(m?.mi_phone_hours) === false;
             }).length;
+            const callableNow = reachableByPhone - outOfHoursNow;
             const total = selectedMatched.length;
             const noneSelected = total === 0;
             const testDigits = digitsOnly(testLocal);
@@ -674,7 +708,7 @@ export default function ContactManufacturerPage() {
                     </div>
 
                     {/* Call card */}
-                    <div className={`channel-card ${reachableByPhone === 0 ? "channel-disabled" : ""}`}>
+                    <div className={`channel-card ${callableNow === 0 ? "channel-disabled" : ""}`}>
                       <div className="channel-icon channel-icon-call">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
@@ -682,12 +716,24 @@ export default function ContactManufacturerPage() {
                       </div>
                       <div className="channel-title">Call Agent</div>
                       <div className="channel-sub">
-                        Voice agent dials each selected manufacturer in sequence
-                        and asks the question. Out-of-hours numbers are skipped.
+                        Voice agent dials each callable manufacturer in sequence.
+                        Numbers outside their business hours right now stay as
+                        drafts — you can retry them later from Outreach.
                       </div>
                       <ul className="channel-meta">
                         <li>
-                          <span>Reachable</span> {reachableByPhone} of {total} have phone
+                          <span>Callable now</span>{" "}
+                          {callableNow} of {total}
+                          {reachableByPhone < total && (
+                            <span className="cell-muted">
+                              {" "}· {total - reachableByPhone} no phone
+                            </span>
+                          )}
+                          {outOfHoursNow > 0 && (
+                            <span className="bulk-row-warn">
+                              {" "}· {outOfHoursNow} outside hours
+                            </span>
+                          )}
                         </li>
                         <li>
                           <span>Order</span> sequentially, one at a time
@@ -696,12 +742,21 @@ export default function ContactManufacturerPage() {
                       <button
                         className="btn btn-primary"
                         type="button"
-                        disabled={noneSelected || reachableByPhone === 0 || anyBusy}
+                        disabled={noneSelected || callableNow === 0 || anyBusy}
+                        title={
+                          callableNow === 0 && reachableByPhone > 0
+                            ? "All selected manufacturers are outside business hours right now."
+                            : callableNow === 0
+                            ? "No selected manufacturers have a phone number on file."
+                            : undefined
+                        }
                         onClick={() => handleBulkSubmit("call")}
                       >
                         {submitting === "call"
                           ? "Calling…"
-                          : `Call ${reachableByPhone || total} Now`}
+                          : callableNow === 0
+                          ? "Nobody callable now"
+                          : `Call ${callableNow} Now`}
                       </button>
                     </div>
 

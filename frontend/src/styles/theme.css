@@ -350,6 +350,14 @@ a:hover {
   display: flex;
   flex-direction: column;
 }
+/* Used when the trigger lives inside an overflow:auto container — we
+   re-render the popover at the page root with viewport coords so the
+   scroll container cannot clip it. */
+.menu-popover-fixed {
+  position: fixed;
+  top: auto;
+  z-index: 1000;
+}
 .menu-item {
   display: flex;
   align-items: center;
@@ -1113,6 +1121,20 @@ pre.raw-json {
 .mfr-detect-meta {
   font-size: 12px;
   color: var(--ink);
+}
+
+.bulk-row-hours {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.bulk-row-hours-out {
+  color: #b54708;
+  font-weight: 600;
+}
+.bulk-row-hours-in {
+  color: #166534;
+  font-weight: 600;
 }
 
 .bulk-search-row {

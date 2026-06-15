@@ -59,7 +59,11 @@ export default function ExternalInquiriesPage() {
   const [withAttachmentsOnly, setWithAttachmentsOnly] = useState(false);
   const [selected, setSelected] = useState<MueInquiry | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const menuWrapRef = useRef<HTMLDivElement | null>(null);
+  // Viewport-anchored coords for the popover. We render it with
+  // `position: fixed` because the table sits inside `.table-scroll`
+  // (overflow-x:auto) which would otherwise clip the dropdown.
+  const [menuAnchor, setMenuAnchor] = useState<{ top: number; right: number } | null>(null);
+  const menuPopoverRef = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(async (forceFresh = false) => {
     setLoading(true);
@@ -80,15 +84,31 @@ export default function ExternalInquiriesPage() {
     load(false);
   }, [load]);
 
-  // Close the row menu when clicking outside.
+  // Close the row menu when clicking outside, on scroll, or on resize.
   useEffect(() => {
     if (!openMenuId) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!menuWrapRef.current) return;
-      if (!menuWrapRef.current.contains(e.target as Node)) setOpenMenuId(null);
+    const close = (e: MouseEvent) => {
+      const pop = menuPopoverRef.current;
+      const trigger = document.querySelector(
+        `[data-menu-trigger="${openMenuId}"]`,
+      );
+      if (pop?.contains(e.target as Node)) return;
+      if (trigger?.contains(e.target as Node)) return;
+      setOpenMenuId(null);
+      setMenuAnchor(null);
     };
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    const closeOnViewportChange = () => {
+      setOpenMenuId(null);
+      setMenuAnchor(null);
+    };
+    document.addEventListener("mousedown", close);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    window.addEventListener("resize", closeOnViewportChange);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+      window.removeEventListener("resize", closeOnViewportChange);
+    };
   }, [openMenuId]);
 
   // Tick once a while so "loaded N min ago" stays current.
@@ -384,12 +404,10 @@ export default function ExternalInquiriesPage() {
                         className="cell-actions"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div
-                          className="row-menu"
-                          ref={openMenuId === i.inquiry_uuid ? menuWrapRef : undefined}
-                        >
+                        <div className="row-menu">
                           <button
                             type="button"
+                            data-menu-trigger={i.inquiry_uuid}
                             className={`menu-trigger ${
                               openMenuId === i.inquiry_uuid ? "menu-trigger-open" : ""
                             }`}
@@ -397,9 +415,18 @@ export default function ExternalInquiriesPage() {
                             title="Actions"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setOpenMenuId(
-                                openMenuId === i.inquiry_uuid ? null : i.inquiry_uuid,
-                              );
+                              const isOpen = openMenuId === i.inquiry_uuid;
+                              if (isOpen) {
+                                setOpenMenuId(null);
+                                setMenuAnchor(null);
+                              } else {
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                setMenuAnchor({
+                                  top: rect.bottom + 6,
+                                  right: window.innerWidth - rect.right,
+                                });
+                                setOpenMenuId(i.inquiry_uuid);
+                              }
                             }}
                           >
                             <svg viewBox="0 0 20 20" fill="currentColor">
@@ -408,27 +435,6 @@ export default function ExternalInquiriesPage() {
                               <circle cx="10" cy="16" r="1.6" />
                             </svg>
                           </button>
-                          {openMenuId === i.inquiry_uuid && (
-                            <div className="menu-popover" role="menu">
-                              <button
-                                type="button"
-                                className="menu-item"
-                                onClick={() => startContact(i)}
-                              >
-                                <svg
-                                  viewBox="0 0 24 24"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <path d="M3 11l18-8-8 18-2-8-8-2z" />
-                                </svg>
-                                Contact manufacturer
-                              </button>
-                            </div>
-                          )}
                         </div>
                       </td>
                     </tr>
@@ -439,6 +445,43 @@ export default function ExternalInquiriesPage() {
           </div>
         )}
       </div>
+
+      {/* Single fixed popover for the row actions menu. Renders outside the
+          scrollable table so overflow:auto doesn't clip it. */}
+      {openMenuId && menuAnchor && (() => {
+        const target = raw.find((x: any) => x.inquiry_uuid === openMenuId);
+        if (!target) return null;
+        return (
+          <div
+            ref={menuPopoverRef}
+            className="menu-popover menu-popover-fixed"
+            role="menu"
+            style={{ top: `${menuAnchor.top}px`, right: `${menuAnchor.right}px` }}
+          >
+            <button
+              type="button"
+              className="menu-item"
+              onClick={() => {
+                setOpenMenuId(null);
+                setMenuAnchor(null);
+                startContact(target);
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 11l18-8-8 18-2-8-8-2z" />
+              </svg>
+              Contact manufacturer
+            </button>
+          </div>
+        );
+      })()}
 
       {selected && (
         <DetailModal
