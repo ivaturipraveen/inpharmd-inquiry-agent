@@ -107,7 +107,7 @@ def create_inquiry(
 
 
 @router.post("/bulk", response_model=BulkInquiryResult, status_code=201)
-def bulk_create_inquiries(
+async def bulk_create_inquiries(
     payload: BulkInquiryCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -119,11 +119,30 @@ def bulk_create_inquiries(
     `source_inquiry_uuid` and `source_excel_url`, with a per-target
     `source_excel_row` so the response-writeback can find the right row.
 
-    If `send_email=true`, attempts to send the email immediately and
-    captures per-target failures without aborting the batch.
+    Dispatch:
+      - email     → email all created inquiries
+      - call      → trigger ElevenLabs voice agent for all created inquiries
+      - test_call → dial `test_call_to_number` once using the first
+                    created inquiry's context (manufacturers are NOT contacted)
+      - none      → leave as drafts
     """
     if not payload.targets:
         raise HTTPException(status_code=422, detail="At least one target is required")
+
+    # Resolve dispatch channel — keep the legacy `send_email` field working.
+    channel = (payload.dispatch_channel or "email").strip().lower()
+    if payload.send_email is False and channel == "email":
+        channel = "none"
+    if channel not in ("email", "call", "test_call", "none"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown dispatch_channel '{channel}'. Use email|call|test_call|none.",
+        )
+    if channel == "test_call" and not (payload.test_call_to_number or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="test_call_to_number is required when dispatch_channel='test_call'",
+        )
 
     requester_name = (payload.requester_name or "").strip() or DEFAULT_REQUESTER_NAME
     requester_email = (payload.requester_email or "").strip() or DEFAULT_REQUESTER_EMAIL
@@ -156,9 +175,13 @@ def bulk_create_inquiries(
 
     db.commit()
 
-    # Best-effort email send. We don't roll back creates on send failure —
-    # the user still has draft inquiries they can retry from the Outreach tab.
-    if payload.send_email:
+    dispatched = 0
+    test_call_inquiry_id: Optional[int] = None
+    test_call_to: Optional[str] = None
+
+    if channel == "email":
+        # Best-effort email send. We don't roll back creates on send failure —
+        # the user still has draft inquiries they can retry from the Outreach tab.
         for obj in list(created_objs):
             mfr = db.get(ManufacturerContact, obj.manufacturer_id)
             if not mfr:
@@ -192,10 +215,99 @@ def bulk_create_inquiries(
             obj.email_sent_at = now
             obj.email_message_id = message_id
             obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
+            dispatched += 1
         db.commit()
 
+    elif channel == "call":
+        # Sequentially place a voice-agent call for each created inquiry.
+        # Skip manufacturers with no phone / outside business hours rather
+        # than aborting the whole batch.
+        for obj in list(created_objs):
+            mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+            if not mfr:
+                failed.append({"manufacturer_id": obj.manufacturer_id, "error": "Manufacturer disappeared after create"})
+                continue
+            if not mfr.mi_phone:
+                failed.append({
+                    "manufacturer_id": obj.manufacturer_id,
+                    "error": f"{mfr.manufacturer} has no MI phone number on file",
+                })
+                continue
+            in_hours = call_service.is_within_business_hours(mfr.mi_phone_hours)
+            if in_hours is False:
+                failed.append({
+                    "manufacturer_id": obj.manufacturer_id,
+                    "error": f"{mfr.manufacturer} is outside business hours ({mfr.mi_phone_hours})",
+                })
+                continue
+            try:
+                resp = await call_service.place_inquiry_call(
+                    inquiry_id=obj.id,
+                    to_number=mfr.mi_phone,
+                    manufacturer_name=mfr.manufacturer,
+                    subject=obj.subject,
+                    question=obj.question,
+                    requester_name=obj.requester_name,
+                    requester_email=obj.requester_email,
+                )
+            except Exception as e:
+                failed.append({
+                    "manufacturer_id": obj.manufacturer_id,
+                    "error": f"Call failed: {e}",
+                })
+                continue
+            obj.status = "call_pending"
+            obj.call_scheduled_for = _now()
+            obj.call_conversation_id = (
+                resp.get("conversation_id") or resp.get("conversationId")
+            )
+            obj.call_provider_status = resp.get("status") or "initiated"
+            obj.next_retry_at = None
+            dispatched += 1
+        db.commit()
+
+    elif channel == "test_call":
+        # Dial the user's own number using ONE inquiry's context. No manufacturer
+        # is contacted; status of every created inquiry stays "draft" so the
+        # user can dispatch them for real later from the Outreach tab.
+        first = created_objs[0] if created_objs else None
+        if first is not None:
+            mfr = db.get(ManufacturerContact, first.manufacturer_id)
+            if not mfr:
+                failed.append({
+                    "manufacturer_id": first.manufacturer_id,
+                    "error": "Manufacturer disappeared after create",
+                })
+            else:
+                try:
+                    await call_service.place_inquiry_call(
+                        inquiry_id=first.id,
+                        to_number=payload.test_call_to_number,
+                        manufacturer_name=mfr.manufacturer,
+                        subject=first.subject,
+                        question=first.question,
+                        requester_name=first.requester_name,
+                        requester_email=first.requester_email,
+                        is_test=True,
+                    )
+                    test_call_inquiry_id = first.id
+                    test_call_to = payload.test_call_to_number
+                    dispatched = 1
+                except Exception as e:
+                    failed.append({
+                        "manufacturer_id": first.manufacturer_id,
+                        "error": f"Test call failed: {e}",
+                    })
+
     refreshed = [_get_or_404(db, obj.id, current_user) for obj in created_objs]
-    return BulkInquiryResult(created=refreshed, failed=failed)
+    return BulkInquiryResult(
+        created=refreshed,
+        failed=failed,
+        dispatch_channel=channel,
+        dispatched=dispatched,
+        test_call_inquiry_id=test_call_inquiry_id,
+        test_call_to=test_call_to,
+    )
 
 
 @router.put("/{inquiry_id}", response_model=InquiryOut)

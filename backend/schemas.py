@@ -102,13 +102,30 @@ class BulkInquiryCreate(BaseModel):
     source_inquiry_uuid: Optional[str] = None
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
-    # If true, send the email immediately after creating each inquiry.
-    send_email: bool = True
+    # Dispatch channel applied to every created inquiry:
+    #   "email" — send email to each manufacturer (default)
+    #   "call"  — place a voice-agent call to each manufacturer
+    #   "test_call" — DO NOT contact manufacturers; dial `test_call_to_number`
+    #                 once with the first created inquiry's context
+    #   "none"  — create as drafts only; user dispatches later from Outreach
+    dispatch_channel: str = "email"
+    # Used only when dispatch_channel == "test_call". E.164.
+    test_call_to_number: Optional[str] = None
+    # Legacy alias kept so the previous send_email=True payload still works.
+    send_email: Optional[bool] = None
 
 
 class BulkInquiryResult(BaseModel):
     created: list["InquiryOut"]
     failed: list[dict]  # [{ manufacturer_id, error }]
+    # Optional summary of what was dispatched. Only present when
+    # dispatch_channel != "none".
+    dispatch_channel: Optional[str] = None
+    dispatched: int = 0
+    # When dispatch_channel == "test_call", which inquiry we used to drive
+    # the test prompt (so the UI can link to it).
+    test_call_inquiry_id: Optional[int] = None
+    test_call_to: Optional[str] = None
 
 
 class InquiryUpdate(BaseModel):

@@ -203,11 +203,18 @@ export const api = {
       source_inquiry_uuid?: string | null;
       source_excel_url?: string | null;
       source_excel_sheet?: string | null;
+      dispatch_channel?: "email" | "call" | "test_call" | "none";
+      test_call_to_number?: string | null;
+      /** @deprecated use dispatch_channel */
       send_email?: boolean;
     }) =>
       request<{
         created: Inquiry[];
         failed: { manufacturer_id: number; error: string }[];
+        dispatch_channel?: string;
+        dispatched?: number;
+        test_call_inquiry_id?: number | null;
+        test_call_to?: string | null;
       }>(`/api/inquiries/bulk`, {
         method: "POST",
         body: JSON.stringify(data),

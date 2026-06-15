@@ -1115,6 +1115,35 @@ pre.raw-json {
   color: var(--ink);
 }
 
+.bulk-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  margin-bottom: 12px;
+}
+.bulk-search-row:focus-within {
+  border-color: var(--brand-orange);
+  box-shadow: 0 0 0 3px rgba(255, 153, 51, 0.12);
+}
+.bulk-search-icon {
+  opacity: 0.55;
+  font-size: 14px;
+}
+.bulk-search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--ink);
+}
+.bulk-search-input::placeholder { color: var(--muted); }
+.bulk-search-clear { white-space: nowrap; }
+
 .bulk-select-toolbar {
   display: flex;
   gap: 16px;

@@ -90,6 +90,17 @@ const confidenceTone = (c: DetectedRow["confidence"]): string => {
 };
 
 type Mode = "single" | "multi";
+type BulkChannel = "email" | "call" | "test_call";
+
+const COUNTRY_CODES: { code: string; label: string }[] = [
+  { code: "+1", label: "+1 US / CA" },
+  { code: "+91", label: "+91 IN" },
+  { code: "+44", label: "+44 UK" },
+  { code: "+61", label: "+61 AU" },
+  { code: "+49", label: "+49 DE" },
+];
+
+const digitsOnly = (s: string) => s.replace(/\D+/g, "");
 
 export default function ContactManufacturerPage() {
   const [ctx] = useState<ForwardContext | null>(readContext);
@@ -105,13 +116,21 @@ export default function ContactManufacturerPage() {
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  const [search, setSearch] = useState("");
   const [subject, setSubject] = useState("");
   const [question, setQuestion] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
-  const [submitting, setSubmitting] = useState(false);
+  const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
+  // Test-call inputs
+  const [testCountryCode, setTestCountryCode] = useState("+1");
+  const [testLocal, setTestLocal] = useState("");
   const [bulkResult, setBulkResult] = useState<{
     created: Inquiry[];
     failed: { manufacturer_id: number; error: string }[];
+    dispatch_channel?: string;
+    dispatched?: number;
+    test_call_inquiry_id?: number | null;
+    test_call_to?: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -217,7 +236,7 @@ export default function ContactManufacturerPage() {
 
   const selectNone = () => setSelectedRows(new Set());
 
-  const handleBulkSubmit = async () => {
+  const handleBulkSubmit = async (channel: BulkChannel) => {
     if (!extraction || !ctx) return;
     if (selectedRows.size === 0) {
       setExtractError("Pick at least one manufacturer.");
@@ -240,7 +259,17 @@ export default function ContactManufacturerPage() {
       return;
     }
 
-    setSubmitting(true);
+    let testCallTo: string | null = null;
+    if (channel === "test_call") {
+      const digits = digitsOnly(testLocal);
+      if (digits.length < 7) {
+        setExtractError("Enter a valid phone number for the test call (at least 7 digits).");
+        return;
+      }
+      testCallTo = `${testCountryCode}${digits}`;
+    }
+
+    setSubmitting(channel);
     setExtractError(null);
     try {
       const result = await api.inquiries.bulkCreate({
@@ -254,17 +283,31 @@ export default function ContactManufacturerPage() {
         source_excel_url:
           extraction.excel_s3_url ?? xlsxAttachment?.doc_url ?? null,
         source_excel_sheet: extraction.sheet_name,
-        send_email: true,
+        dispatch_channel: channel,
+        test_call_to_number: testCallTo,
       });
       setBulkResult(result);
-      setBanner(
-        `Sent to ${result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}` +
-          (result.failed.length > 0 ? ` · ${result.failed.length} failed` : ""),
-      );
+      if (channel === "test_call") {
+        setBanner(
+          result.test_call_to
+            ? `Test call dialing ${result.test_call_to} — drafts saved for ${result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}.`
+            : `Test call attempted — drafts saved for ${result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}.`,
+        );
+      } else if (channel === "call") {
+        setBanner(
+          `Calling ${result.dispatched ?? 0} manufacturer${result.dispatched === 1 ? "" : "s"}` +
+            (result.failed.length > 0 ? ` · ${result.failed.length} skipped` : ""),
+        );
+      } else {
+        setBanner(
+          `Emailed ${result.dispatched ?? result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}` +
+            (result.failed.length > 0 ? ` · ${result.failed.length} failed` : ""),
+        );
+      }
     } catch (e: any) {
-      setExtractError(e?.message ?? "Bulk create failed.");
+      setExtractError(e?.message ?? "Bulk dispatch failed.");
     } finally {
-      setSubmitting(false);
+      setSubmitting(null);
     }
   };
 
@@ -395,7 +438,18 @@ export default function ContactManufacturerPage() {
       {error && <div className="error-banner">{error}</div>}
 
       {/* MULTI mode: detected manufacturers + bulk form */}
-      {mode === "multi" && extraction && !bulkResult && (
+      {mode === "multi" && extraction && !bulkResult && (() => {
+        const searchTokens = search.trim().toLowerCase();
+        const filteredRows = searchTokens
+          ? extraction.rows.filter((r) => {
+              const hay = `${r.raw_name} ${r.matched_name ?? ""}`.toLowerCase();
+              return hay.includes(searchTokens);
+            })
+          : extraction.rows;
+        const visibleSelectedCount = filteredRows.filter((r) =>
+          selectedRows.has(r.row_index),
+        ).length;
+        return (
         <>
           <div className="page-form">
             <div className="page-form-header">
@@ -408,6 +462,25 @@ export default function ContactManufacturerPage() {
               </div>
             </div>
             <div className="page-form-body">
+              <div className="bulk-search-row">
+                <span className="bulk-search-icon" aria-hidden>🔍</span>
+                <input
+                  type="search"
+                  className="bulk-search-input"
+                  placeholder="Search manufacturers (e.g. Pfizer, Teva)…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    className="btn-link bulk-search-clear"
+                    onClick={() => setSearch("")}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
               <div className="bulk-select-toolbar">
                 <button type="button" className="btn-link" onClick={selectAll}>
                   Select all matched ({extraction.matched})
@@ -417,10 +490,22 @@ export default function ContactManufacturerPage() {
                 </button>
                 <span className="cell-muted">
                   {selectedRows.size} selected
+                  {search && filteredRows.length !== extraction.rows.length && (
+                    <>
+                      {" "}· showing {filteredRows.length} of {extraction.rows.length}
+                      {visibleSelectedCount !== selectedRows.size &&
+                        ` (${visibleSelectedCount} visible selected)`}
+                    </>
+                  )}
                 </span>
               </div>
               <div className="bulk-row-list">
-                {extraction.rows.map((r) => {
+                {filteredRows.length === 0 && (
+                  <div className="empty">
+                    <div className="empty-title">No manufacturers match "{search}".</div>
+                  </div>
+                )}
+                {filteredRows.map((r) => {
                   const checked = selectedRows.has(r.row_index);
                   const matched = r.matched_id != null;
                   const mfr = r.matched_id ? mfrById[r.matched_id] : undefined;
@@ -519,29 +604,186 @@ export default function ContactManufacturerPage() {
                 </div>
               </div>
             </div>
-            <div className="page-form-footer">
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={handleCancel}
-                disabled={submitting}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleBulkSubmit}
-                disabled={submitting || selectedRows.size === 0}
-              >
-                {submitting
-                  ? "Sending…"
-                  : `Send to ${selectedRows.size} manufacturer${selectedRows.size === 1 ? "" : "s"}`}
-              </button>
-            </div>
           </div>
+
+          {/* Send to manufacturer: three channels */}
+          {(() => {
+            // Count selected rows by reachability so each card shows what it
+            // can actually do for THIS selection (e.g. "5 of 6 have email").
+            const selectedMatched = extraction.rows.filter(
+              (r) => selectedRows.has(r.row_index) && r.matched_id != null,
+            );
+            const reachableByEmail = selectedMatched.filter((r) => {
+              const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+              return !!(m?.official_mi_email || m?.team_verified_email);
+            }).length;
+            const reachableByPhone = selectedMatched.filter((r) => {
+              const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+              return !!m?.mi_phone;
+            }).length;
+            const total = selectedMatched.length;
+            const noneSelected = total === 0;
+            const testDigits = digitsOnly(testLocal);
+            const testValid = testDigits.length >= 7;
+            const anyBusy = submitting !== null;
+
+            return (
+              <div className="page-form">
+                <div className="page-form-header">
+                  <h2>Send to manufacturer</h2>
+                  <div className="mfr-detect-meta">
+                    {noneSelected
+                      ? "Pick at least one manufacturer above."
+                      : `${total} selected · choose how to reach them`}
+                  </div>
+                </div>
+                <div className="page-form-body">
+                  <div className="channel-grid">
+                    {/* Email card */}
+                    <div className={`channel-card ${reachableByEmail === 0 ? "channel-disabled" : ""}`}>
+                      <div className="channel-icon channel-icon-email">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="5" width="18" height="14" rx="2" />
+                          <path d="m3 7 9 6 9-6" />
+                        </svg>
+                      </div>
+                      <div className="channel-title">Send Email</div>
+                      <div className="channel-sub">
+                        Email all {total} selected manufacturer{total === 1 ? "" : "s"}.
+                        Voice agent will call any that don't reply within{" "}
+                        <strong>{fallbackHours}h</strong>.
+                      </div>
+                      <ul className="channel-meta">
+                        <li>
+                          <span>Reachable</span> {reachableByEmail} of {total} have email
+                        </li>
+                        <li>
+                          <span>Fallback</span> agent call after {fallbackHours}h
+                        </li>
+                      </ul>
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        disabled={noneSelected || reachableByEmail === 0 || anyBusy}
+                        onClick={() => handleBulkSubmit("email")}
+                      >
+                        {submitting === "email"
+                          ? "Sending…"
+                          : `Send Email to ${reachableByEmail || total}`}
+                      </button>
+                    </div>
+
+                    {/* Call card */}
+                    <div className={`channel-card ${reachableByPhone === 0 ? "channel-disabled" : ""}`}>
+                      <div className="channel-icon channel-icon-call">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
+                        </svg>
+                      </div>
+                      <div className="channel-title">Call Agent</div>
+                      <div className="channel-sub">
+                        Voice agent dials each selected manufacturer in sequence
+                        and asks the question. Out-of-hours numbers are skipped.
+                      </div>
+                      <ul className="channel-meta">
+                        <li>
+                          <span>Reachable</span> {reachableByPhone} of {total} have phone
+                        </li>
+                        <li>
+                          <span>Order</span> sequentially, one at a time
+                        </li>
+                      </ul>
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        disabled={noneSelected || reachableByPhone === 0 || anyBusy}
+                        onClick={() => handleBulkSubmit("call")}
+                      >
+                        {submitting === "call"
+                          ? "Calling…"
+                          : `Call ${reachableByPhone || total} Now`}
+                      </button>
+                    </div>
+
+                    {/* Test Call card */}
+                    <div className="channel-card channel-card-test">
+                      <div className="channel-icon channel-icon-test">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 2v4" />
+                          <path d="M12 18v4" />
+                          <path d="M4.93 4.93l2.83 2.83" />
+                          <path d="M16.24 16.24l2.83 2.83" />
+                          <path d="M2 12h4" />
+                          <path d="M18 12h4" />
+                          <path d="M4.93 19.07l2.83-2.83" />
+                          <path d="M16.24 7.76l2.83-2.83" />
+                        </svg>
+                      </div>
+                      <div className="channel-title">Test Call</div>
+                      <div className="channel-sub">
+                        Dial <strong>your own number</strong> with the first
+                        selected manufacturer's context. Lets you hear the
+                        script before contacting any real MI desk —{" "}
+                        <strong>no manufacturer is called</strong>. Drafts are
+                        still saved for all {total} selected.
+                      </div>
+                      <div className="phone-input-row">
+                        <select
+                          className="phone-cc-select"
+                          value={testCountryCode}
+                          onChange={(e) => setTestCountryCode(e.target.value)}
+                          disabled={anyBusy}
+                          aria-label="Country code"
+                        >
+                          {COUNTRY_CODES.map((c) => (
+                            <option key={c.code} value={c.code}>
+                              {c.label}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          className="channel-test-input"
+                          placeholder="phone number"
+                          value={testLocal}
+                          onChange={(e) => setTestLocal(e.target.value)}
+                          disabled={anyBusy}
+                        />
+                      </div>
+                      <div className="channel-test-hint">
+                        Dialing:{" "}
+                        <strong>
+                          {testValid ? `${testCountryCode}${testDigits}` : "—"}
+                        </strong>
+                      </div>
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        disabled={noneSelected || !testValid || anyBusy}
+                        onClick={() => handleBulkSubmit("test_call")}
+                      >
+                        {submitting === "test_call" ? "Dialing…" : "Call My Number"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="page-form-footer">
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={handleCancel}
+                    disabled={anyBusy}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </>
-      )}
+        );
+      })()}
 
       {/* SINGLE mode: existing form */}
       {mode === "single" && !bulkResult && (
@@ -576,16 +818,36 @@ export default function ContactManufacturerPage() {
                 <div className="bulk-result-num">{bulkResult.created.length}</div>
                 <div className="bulk-result-label">Inquiries created</div>
               </div>
-              <div className="bulk-result-stat">
-                <div className="bulk-result-num">
-                  {bulkResult.created.filter((c) => c.status === "email_sent").length}
+              {bulkResult.dispatch_channel === "email" && (
+                <div className="bulk-result-stat">
+                  <div className="bulk-result-num">
+                    {bulkResult.created.filter((c) => c.status === "email_sent").length}
+                  </div>
+                  <div className="bulk-result-label">Emails sent</div>
                 </div>
-                <div className="bulk-result-label">Emails sent</div>
-              </div>
+              )}
+              {bulkResult.dispatch_channel === "call" && (
+                <div className="bulk-result-stat">
+                  <div className="bulk-result-num">
+                    {bulkResult.created.filter((c) => c.status === "call_pending").length}
+                  </div>
+                  <div className="bulk-result-label">Calls placed</div>
+                </div>
+              )}
+              {bulkResult.dispatch_channel === "test_call" && (
+                <div className="bulk-result-stat">
+                  <div className="bulk-result-num">{bulkResult.dispatched ?? 0}</div>
+                  <div className="bulk-result-label">
+                    Test call to {bulkResult.test_call_to ?? "your number"}
+                  </div>
+                </div>
+              )}
               {bulkResult.failed.length > 0 && (
                 <div className="bulk-result-stat bulk-result-bad">
                   <div className="bulk-result-num">{bulkResult.failed.length}</div>
-                  <div className="bulk-result-label">Failed</div>
+                  <div className="bulk-result-label">
+                    {bulkResult.dispatch_channel === "call" ? "Skipped / failed" : "Failed"}
+                  </div>
                 </div>
               )}
             </div>
