@@ -449,7 +449,9 @@ export default function ExternalInquiriesPage() {
       {/* Single fixed popover for the row actions menu. Renders outside the
           scrollable table so overflow:auto doesn't clip it. */}
       {openMenuId && menuAnchor && (() => {
-        const target = raw.find((x: any) => x.inquiry_uuid === openMenuId);
+        // Use the normalized list, not `raw` — `raw` is the response body
+        // ({data: [...]} or {inquiries: [...]}), not an array itself.
+        const target = inquiries.find((x) => x.inquiry_uuid === openMenuId);
         if (!target) return null;
         return (
           <div
