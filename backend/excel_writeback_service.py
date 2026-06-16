@@ -9,7 +9,7 @@ an InpharmD MUE spreadsheet, this service:
      that inquiry's saved row.
   3. Uploads the new workbook to our S3 and stamps `excel_response_url` on
      the inquiry.
-  4. POSTs the new URL back to the InpharmD legacy endpoint so they ingest
+  4. POSTs the new URL to the InpharmD v2 `/sheet` endpoint so they ingest
      the updated workbook.
 
 Idempotent — checks `excel_response_posted_at` before posting again.
@@ -17,7 +17,6 @@ Idempotent — checks `excel_response_posted_at` before posting again.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -31,17 +30,15 @@ from models import Inquiry, User
 
 log = logging.getLogger("inquiry.excel_writeback")
 
-LEGACY_PATH = "/api/legacy/manufacturing_response"
+# POST /api/v2/inquiries/open_mue_inquiries/{inquiry_uuid}/sheet
+#   ?access_token=<user staging token>
+#   form field: s3_url=<re-uploaded xlsx URL>
+V2_SHEET_PATH_TEMPLATE = "/api/v2/inquiries/open_mue_inquiries/{uuid}/sheet"
 _DOWNLOAD_TIMEOUT_SECONDS = 30
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _legacy_api_key() -> Optional[str]:
-    key = (os.getenv("LEGACY_RESPONSE_API_KEY") or "").strip()
-    return key or None
 
 
 def _pick_latest_excel_url(db: Session, inquiry: Inquiry) -> str:
@@ -91,31 +88,41 @@ def _download(url: str, *, token: Optional[str]) -> bytes:
         return res.content
 
 
-def _post_to_legacy(*, inquiry_uuid: str, excel_url: str, response_text: str) -> bool:
+def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> bool:
+    """POST the updated workbook URL to the v2 open_mue_inquiries/{uuid}/sheet
+    endpoint. Auth is the per-user staging access_token (query param), payload
+    is multipart form with a single `s3_url` field — matches the API doc."""
     base = inpharmd_service._base_url().rstrip("/")
-    url = base + LEGACY_PATH
-    key = _legacy_api_key()
-    if not key:
-        log.info("excel_writeback: no LEGACY_RESPONSE_API_KEY; skipping legacy POST")
-        return False
-    headers = {"X-Api-Key": key, "Accept": "application/json"}
-    data = {
-        "inquiry_uuid": inquiry_uuid,
-        "mfr_email_response": response_text or "",
-        "mfr_s3_url": excel_url,
-    }
-    log.info("excel_writeback: POST legacy uuid=%s url=%s", inquiry_uuid, excel_url)
+    url = base + V2_SHEET_PATH_TEMPLATE.format(uuid=inquiry_uuid)
+    params = {"access_token": access_token}
+    # multipart form (files={} alone would make this an empty multipart;
+    # passing data + files={} forces multipart/form-data over urlencoded).
+    data = {"s3_url": excel_url}
+    log.info(
+        "excel_writeback: POST v2 sheet uuid=%s url=%s",
+        inquiry_uuid,
+        excel_url,
+    )
     try:
         with httpx.Client(timeout=20) as client:
-            # multipart so the Rails endpoint accepts our payload
-            res = client.post(url, headers=headers, data=data, files={})
+            res = client.post(
+                url,
+                params=params,
+                data=data,
+                files={},
+                headers={"Accept": "application/json"},
+            )
         if res.status_code >= 400:
-            log.error("excel_writeback: legacy POST failed %s: %s", res.status_code, res.text[:300])
+            log.error(
+                "excel_writeback: v2 sheet POST failed %s: %s",
+                res.status_code,
+                res.text[:300],
+            )
             return False
-        log.info("excel_writeback: legacy POST ok %s", res.status_code)
+        log.info("excel_writeback: v2 sheet POST ok %s", res.status_code)
         return True
     except Exception as e:
-        log.exception("excel_writeback: legacy POST error: %s", e)
+        log.exception("excel_writeback: v2 sheet POST error: %s", e)
         return False
 
 
@@ -141,6 +148,12 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     # them on re-upload.
     base_url = _pick_latest_excel_url(db, inquiry)
     token = _pick_user_token(db, inquiry)
+    if not token:
+        log.info(
+            "excel_writeback: no staging access_token for inquiry %s; cannot v2-post",
+            inquiry.id,
+        )
+        return False
     try:
         xlsx_bytes = _download(base_url, token=token)
     except Exception as e:
@@ -159,10 +172,13 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
                   inquiry.source_excel_row, e)
         return False
 
-    # Upload the new copy to our S3.
-    file_name = (
-        f"inquiry-{inquiry.source_inquiry_uuid[:8]}-row{inquiry.source_excel_row}.xlsx"
-    )
+    # Upload the updated workbook to a SINGLE deterministic key per MUE
+    # inquiry. Every reply for the same source_inquiry_uuid overwrites the
+    # same object — one file in S3 per MUE inquiry, not N.
+    # The presigned URL returned here changes per call (fresh signature),
+    # but it always points at the same key holding the latest cumulative
+    # state.
+    file_name = f"inquiry-{inquiry.source_inquiry_uuid}.xlsx"
     new_url = s3_service.upload_bytes(
         updated_bytes,
         original_name=file_name,
@@ -170,17 +186,17 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         content_type=(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
-        prefix="mue-responses",
+        key_override=f"mue-responses/{file_name}",
     )
     if not new_url:
         log.error("excel_writeback: S3 upload returned no url for inquiry %s", inquiry.id)
         return False
 
     # Tell the platform the new file is available.
-    posted = _post_to_legacy(
+    posted = _post_v2_sheet(
         inquiry_uuid=inquiry.source_inquiry_uuid,
         excel_url=new_url,
-        response_text=response_text,
+        access_token=token,
     )
 
     inquiry.excel_response_url = new_url

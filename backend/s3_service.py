@@ -86,16 +86,25 @@ def upload_bytes(
     inquiry_id: int,
     content_type: str = "application/octet-stream",
     prefix: Optional[str] = None,
+    key_override: Optional[str] = None,
 ) -> Optional[str]:
     """Generic upload helper. Returns a presigned GET URL (or None if not
-    configured). Used by both the PDF and Excel writeback paths."""
+    configured). Used by both the PDF and Excel writeback paths.
+
+    Pass `key_override` to write to an exact S3 key — overwrites any existing
+    object at that key. Used by the MUE Excel writeback so all replies for one
+    MUE inquiry land on a single deterministic key instead of accreting copies.
+    """
     if not is_configured():
         log.info("S3 not configured; skipping upload for inquiry %s", inquiry_id)
         return None
     bucket = os.environ["AWS_S3_BUCKET"]
-    use_prefix = (prefix or os.getenv("AWS_S3_PREFIX", _DEFAULT_PREFIX)).strip("/")
     safe = _safe_filename(original_name)
-    key = f"{use_prefix}/inquiry-{inquiry_id}/{uuid.uuid4().hex[:10]}-{safe}"
+    if key_override:
+        key = key_override.strip("/")
+    else:
+        use_prefix = (prefix or os.getenv("AWS_S3_PREFIX", _DEFAULT_PREFIX)).strip("/")
+        key = f"{use_prefix}/inquiry-{inquiry_id}/{uuid.uuid4().hex[:10]}-{safe}"
     try:
         client = _client()
         client.put_object(
