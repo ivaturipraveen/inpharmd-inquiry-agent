@@ -17,6 +17,28 @@ const STATUS_FILTERS = [
   { value: "closed", label: "Closed" },
 ];
 
+// Status buckets — single source of truth, used by both the page-level
+// stat tiles AND the per-MUE-group "X responded · Y awaiting · Z draft"
+// pills. Without this they drifted: tiles counted only email_responded
+// + call_completed, group counted those plus `closed`, so a closed
+// inquiry made the two readouts disagree by one.
+const RESPONDED_STATUSES = ["email_responded", "call_completed", "closed"];
+const AWAITING_STATUSES = ["email_sent", "call_pending"];
+const DRAFT_STATUSES = ["draft"];
+
+// Bucket filter values used by the stat-tile click handlers. The
+// filter dropdown still uses exact status values from STATUS_FILTERS;
+// `matchesStatusFilter` handles both.
+const BUCKET_FILTERS = new Set(["responded", "awaiting", "drafts"]);
+
+function matchesStatusFilter(status: string, filter: string): boolean {
+  if (!filter) return true;
+  if (filter === "responded") return RESPONDED_STATUSES.includes(status);
+  if (filter === "awaiting") return AWAITING_STATUSES.includes(status);
+  if (filter === "drafts") return DRAFT_STATUSES.includes(status);
+  return status === filter;
+}
+
 const fmtDate = (s?: string | null) =>
   s ? new Date(s).toLocaleDateString() : "—";
 
@@ -103,7 +125,7 @@ export default function InquiriesPage() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return inquiries.filter((i) => {
-      if (statusFilter && i.status !== statusFilter) return false;
+      if (!matchesStatusFilter(i.status, statusFilter)) return false;
       if (q) {
         const hay = `${i.subject} ${i.question} ${i.manufacturer?.manufacturer ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -187,17 +209,15 @@ export default function InquiriesPage() {
   }, [rows.length]);
 
   const stats = useMemo(() => {
-    const counts = inquiries.reduce<Record<string, number>>((acc, i) => {
-      acc[i.status] = (acc[i.status] || 0) + 1;
-      return acc;
-    }, {});
-    return {
-      total: inquiries.length,
-      drafts: counts["draft"] || 0,
-      awaitingEmail: counts["email_sent"] || 0,
-      responded:
-        (counts["email_responded"] || 0) + (counts["call_completed"] || 0),
-    };
+    let drafts = 0;
+    let awaiting = 0;
+    let responded = 0;
+    for (const i of inquiries) {
+      if (DRAFT_STATUSES.includes(i.status)) drafts++;
+      else if (AWAITING_STATUSES.includes(i.status)) awaiting++;
+      else if (RESPONDED_STATUSES.includes(i.status)) responded++;
+    }
+    return { total: inquiries.length, drafts, awaiting, responded };
   }, [inquiries]);
 
   const handleCreate = async (data: InquiryInput) => {
@@ -281,24 +301,24 @@ export default function InquiriesPage() {
         </button>
         <button
           type="button"
-          className={`stat-card stat-card-btn ${statusFilter === "draft" ? "stat-card-active" : ""}`}
-          onClick={() => setStatusFilter(statusFilter === "draft" ? "" : "draft")}
+          className={`stat-card stat-card-btn ${statusFilter === "drafts" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter(statusFilter === "drafts" ? "" : "drafts")}
         >
           <div className="stat-label">Drafts</div>
           <div className="stat-value">{stats.drafts}</div>
         </button>
         <button
           type="button"
-          className={`stat-card stat-card-btn ${statusFilter === "email_sent" ? "stat-card-active" : ""}`}
-          onClick={() => setStatusFilter(statusFilter === "email_sent" ? "" : "email_sent")}
+          className={`stat-card stat-card-btn ${statusFilter === "awaiting" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter(statusFilter === "awaiting" ? "" : "awaiting")}
         >
-          <div className="stat-label">Awaiting Email</div>
-          <div className="stat-value">{stats.awaitingEmail}</div>
+          <div className="stat-label">Awaiting</div>
+          <div className="stat-value">{stats.awaiting}</div>
         </button>
         <button
           type="button"
-          className={`stat-card stat-card-btn ${statusFilter === "email_responded" ? "stat-card-active" : ""}`}
-          onClick={() => setStatusFilter(statusFilter === "email_responded" ? "" : "email_responded")}
+          className={`stat-card stat-card-btn ${statusFilter === "responded" ? "stat-card-active" : ""}`}
+          onClick={() => setStatusFilter(statusFilter === "responded" ? "" : "responded")}
         >
           <div className="stat-label">Responded</div>
           <div className="stat-value">{stats.responded}</div>
@@ -329,7 +349,10 @@ export default function InquiriesPage() {
           </div>
           <select
             className="filter-select"
-            value={statusFilter}
+            // Show the dropdown as "All statuses" when a bucket filter
+            // (set via the stat tiles) is active — bucket values aren't
+            // options, so a raw value= would render blank and look broken.
+            value={BUCKET_FILTERS.has(statusFilter) ? "" : statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
             {STATUS_FILTERS.map((s) => (
@@ -420,12 +443,14 @@ export default function InquiriesPage() {
                   const sample = row.children[0];
                   const total = row.children.length;
                   const responded = row.children.filter((c) =>
-                    ["email_responded", "call_completed", "closed"].includes(c.status),
+                    RESPONDED_STATUSES.includes(c.status),
                   ).length;
                   const sent = row.children.filter((c) =>
-                    ["email_sent", "call_pending"].includes(c.status),
+                    AWAITING_STATUSES.includes(c.status),
                   ).length;
-                  const drafts = row.children.filter((c) => c.status === "draft").length;
+                  const drafts = row.children.filter((c) =>
+                    DRAFT_STATUSES.includes(c.status),
+                  ).length;
                   const groupCreated = row.children
                     .map((c) => c.created_at ?? "")
                     .sort()[0];

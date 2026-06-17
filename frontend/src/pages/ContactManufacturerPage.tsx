@@ -134,13 +134,33 @@ export default function ContactManufacturerPage() {
     test_call_to?: string | null;
   } | null>(null);
 
-  useEffect(() => {
+  // Refetch the manufacturers list whenever this page is shown — the
+  // initial mount handles the first visit; the visibility listener
+  // catches the case where the user edits an email/phone on the
+  // Manufacturers page (or in another tab) and returns here. Without
+  // this the cached mfrById lookup serves stale contact info even
+  // though the extraction itself was just rerun.
+  const reloadManufacturers = useCallback(() => {
     api.manufacturers
       .list()
       .then(setManufacturers)
       .catch((e: any) => setError(e?.message ?? "Failed to load manufacturers."))
       .finally(() => setLoadingMfrs(false));
   }, []);
+
+  useEffect(() => {
+    reloadManufacturers();
+    const onFocus = () => reloadManufacturers();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") reloadManufacturers();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [reloadManufacturers]);
 
   useEffect(() => {
     if (ctx) sessionStorage.removeItem(CTX_KEY);
@@ -188,10 +208,18 @@ export default function ContactManufacturerPage() {
     setExtracting(true);
     setExtractError(null);
     try {
-      const result = await api.externalInquiries.extractManufacturers(
-        xlsxAttachment.doc_url,
-        ctx?.uuid,
-      );
+      // Re-pull manufacturers in parallel with the extract so the
+      // email/phone/hours displayed for each matched row reflect
+      // edits made on the Manufacturers page since this view loaded.
+      const [result] = await Promise.all([
+        api.externalInquiries.extractManufacturers(
+          xlsxAttachment.doc_url,
+          ctx?.uuid,
+        ),
+        api.manufacturers.list().then(setManufacturers).catch(() => {
+          /* extract is the primary signal; ignore mfr-refetch failures here */
+        }),
+      ]);
       setExtraction(result);
       // Pre-select every row that has a confident match (exact + partial).
       const pre = new Set<number>();
