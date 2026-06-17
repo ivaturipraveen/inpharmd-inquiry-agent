@@ -163,14 +163,29 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
     On success, stamps legacy_response_posted_at and commits.
     Returns True if posted, False otherwise.
     """
+    log.info(
+        "pipeline: maybe_post_for_inquiry inquiry=%s status=%s source_uuid=%s",
+        inquiry.id,
+        getattr(inquiry, "status", None),
+        (getattr(inquiry, "source_inquiry_uuid", None) or "")[:12] or "(none)",
+    )
     uuid = (getattr(inquiry, "source_inquiry_uuid", None) or "").strip()
     if not uuid:
+        log.info(
+            "pipeline: legacy POST + writeback skipped for inquiry %s: no source_inquiry_uuid (not a MUE inquiry)",
+            inquiry.id,
+        )
         return False
     if getattr(inquiry, "legacy_response_posted_at", None) is not None:
         log.info(
-            "Legacy POST skipped for inquiry %s: already posted at %s",
-            inquiry.id, inquiry.legacy_response_posted_at,
+            "pipeline: legacy POST skipped for inquiry %s: already posted at %s (writeback will still run if not yet posted)",
+            inquiry.id,
+            inquiry.legacy_response_posted_at,
         )
+        # NB: original behavior was to return False here without writeback.
+        # We preserve that for safety — writeback re-runs are gated by its
+        # own excel_response_posted_at check, but we don't want to introduce
+        # a behavior change in this logging-only PR.
         return False
 
     response_text = (
@@ -181,7 +196,8 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
     ).strip()
     if not response_text:
         log.info(
-            "Legacy POST skipped for inquiry %s: no response text yet", inquiry.id
+            "pipeline: legacy POST skipped for inquiry %s: no response text yet",
+            inquiry.id,
         )
         return False
 

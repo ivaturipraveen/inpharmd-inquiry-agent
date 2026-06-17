@@ -74,6 +74,10 @@ async def sendgrid_inbound(request: Request) -> Response:
     sender: str = form.get("from", "") or ""
     text_body: str = form.get("text", "") or ""
     html_body: str = form.get("html", "") or ""
+    log.info(
+        "pipeline: inbound webhook hit from=%s subject=%r text_len=%d html_len=%d",
+        sender, subject[:120], len(text_body), len(html_body),
+    )
 
     # Pick best body: plain text preferred, fall back to HTML stripped
     body = text_body.strip() if text_body.strip() else _strip_html(html_body)

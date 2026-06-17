@@ -139,17 +139,41 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
 
 def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     """Idempotent writeback. Returns True if we updated the Excel + posted."""
+    log.info(
+        "pipeline: writeback maybe_writeback_for_inquiry inquiry=%s "
+        "source_excel_url=%s source_excel_row=%s source_uuid=%s "
+        "already_posted=%s",
+        inquiry.id,
+        "yes" if inquiry.source_excel_url else "no",
+        inquiry.source_excel_row,
+        (inquiry.source_inquiry_uuid or "")[:12] or "(none)",
+        "yes" if inquiry.excel_response_posted_at is not None else "no",
+    )
     if not inquiry.source_excel_url or not inquiry.source_excel_row:
+        log.info(
+            "pipeline: writeback skipped for inquiry %s: not a MUE inquiry "
+            "(missing source_excel_url or source_excel_row)",
+            inquiry.id,
+        )
         return False
     response_text = (inquiry.email_response or inquiry.final_answer or "").strip()
     if not response_text:
-        log.debug("excel_writeback: inquiry %s has no response text yet", inquiry.id)
+        log.info(
+            "pipeline: writeback skipped for inquiry %s: no response text yet",
+            inquiry.id,
+        )
         return False
     if inquiry.excel_response_posted_at is not None:
-        log.debug("excel_writeback: inquiry %s already posted", inquiry.id)
+        log.info(
+            "pipeline: writeback skipped for inquiry %s: already posted at %s (idempotent)",
+            inquiry.id, inquiry.excel_response_posted_at,
+        )
         return False
     if not inquiry.source_inquiry_uuid:
-        log.info("excel_writeback: inquiry %s has no source_inquiry_uuid; cannot legacy-post", inquiry.id)
+        log.info(
+            "pipeline: writeback skipped for inquiry %s: no source_inquiry_uuid; cannot v2-post",
+            inquiry.id,
+        )
         return False
 
     # Latest version wins — but "latest" is across ALL siblings sharing this
@@ -161,16 +185,30 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     token = _pick_user_token(db, inquiry)
     if not token:
         log.info(
-            "excel_writeback: no staging access_token for inquiry %s; cannot v2-post",
+            "pipeline: writeback skipped for inquiry %s: no staging access_token on owning user; cannot v2-post",
             inquiry.id,
         )
         return False
+    log.info(
+        "pipeline: writeback step 1/4 (download) inquiry=%s base_url=%s",
+        inquiry.id, base_url,
+    )
     try:
         xlsx_bytes = _download(base_url, token=token)
     except Exception as e:
-        log.error("excel_writeback: failed to download %s: %s", base_url, e)
+        log.error("pipeline: writeback download FAILED for inquiry %s url=%s: %s",
+                  inquiry.id, base_url, e)
         return False
+    fmt = "xlsx" if xlsx_bytes[:4] == b"PK\x03\x04" else "csv"
+    log.info(
+        "pipeline: writeback step 1/4 OK inquiry=%s downloaded=%d bytes detected_format=%s",
+        inquiry.id, len(xlsx_bytes), fmt,
+    )
 
+    log.info(
+        "pipeline: writeback step 2/4 (write) inquiry=%s row=%s sheet=%s",
+        inquiry.id, inquiry.source_excel_row, inquiry.source_excel_sheet or "(default)",
+    )
     try:
         updated_bytes = excel_service.write_response(
             xlsx_bytes,
@@ -179,9 +217,15 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
             sheet_name=inquiry.source_excel_sheet,
         )
     except Exception as e:
-        log.error("excel_writeback: failed to write response into row %s: %s",
-                  inquiry.source_excel_row, e)
+        log.error(
+            "pipeline: writeback write FAILED for inquiry %s row=%s: %s",
+            inquiry.id, inquiry.source_excel_row, e,
+        )
         return False
+    log.info(
+        "pipeline: writeback step 2/4 OK inquiry=%s out_bytes=%d",
+        inquiry.id, len(updated_bytes),
+    )
 
     # Upload the updated workbook to a SINGLE deterministic key per MUE
     # inquiry. Every reply for the same source_inquiry_uuid overwrites the
@@ -197,6 +241,10 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         ext = "xlsx"
         ct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     file_name = f"inquiry-{inquiry.source_inquiry_uuid}.{ext}"
+    log.info(
+        "pipeline: writeback step 3/4 (upload) inquiry=%s key=mue-responses/%s content_type=%s",
+        inquiry.id, file_name, ct,
+    )
     new_url = s3_service.upload_bytes(
         updated_bytes,
         original_name=file_name,
@@ -205,15 +253,30 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         key_override=f"mue-responses/{file_name}",
     )
     if not new_url:
-        log.error("excel_writeback: S3 upload returned no url for inquiry %s", inquiry.id)
+        log.error("pipeline: writeback upload FAILED for inquiry %s: s3 returned no url", inquiry.id)
         return False
+    log.info(
+        "pipeline: writeback step 3/4 OK inquiry=%s s3_url=%s",
+        inquiry.id, new_url[:200],
+    )
 
     # Tell the platform the new file is available.
+    log.info(
+        "pipeline: writeback step 4/4 (v2 POST /sheet) inquiry=%s uuid=%s",
+        inquiry.id, inquiry.source_inquiry_uuid,
+    )
     posted = _post_v2_sheet(
         inquiry_uuid=inquiry.source_inquiry_uuid,
         excel_url=new_url,
         access_token=token,
     )
+    if posted:
+        log.info("pipeline: writeback step 4/4 OK inquiry=%s — all 4 steps complete", inquiry.id)
+    else:
+        log.error(
+            "pipeline: writeback step 4/4 FAILED inquiry=%s — workbook was uploaded to %s but v2 POST did not 2xx; will retry on next reply",
+            inquiry.id, new_url[:200],
+        )
 
     inquiry.excel_response_url = new_url
     if posted:

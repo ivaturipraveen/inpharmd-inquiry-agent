@@ -400,9 +400,21 @@ def poll_once() -> int:
                 try:
                     import slack_service
                     if slack_service.is_configured():
+                        log.info(
+                            "pipeline: slack notify_reply firing for inquiry %s",
+                            changed.get("inquiry_id"),
+                        )
                         slack_service.notify_reply(**changed)
+                    else:
+                        log.info(
+                            "pipeline: slack notify SKIPPED for inquiry %s: SLACK_WEBHOOK_URL not configured",
+                            changed.get("inquiry_id"),
+                        )
                 except Exception:
-                    log.exception("Slack notify failed for inquiry %s", changed.get("inquiry_id"))
+                    log.exception(
+                        "pipeline: slack notify FAILED for inquiry %s",
+                        changed.get("inquiry_id"),
+                    )
     finally:
         db.close()
 
