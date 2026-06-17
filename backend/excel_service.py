@@ -11,6 +11,7 @@ extra whitespace) so we match by normalized substring.
 """
 from __future__ import annotations
 
+import csv
 import io
 import logging
 import re
@@ -23,6 +24,28 @@ from openpyxl import load_workbook
 from openpyxl.workbook import Workbook
 
 log = logging.getLogger("inquiry.excel")
+
+# How the writeback / extract paths tell xlsx and csv apart. xlsx is just a
+# zip — the first bytes are the PK\x03\x04 ZIP local-file-header signature.
+# Anything else, we treat as csv (covers utf-8, latin-1, with or without BOM).
+_XLSX_MAGIC = b"PK\x03\x04"
+
+
+def _detect_format(buf: bytes) -> str:
+    """Return 'xlsx' or 'csv'. Content-Type headers and filename extensions
+    are unreliable when files come from email forwarders / S3 mirrors, so we
+    sniff the leading bytes instead."""
+    return "xlsx" if buf[: len(_XLSX_MAGIC)] == _XLSX_MAGIC else "csv"
+
+
+def _decode_csv(buf: bytes) -> str:
+    """Decode CSV bytes tolerating UTF-8 (with optional BOM) and latin-1."""
+    for enc in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return buf.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return buf.decode("utf-8", errors="replace")
 
 # Header search patterns are ordered — the parser picks the FIRST tier that
 # matches anywhere in the workbook. We prefer the Medication/Vaccine column
@@ -75,22 +98,36 @@ def _tokenize(s: Any) -> set[str]:
 
 
 def _is_inpharmd_url(url: str) -> bool:
+    """True only for InpharmD's app host (heroku/localhost). S3 buckets
+    (theirs `inpharmd-asset.s3...` or ours `inpharmd-assistant.s3...`) are
+    explicitly excluded — presigned S3 URLs already carry their own auth in
+    the query string, and appending `access_token=` clobbers the signature."""
     try:
-        host = urlparse(url).hostname or ""
+        host = (urlparse(url).hostname or "").lower()
     except Exception:
+        return False
+    if not host or host.endswith(".amazonaws.com"):
         return False
     return "inpharmd" in host or "mercer-inpharmd" in host
 
 
 def download_excel(doc_url: str, access_token: Optional[str] = None) -> bytes:
-    """Fetch the .xlsx bytes. Includes access_token only when the URL points
-    at the InpharmD staging app — public/CDN URLs are downloaded as-is."""
-    params: dict[str, str] = {}
+    """Fetch the workbook bytes (xlsx or csv). Includes access_token only
+    when the URL points at the InpharmD staging app — S3 URLs and public/CDN
+    URLs are downloaded as-is. Appends the token as a query-string fragment
+    rather than via httpx params= because params= can collide with an
+    existing query (e.g. presigned signature) and corrupt the request URL."""
+    final_url = doc_url
     if access_token and _is_inpharmd_url(doc_url) and "access_token=" not in doc_url:
-        params["access_token"] = access_token
-    log.info("excel.download url=%s token=%s", doc_url, "yes" if params else "no")
+        sep = "&" if "?" in doc_url else "?"
+        final_url = f"{doc_url}{sep}access_token={access_token}"
+    log.info(
+        "excel.download url=%s token=%s",
+        doc_url,
+        "yes" if final_url is not doc_url else "no",
+    )
     with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        res = client.get(doc_url, params=params)
+        res = client.get(final_url)
         res.raise_for_status()
         return res.content
 
@@ -173,12 +210,65 @@ class ExtractedRow:
     raw_name: str        # value as it appeared in the cell
 
 
+def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation]:
+    """CSV equivalent of the xlsx extract. The first row is the header. We pick
+    the best column match using the same MANUFACTURER_HEADER_TIERS, then walk
+    the rest of the rows pulling non-empty values."""
+    text = _decode_csv(csv_bytes)
+    reader = csv.reader(io.StringIO(text))
+    rows_raw = list(reader)
+    if not rows_raw:
+        raise ValueError("CSV is empty.")
+    headers = rows_raw[0]
+    # _norm and _toks live in MANUFACTURER_HEADER_TIERS-land; reuse the same
+    # tokeniser openpyxl path uses so behavior matches.
+    indexed = [(idx, _normalize(h), _tokenize(h)) for idx, h in enumerate(headers)]
+    col_idx: Optional[int] = None
+    for required_tokens, exact_norms in MANUFACTURER_HEADER_TIERS:
+        # tier-1 exact-norm match first
+        for idx, n, _toks in indexed:
+            if n in exact_norms:
+                col_idx = idx
+                break
+        if col_idx is not None:
+            break
+        # then token-superset match
+        for idx, _n, toks in indexed:
+            if required_tokens.issubset(toks):
+                col_idx = idx
+                break
+        if col_idx is not None:
+            break
+    if col_idx is None:
+        preview = "; ".join(h.strip() for h in headers if h.strip())[:300]
+        raise ValueError(
+            f"Could not find a Manufacturer column in the CSV. Headers I saw: {preview or '(none)'}"
+        )
+    out: list[ExtractedRow] = []
+    for r_idx, row in enumerate(rows_raw[1:], start=2):  # 1-based, header is row 1
+        if col_idx >= len(row):
+            continue
+        val = (row[col_idx] or "").strip()
+        if val:
+            out.append(ExtractedRow(row_index=r_idx, raw_name=val))
+    loc = ColumnLocation(
+        sheet_name="csv",
+        header_row=1,
+        col=col_idx + 1,
+        header_value=headers[col_idx],
+    )
+    return out, loc
+
+
 def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation]:
     """Open the workbook in read-only mode and return every non-empty cell
     under the 'Medication/Vaccine Manufacturer' column.
 
+    Handles both xlsx and csv inputs (sniffed by magic bytes).
     Raises ValueError if the column can't be found.
     """
+    if _detect_format(xlsx_bytes) == "csv":
+        return _extract_from_csv(xlsx_bytes)
     # First-pass uses read_only for speed. If we can't find the column we open
     # again in normal mode so _scan_headers can produce a useful error.
     wb = load_workbook(filename=io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
@@ -305,6 +395,56 @@ def match_manufacturers(
 # ─────────────────────────── Writeback ───────────────────────────
 
 
+def _write_response_csv(
+    csv_bytes: bytes, *, row_index: int, response_text: str
+) -> bytes:
+    """CSV equivalent of write_response. Locates or appends the 'Manufacturer
+    Response' column, sets the cell at row_index (1-based; header is row 1),
+    and returns the re-serialised CSV. Output is always UTF-8 with CRLF row
+    endings — what Excel expects when downloading."""
+    text = _decode_csv(csv_bytes)
+    reader = csv.reader(io.StringIO(text))
+    rows = list(reader)
+    if not rows:
+        raise ValueError("CSV is empty; nothing to write into.")
+    headers = rows[0]
+    indexed = [(idx, _normalize(h), _tokenize(h)) for idx, h in enumerate(headers)]
+    col_idx: Optional[int] = None
+    for required_tokens, exact_norms in RESPONSE_HEADER_TIERS:
+        for idx, n, _toks in indexed:
+            if n in exact_norms:
+                col_idx = idx
+                break
+        if col_idx is not None:
+            break
+        for idx, _n, toks in indexed:
+            if required_tokens.issubset(toks):
+                col_idx = idx
+                break
+        if col_idx is not None:
+            break
+    if col_idx is None:
+        col_idx = len(headers)
+        headers.append("Manufacturer Response")
+        rows[0] = headers
+        # Pad any short data rows so column indexing stays consistent.
+        for r in rows[1:]:
+            while len(r) < len(headers):
+                r.append("")
+    target = row_index - 1  # 1-based → 0-based
+    if target < 1 or target >= len(rows):
+        raise ValueError(
+            f"row_index {row_index} out of range for CSV with {len(rows)} rows"
+        )
+    while len(rows[target]) <= col_idx:
+        rows[target].append("")
+    rows[target][col_idx] = response_text
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
 def write_response(
     xlsx_bytes: bytes,
     *,
@@ -314,7 +454,14 @@ def write_response(
 ) -> bytes:
     """Open the workbook, locate (or create) the 'Manufacturer Response' column,
     write `response_text` into the cell at `row_index`, and return the updated
-    bytes. Pure in-memory — caller decides where to upload."""
+    bytes. Pure in-memory — caller decides where to upload.
+
+    Handles both xlsx and csv inputs (sniffed by magic bytes). For CSV the
+    sheet_name argument is ignored — CSV has no sheets."""
+    if _detect_format(xlsx_bytes) == "csv":
+        return _write_response_csv(
+            xlsx_bytes, row_index=row_index, response_text=response_text
+        )
     wb = load_workbook(filename=io.BytesIO(xlsx_bytes), data_only=False)
     try:
         loc = _find_column(wb, RESPONSE_HEADER_TIERS)

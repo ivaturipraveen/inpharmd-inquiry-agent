@@ -77,13 +77,24 @@ def _pick_user_token(db: Session, inquiry: Inquiry) -> Optional[str]:
 
 
 def _download(url: str, *, token: Optional[str]) -> bytes:
-    params: dict[str, str] = {}
-    # Only attach the staging token if the URL points back at InpharmD —
-    # presigned S3 URLs (our own re-uploads) reject arbitrary query params.
-    if token and ("inpharmd" in url or "mercer-inpharmd" in url) and "access_token=" not in url:
-        params["access_token"] = token
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    final_url = url
+    # Inject access_token ONLY for InpharmD's app host (heroku/localhost).
+    # Skip *.amazonaws.com — presigned URLs depend on the exact query string
+    # so merging extra params via httpx clobbers AWSAccessKeyId/Signature
+    # /Expires and the request 403s. Our own bucket inpharmd-assistant.s3
+    # matches the loose "inpharmd in host" test, which is the bug this fixes.
+    if (
+        token
+        and not host.endswith(".amazonaws.com")
+        and ("inpharmd" in host or "mercer-inpharmd" in host)
+        and "access_token=" not in url
+    ):
+        sep = "&" if "?" in url else "?"
+        final_url = f"{url}{sep}access_token={token}"
     with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        res = client.get(url, params=params)
+        res = client.get(final_url)
         res.raise_for_status()
         return res.content
 
@@ -177,15 +188,20 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     # same object — one file in S3 per MUE inquiry, not N.
     # The presigned URL returned here changes per call (fresh signature),
     # but it always points at the same key holding the latest cumulative
-    # state.
-    file_name = f"inquiry-{inquiry.source_inquiry_uuid}.xlsx"
+    # state. Format-aware: a CSV source stays a CSV on the way out.
+    fmt = "csv" if updated_bytes[:4] != b"PK\x03\x04" else "xlsx"
+    if fmt == "csv":
+        ext = "csv"
+        ct = "text/csv"
+    else:
+        ext = "xlsx"
+        ct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    file_name = f"inquiry-{inquiry.source_inquiry_uuid}.{ext}"
     new_url = s3_service.upload_bytes(
         updated_bytes,
         original_name=file_name,
         inquiry_id=inquiry.id,
-        content_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        content_type=ct,
         key_override=f"mue-responses/{file_name}",
     )
     if not new_url:
