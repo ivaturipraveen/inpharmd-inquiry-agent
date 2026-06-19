@@ -242,12 +242,20 @@ export default function ContactManufacturerPage() {
     }
   }, [extractableAttachment, ctx]);
 
-  // Auto-detect on mount if the inquiry has an .xlsx attachment. No button —
-  // the user lands on a populated checklist instead of an empty form.
+  // Auto-detect on mount if the inquiry has an extractable attachment. No
+  // button — the user lands on a populated checklist instead of an empty form.
+  //
+  // IMPORTANT: gate on `extractError` too. Without that, a failed extract
+  // (e.g. backend 502) would: finally{setExtracting(false)} → effect re-runs
+  // because `extracting` flipped → tries again → hammers the backend in an
+  // infinite tight loop until the tab is closed. With extractError in the
+  // guard, the user sees the error and can manually retry (which clears
+  // extractError at the top of runExtraction).
   useEffect(() => {
-    if (!extractableAttachment || extraction || extracting) return;
+    if (!extractableAttachment || extraction || extracting || extractError)
+      return;
     runExtraction();
-  }, [extractableAttachment, extraction, extracting, runExtraction]);
+  }, [extractableAttachment, extraction, extracting, extractError, runExtraction]);
 
   const toggleRow = (rowIndex: number) => {
     setSelectedRows((prev) => {
