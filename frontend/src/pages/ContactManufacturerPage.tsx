@@ -69,8 +69,11 @@ const goTo = (hash: string) => {
   window.location.hash = hash;
 };
 
-const isXlsx = (a: Attachment): boolean =>
-  /\.xlsx(\?|$)/i.test(a.file_name) || /\.xlsx(\?|$)/i.test(a.doc_url);
+// Accept both .xlsx and .csv — backend extract handles both formats (sniffs
+// magic bytes, then dispatches to openpyxl or csv module).
+const isExtractable = (a: Attachment): boolean =>
+  /\.(xlsx|csv)(\?|$)/i.test(a.file_name) ||
+  /\.(xlsx|csv)(\?|$)/i.test(a.doc_url);
 
 const confidenceLabel = (c: DetectedRow["confidence"]): string => {
   switch (c) {
@@ -176,8 +179,8 @@ export default function ContactManufacturerPage() {
     return () => clearTimeout(t);
   }, [banner]);
 
-  const xlsxAttachment = useMemo(() => {
-    return (ctx?.attachments ?? []).find(isXlsx);
+  const extractableAttachment = useMemo(() => {
+    return (ctx?.attachments ?? []).find(isExtractable);
   }, [ctx]);
 
   // Quick lookup for matched-manufacturer details (email/phone/SLA).
@@ -204,7 +207,7 @@ export default function ContactManufacturerPage() {
   );
 
   const runExtraction = useCallback(async () => {
-    if (!xlsxAttachment) return;
+    if (!extractableAttachment) return;
     setExtracting(true);
     setExtractError(null);
     try {
@@ -213,7 +216,7 @@ export default function ContactManufacturerPage() {
       // edits made on the Manufacturers page since this view loaded.
       const [result] = await Promise.all([
         api.externalInquiries.extractManufacturers(
-          xlsxAttachment.doc_url,
+          extractableAttachment.doc_url,
           ctx?.uuid,
         ),
         api.manufacturers.list().then(setManufacturers).catch(() => {
@@ -237,14 +240,14 @@ export default function ContactManufacturerPage() {
     } finally {
       setExtracting(false);
     }
-  }, [xlsxAttachment, ctx]);
+  }, [extractableAttachment, ctx]);
 
   // Auto-detect on mount if the inquiry has an .xlsx attachment. No button —
   // the user lands on a populated checklist instead of an empty form.
   useEffect(() => {
-    if (!xlsxAttachment || extraction || extracting) return;
+    if (!extractableAttachment || extraction || extracting) return;
     runExtraction();
-  }, [xlsxAttachment, extraction, extracting, runExtraction]);
+  }, [extractableAttachment, extraction, extracting, runExtraction]);
 
   const toggleRow = (rowIndex: number) => {
     setSelectedRows((prev) => {
@@ -310,7 +313,7 @@ export default function ContactManufacturerPage() {
         // Prefer our own S3 mirror so the response-writeback path is
         // independent of InpharmD's 10-second signed URLs.
         source_excel_url:
-          extraction.excel_s3_url ?? xlsxAttachment?.doc_url ?? null,
+          extraction.excel_s3_url ?? extractableAttachment?.doc_url ?? null,
         source_excel_sheet: extraction.sheet_name,
         dispatch_channel: channel,
         test_call_to_number: testCallTo,
@@ -424,7 +427,7 @@ export default function ContactManufacturerPage() {
 
       {/* Auto-detect status banner — appears only while detecting or after
           a successful detection. No button: detection runs on mount. */}
-      {xlsxAttachment && !bulkResult && (extracting || extraction) && (
+      {extractableAttachment && !bulkResult && (extracting || extraction) && (
         <div className="dispatch-mode-card">
           <div className="dispatch-mode-head">
             <strong>
@@ -435,7 +438,7 @@ export default function ContactManufacturerPage() {
                 : ""}
             </strong>
             <span className="dispatch-mode-sub">
-              From <em>{xlsxAttachment.file_name}</em>
+              From <em>{extractableAttachment.file_name}</em>
               {extraction && (
                 <>
                   {" "}· sheet "{extraction.sheet_name}", column
