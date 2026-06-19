@@ -293,7 +293,18 @@ export default function ContactManufacturerPage() {
     }
 
     const targets = extraction.rows
-      .filter((r) => selectedRows.has(r.row_index) && r.matched_id != null)
+      .filter((r) => {
+        if (!selectedRows.has(r.row_index) || r.matched_id == null) return false;
+        if (channel === "email") {
+          const m = mfrById[r.matched_id];
+          return !!(m?.official_mi_email || m?.team_verified_email);
+        }
+        if (channel === "call") {
+          const m = mfrById[r.matched_id];
+          return !!m?.mi_phone;
+        }
+        return true;
+      })
       .map((r) => ({
         manufacturer_id: r.matched_id as number,
         source_excel_row: r.row_index,
