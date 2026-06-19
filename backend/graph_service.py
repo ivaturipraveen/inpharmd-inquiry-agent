@@ -210,34 +210,34 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         inquiry_id, sender, mfr_name, len(body or ""), len(reply or ""),
     )
 
-    # ---- PDF attachment (optional) ----
+    # ---- Document attachment (optional: PDF / DOCX / DOC / XLSX / XLS / CSV) ----
     pdf_url: Optional[str] = None
     pdf_filename: Optional[str] = None
     pdf_summary: Optional[str] = None
 
     if msg.get("hasAttachments"):
-        pdf = _fetch_pdf_attachment(token, mailbox, msg["id"])
-        if pdf:
-            log.info("Inquiry %s reply has PDF '%s' (%d bytes)",
-                     inquiry_id, pdf["name"], len(pdf["bytes"]))
-            pdf_filename = pdf["name"]
-            # Upload to S3 (no-op if not configured)
-            pdf_url = s3_service.upload_pdf(
-                pdf["bytes"], original_name=pdf["name"], inquiry_id=inquiry_id
+        doc = _fetch_document_attachment(token, mailbox, msg["id"])
+        if doc:
+            log.info("Inquiry %s reply has attachment '%s' (%d bytes)",
+                     inquiry_id, doc["name"], len(doc["bytes"]))
+            pdf_filename = doc["name"]
+            pdf_url = s3_service.upload_bytes(
+                doc["bytes"],
+                original_name=doc["name"],
+                inquiry_id=inquiry_id,
+                content_type=doc["content_type"],
             )
-            # Summarize PDF body so the dashboard has an immediate human-readable
-            # answer rather than just "see attached".
             if summary_service.is_configured():
-                pdf_text = summary_service.extract_pdf_text(pdf["bytes"])
-                if pdf_text:
+                doc_text = summary_service.extract_document_text(doc["name"], doc["bytes"])
+                if doc_text:
                     try:
                         pdf_summary = summary_service.summarize_pdf(
                             question=obj.question,
                             manufacturer=mfr_name,
-                            pdf_text=pdf_text,
+                            pdf_text=doc_text,
                         )
                     except Exception as e:
-                        log.warning("PDF summary unavailable for inquiry %s: %s", inquiry_id, e)
+                        log.warning("Attachment summary unavailable for inquiry %s: %s", inquiry_id, e)
 
     # Keep the rep's actual reply text as the primary answer — even if it's
     # short. The PDF summary is supplemental context, not a replacement.
@@ -282,14 +282,34 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     }
 
 
-def _fetch_pdf_attachment(token: str, mailbox: str, message_id: str) -> Optional[dict]:
-    """Look at the message's attachments and return the first PDF (if any).
+_SUPPORTED_ATTACHMENT_TYPES = {
+    # (content-type fragment, extension) pairs we recognise
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/csv": ".csv",
+    "application/csv": ".csv",
+}
+_SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"}
 
-    Returns a dict {'name': str, 'bytes': bytes} or None.
+_CONTENT_TYPE_FOR_EXT = {
+    ".pdf":  "application/pdf",
+    ".doc":  "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls":  "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".csv":  "text/csv",
+}
+
+
+def _fetch_document_attachment(token: str, mailbox: str, message_id: str) -> Optional[dict]:
+    """Return the first supported document attachment from the message (if any).
+
+    Supported formats: PDF, DOCX, DOC, XLSX, XLS, CSV.
+    Returns a dict {'name': str, 'bytes': bytes, 'content_type': str} or None.
     """
-    # Graph rejects `@odata.type` inside $select (metadata field, not a real
-    # property). It still comes back on every item automatically, so we just
-    # ask for the regular properties and read it from the JSON.
     url = (
         f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments"
         f"?$select=id,name,contentType,size"
@@ -304,21 +324,20 @@ def _fetch_pdf_attachment(token: str, mailbox: str, message_id: str) -> Optional
         log.warning("Failed to list attachments for message %s: %s", message_id, e)
         return None
 
-    pdf_meta = None
+    chosen = None
     for a in items:
-        # Only handle simple file attachments — skip itemAttachment/referenceAttachment.
         if a.get("@odata.type") != "#microsoft.graph.fileAttachment":
             continue
         name = (a.get("name") or "").lower()
         ctype = (a.get("contentType") or "").lower()
-        if ctype == "application/pdf" or name.endswith(".pdf"):
-            pdf_meta = a
+        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+        if ext in _SUPPORTED_EXTENSIONS or any(ctype.startswith(k) for k in _SUPPORTED_ATTACHMENT_TYPES):
+            chosen = a
             break
-    if not pdf_meta:
+    if not chosen:
         return None
 
-    # Fetch full attachment incl. contentBytes
-    att_id = pdf_meta["id"]
+    att_id = chosen["id"]
     full_url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments/{att_id}"
     try:
         with httpx.Client(timeout=60) as client:
@@ -326,7 +345,7 @@ def _fetch_pdf_attachment(token: str, mailbox: str, message_id: str) -> Optional
             r.raise_for_status()
             data = r.json()
     except Exception as e:
-        log.warning("Failed to fetch PDF attachment %s: %s", att_id, e)
+        log.warning("Failed to fetch attachment %s: %s", att_id, e)
         return None
 
     import base64
@@ -337,7 +356,11 @@ def _fetch_pdf_attachment(token: str, mailbox: str, message_id: str) -> Optional
         return None
     if not raw:
         return None
-    return {"name": data.get("name") or "attachment.pdf", "bytes": raw}
+
+    original_name = data.get("name") or chosen.get("name") or "attachment"
+    ext = "." + original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+    content_type = _CONTENT_TYPE_FOR_EXT.get(ext, "application/octet-stream")
+    return {"name": original_name, "bytes": raw, "content_type": content_type}
 
 
 def _mark_read(token: str, mailbox: str, message_id: str) -> None:

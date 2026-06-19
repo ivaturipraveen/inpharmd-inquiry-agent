@@ -247,3 +247,87 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
     except Exception as e:
         log.warning("PDF text extract failed: %s", e)
         return ""
+
+
+def extract_document_text(filename: str, file_bytes: bytes) -> str:
+    """Extract plain text from a document based on its file extension.
+
+    Supports: .pdf, .docx, .doc, .csv, .xlsx, .xls
+    Returns "" on failure or unsupported type.
+    """
+    ext = (filename or "").rsplit(".", 1)[-1].lower()
+
+    if ext == "pdf":
+        return extract_pdf_text(file_bytes)
+
+    if ext == "docx":
+        try:
+            import docx  # python-docx
+            from io import BytesIO
+            doc = docx.Document(BytesIO(file_bytes))
+            return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except Exception as e:
+            log.warning("DOCX text extract failed: %s", e)
+            return ""
+
+    if ext == "doc":
+        # Legacy binary Word format — attempt a best-effort text extraction by
+        # decoding bytes and stripping non-printable characters.
+        try:
+            text = file_bytes.decode("latin-1", errors="ignore")
+            import re
+            text = re.sub(r"[^\x20-\x7e\n\r\t]", " ", text)
+            text = re.sub(r" {4,}", " ", text)
+            return text.strip()
+        except Exception as e:
+            log.warning("DOC text extract failed: %s", e)
+            return ""
+
+    if ext == "csv":
+        try:
+            import csv
+            from io import StringIO
+            decoded = file_bytes.decode("utf-8", errors="replace")
+            reader = csv.reader(StringIO(decoded))
+            rows = ["\t".join(row) for row in reader]
+            return "\n".join(rows)
+        except Exception as e:
+            log.warning("CSV text extract failed: %s", e)
+            return ""
+
+    if ext == "xlsx":
+        try:
+            import openpyxl
+            from io import BytesIO
+            wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+            chunks = []
+            for sheet in wb.worksheets:
+                chunks.append(f"[Sheet: {sheet.title}]")
+                for row in sheet.iter_rows(values_only=True):
+                    line = "\t".join("" if v is None else str(v) for v in row)
+                    if line.strip():
+                        chunks.append(line)
+            return "\n".join(chunks)
+        except Exception as e:
+            log.warning("XLSX text extract failed: %s", e)
+            return ""
+
+    if ext == "xls":
+        try:
+            import xlrd
+            from io import BytesIO
+            wb = xlrd.open_workbook(file_contents=file_bytes)
+            chunks = []
+            for sheet in wb.sheets():
+                chunks.append(f"[Sheet: {sheet.name}]")
+                for rx in range(sheet.nrows):
+                    line = "\t".join(str(sheet.cell_value(rx, cx)) for cx in range(sheet.ncols))
+                    if line.strip():
+                        chunks.append(line)
+            return "\n".join(chunks)
+        except Exception as e:
+            log.warning("XLS text extract failed: %s", e)
+            return ""
+
+    log.info("No text extractor for file extension '%s'", ext)
+    return ""

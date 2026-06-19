@@ -118,9 +118,9 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
           </div>
 
           {/* Final Answer shows automatically once the agent or AI has captured one.
-              When the reply included a PDF, we surface three distinct pieces
+              When the reply included an attachment, we surface three distinct pieces
               top-to-bottom: the manufacturer's direct response, the AI summary
-              of the PDF, and the link to download the PDF. */}
+              of the attachment, and the link to download it. */}
           {(inquiry.final_answer || inquiry.pdf_summary || inquiry.pdf_url) && (
             <div className="detail-section answer-box answer-box-prominent">
               <div className="answer-label">
@@ -133,7 +133,15 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
 
               {inquiry.pdf_summary && (
                 <div className="answer-subsection">
-                  <div className="answer-sublabel">PDF Summary</div>
+                  <div className="answer-sublabel">
+                    {(() => {
+                      const ext = (inquiry.pdf_filename || "").split(".").pop()?.toLowerCase();
+                      if (ext === "csv") return "CSV Summary";
+                      if (ext === "xlsx" || ext === "xls") return "Spreadsheet Summary";
+                      if (ext === "docx" || ext === "doc") return "Document Summary";
+                      return "PDF Summary";
+                    })()}
+                  </div>
                   <div className="detail-prose">{inquiry.pdf_summary}</div>
                 </div>
               )}
@@ -145,7 +153,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     <path d="M14 2v6h6" />
                   </svg>
                   <a href={inquiry.pdf_url} target="_blank" rel="noreferrer">
-                    {inquiry.pdf_filename || "Open attached PDF"}
+                    {inquiry.pdf_filename || "Open attachment"}
                   </a>
                 </div>
               )}
