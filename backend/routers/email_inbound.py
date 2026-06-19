@@ -89,6 +89,10 @@ async def sendgrid_inbound(request: Request) -> Response:
 
     inquiry_id = int(m.group(1))
     reply = _strip_quoted(body)
+    log.info(
+        "pipeline: inbound parsed tag inquiry=%s body_chars=%d reply_chars=%d sender=%s",
+        inquiry_id, len(body or ""), len(reply or ""), sender,
+    )
 
     if not reply:
         log.info("Inbound reply for inquiry %s had no extractable body; ignoring", inquiry_id)
@@ -105,10 +109,15 @@ async def sendgrid_inbound(request: Request) -> Response:
             return Response(status_code=200)
 
         if obj.status == "closed":
+            log.info("pipeline: inbound skip inquiry=%s already closed", inquiry_id)
             return Response(status_code=200)
 
         if obj.email_response:
             log.info("Inquiry %s already has a reply; skipping duplicate", inquiry_id)
+            log.info(
+                "pipeline: inbound skip inquiry=%s duplicate (email_response already set)",
+                inquiry_id,
+            )
             return Response(status_code=200)
 
         obj.email_response = reply
@@ -132,9 +141,54 @@ async def sendgrid_inbound(request: Request) -> Response:
         obj.final_answer = final
         db.commit()
         log.info("Stored email reply for inquiry %s from %s", inquiry_id, sender)
+        log.info(
+            "pipeline: inbound stored email_response inquiry=%s status=email_responded "
+            "final_answer_chars=%d",
+            inquiry_id, len(final or ""),
+        )
 
         # If this inquiry was forwarded from InpharmD, POST the reply back.
         legacy_response_service.maybe_post_for_inquiry(db, obj)
+
+        # Slack — same as the Graph poll path. Without this, replies that
+        # came in via SendGrid webhook were silently NOT broadcasting to
+        # Slack while Graph-polled replies were, depending on which path
+        # captured the reply first.
+        try:
+            import slack_service
+            mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
+            if slack_service.is_configured():
+                log.info(
+                    "pipeline: slack notify_reply firing for inquiry %s (via SendGrid webhook)",
+                    inquiry_id,
+                )
+                slack_service.notify_reply(
+                    inquiry_id=inquiry_id,
+                    manufacturer=mfr_name,
+                    subject=obj.subject,
+                    question=obj.question,
+                    answer=obj.final_answer or "(See attached PDF.)",
+                    requester_name=obj.requester_name,
+                    requester_email=obj.requester_email,
+                    sender_email=sender,
+                )
+            else:
+                log.info(
+                    "pipeline: slack notify SKIPPED for inquiry %s: SLACK_WEBHOOK_URL not configured",
+                    inquiry_id,
+                )
+        except Exception:
+            log.exception("pipeline: slack notify FAILED for inquiry %s", inquiry_id)
+
+        # One-line summary so the entire reply pipeline is trivially greppable.
+        # grep `pipeline: COMPLETE inquiry=N` to see every reply's final outcome.
+        log.info(
+            "pipeline: COMPLETE inquiry=%s path=sendgrid_webhook "
+            "legacy_posted=%s sheet_posted=%s",
+            inquiry_id,
+            "yes" if obj.legacy_response_posted_at is not None else "no",
+            "yes" if obj.excel_response_posted_at is not None else "no",
+        )
 
     except Exception:
         log.exception("Failed to process inbound email for inquiry %s", inquiry_id)

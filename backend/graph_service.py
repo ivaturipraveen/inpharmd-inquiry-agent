@@ -178,8 +178,13 @@ def _get_body(msg: dict) -> str:
 def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     """Process one Graph message. Returns reply data if the inquiry was updated, else None."""
     subject = msg.get("subject", "") or ""
+    log.info(
+        "pipeline: graph processing msg subject=%r has_attachments=%s",
+        subject[:120], bool(msg.get("hasAttachments")),
+    )
     m = _SUBJECT_TAG.search(subject)
     if not m:
+        log.info("pipeline: graph skip — no [InpharmD #N] tag in subject")
         return None
 
     inquiry_id = int(m.group(1))
@@ -200,6 +205,10 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
 
     sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
     mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
+    log.info(
+        "pipeline: graph parsed inquiry=%s sender=%s mfr=%s body_chars=%d reply_chars=%d",
+        inquiry_id, sender, mfr_name, len(body or ""), len(reply or ""),
+    )
 
     # ---- PDF attachment (optional) ----
     pdf_url: Optional[str] = None
@@ -252,6 +261,11 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     log.info(
         "Captured Graph email reply for inquiry %s from %s (reply=%d chars, pdf=%s)",
         inquiry_id, sender, len(reply or ""), bool(pdf_url),
+    )
+    log.info(
+        "pipeline: graph stored email_response inquiry=%s status=email_responded "
+        "final_answer_chars=%d pdf_attached=%s",
+        inquiry_id, len(final_answer or ""), bool(pdf_url),
     )
     return {
         "inquiry_id": inquiry_id,
@@ -401,7 +415,7 @@ def poll_once() -> int:
                     import slack_service
                     if slack_service.is_configured():
                         log.info(
-                            "pipeline: slack notify_reply firing for inquiry %s",
+                            "pipeline: slack notify_reply firing for inquiry %s (via graph poll)",
                             changed.get("inquiry_id"),
                         )
                         slack_service.notify_reply(**changed)
@@ -413,6 +427,25 @@ def poll_once() -> int:
                 except Exception:
                     log.exception(
                         "pipeline: slack notify FAILED for inquiry %s",
+                        changed.get("inquiry_id"),
+                    )
+
+                # One-line summary — grep `pipeline: COMPLETE inquiry=N` to
+                # see every reply's outcome at a glance.
+                try:
+                    inquiry_id = changed.get("inquiry_id")
+                    refreshed = db.get(Inquiry, inquiry_id)
+                    if refreshed is not None:
+                        log.info(
+                            "pipeline: COMPLETE inquiry=%s path=graph_poll "
+                            "legacy_posted=%s sheet_posted=%s",
+                            inquiry_id,
+                            "yes" if refreshed.legacy_response_posted_at is not None else "no",
+                            "yes" if refreshed.excel_response_posted_at is not None else "no",
+                        )
+                except Exception:
+                    log.exception(
+                        "pipeline: failed to log COMPLETE summary for inquiry %s",
                         changed.get("inquiry_id"),
                     )
     finally:

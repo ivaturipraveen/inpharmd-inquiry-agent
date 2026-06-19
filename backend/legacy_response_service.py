@@ -76,6 +76,10 @@ def post_response(
             "(uuid=%s)",
             inquiry_uuid,
         )
+        log.info(
+            "pipeline: legacy POST SKIPPED uuid=%s reason=LEGACY_RESPONSE_API_KEY not set",
+            inquiry_uuid,
+        )
         return False
 
     # Multipart form fields — Rails endpoint requires multipart even when
@@ -86,6 +90,12 @@ def post_response(
     }
     if mfr_s3_url:
         data["mfr_s3_url"] = mfr_s3_url
+    log.info(
+        "pipeline: legacy POST sending uuid=%s response_chars=%d has_s3_url=%s",
+        inquiry_uuid,
+        len(mfr_email_response or ""),
+        bool(mfr_s3_url),
+    )
 
     # Empty `files` dict forces httpx to use multipart encoding even without
     # an actual file part — keeps the wire format identical regardless of
