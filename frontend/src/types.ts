@@ -1,3 +1,6 @@
+/** Must match backend schemas.INQUIRY_SUBJECT_MAX_LENGTH */
+export const INQUIRY_SUBJECT_MAX_LENGTH = 1000;
+
 export interface ManufacturerContact {
   id: number;
   manufacturer: string;

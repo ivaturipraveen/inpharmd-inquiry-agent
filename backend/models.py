@@ -81,7 +81,7 @@ class Inquiry(Base):
         index=True,
     )
 
-    subject = Column(String(255), nullable=False)
+    subject = Column(String(1000), nullable=False)
     question = Column(Text, nullable=False)
     requester_name = Column(String(255))
     requester_email = Column(String(255))

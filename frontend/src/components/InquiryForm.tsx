@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { ClientTools } from "@elevenlabs/react";
 import type { InquiryInput, ManufacturerContact } from "../types";
+import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 import VoiceFillButton from "./VoiceFillButton";
 
 interface Props {
@@ -259,6 +260,10 @@ const InquiryForm: FC<Props> = ({
       setError("Subject is required.");
       return;
     }
+    if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
+      setError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
+      return;
+    }
     if (!question.trim()) {
       setError("Question is required.");
       return;
@@ -438,6 +443,7 @@ const InquiryForm: FC<Props> = ({
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
                   placeholder="e.g. Stability data for Drug X after temperature excursion"
+                  maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
                   required
                 />
               </div>

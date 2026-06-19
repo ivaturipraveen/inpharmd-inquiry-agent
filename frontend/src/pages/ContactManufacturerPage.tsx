@@ -8,6 +8,7 @@ import type {
   InquiryInput,
   ManufacturerContact,
 } from "../types";
+import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 
 interface Attachment {
   id: number;
@@ -284,6 +285,10 @@ export default function ContactManufacturerPage() {
     }
     if (!subject.trim() || !question.trim()) {
       setExtractError("Subject and question are required.");
+      return;
+    }
+    if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
+      setExtractError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
       return;
     }
 
@@ -642,6 +647,7 @@ export default function ContactManufacturerPage() {
                     value={subject}
                     onChange={(e) => setSubject(e.target.value)}
                     placeholder="Subject line for every recipient"
+                    maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
                   />
                 </div>
                 <div className="field full">

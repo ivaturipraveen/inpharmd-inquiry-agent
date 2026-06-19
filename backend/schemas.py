@@ -1,7 +1,10 @@
 from datetime import date, datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+# Email subjects are capped in practice; MUE templates can be long.
+INQUIRY_SUBJECT_MAX_LENGTH = 1000
 
 
 # ---------- Manufacturer ----------
@@ -65,7 +68,7 @@ class ManufacturerSummary(BaseModel):
 
 class InquiryBase(BaseModel):
     manufacturer_id: int
-    subject: str
+    subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
     question: str
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
@@ -94,7 +97,7 @@ class BulkTarget(BaseModel):
 
 class BulkInquiryCreate(BaseModel):
     targets: list[BulkTarget]
-    subject: str
+    subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
     question: str
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
@@ -129,7 +132,7 @@ class BulkInquiryResult(BaseModel):
 
 
 class InquiryUpdate(BaseModel):
-    subject: Optional[str] = None
+    subject: Optional[str] = Field(None, max_length=INQUIRY_SUBJECT_MAX_LENGTH)
     question: Optional[str] = None
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
