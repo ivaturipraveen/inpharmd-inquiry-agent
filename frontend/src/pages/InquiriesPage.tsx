@@ -255,8 +255,10 @@ export default function InquiriesPage() {
           break;
         case "close":
           updated = await api.inquiries.close(selected.id);
+          setSelected(null);
           setSuccess("Inquiry closed.");
-          break;
+          load();
+          return;
         case "extractAnswer":
           updated = await api.inquiries.extractAnswer(selected.id);
           setSuccess("Answer extracted from transcript.");
