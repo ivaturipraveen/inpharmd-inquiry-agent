@@ -41,6 +41,12 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _mue_response_file_name(source_inquiry_uuid: str, ext: str) -> str:
+    """Deterministic S3 object name — one file per MUE source inquiry."""
+    short = (source_inquiry_uuid or "").strip()[:8]
+    return f"inquiry-{short}.{ext}"
+
+
 def _pick_latest_excel_url(db: Session, inquiry: Inquiry) -> str:
     """Return the URL of the most-recently-updated workbook copy for this
     MUE source. Falls back to the original source URL if no sibling has
@@ -240,7 +246,7 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     else:
         ext = "xlsx"
         ct = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    file_name = f"inquiry-{inquiry.source_inquiry_uuid}.{ext}"
+    file_name = _mue_response_file_name(inquiry.source_inquiry_uuid, ext)
     log.info(
         "pipeline: writeback step 3/4 (upload) inquiry=%s key=mue-responses/%s content_type=%s",
         inquiry.id, file_name, ct,
