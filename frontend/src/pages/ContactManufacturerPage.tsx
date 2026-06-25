@@ -120,6 +120,7 @@ export default function ContactManufacturerPage() {
   const [extraction, setExtraction] = useState<DetectedExtraction | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
+  const [manualOverride, setManualOverride] = useState(false);
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState("");
@@ -253,10 +254,10 @@ export default function ContactManufacturerPage() {
   // guard, the user sees the error and can manually retry (which clears
   // extractError at the top of runExtraction).
   useEffect(() => {
-    if (!extractableAttachment || extraction || extracting || extractError)
+    if (!extractableAttachment || extraction || extracting || extractError || manualOverride)
       return;
     runExtraction();
-  }, [extractableAttachment, extraction, extracting, extractError, runExtraction]);
+  }, [extractableAttachment, extraction, extracting, extractError, manualOverride, runExtraction]);
 
   const toggleRow = (rowIndex: number) => {
     setSelectedRows((prev) => {
@@ -477,6 +478,7 @@ export default function ContactManufacturerPage() {
                 type="button"
                 className="btn btn-ghost"
                 onClick={() => {
+                  setManualOverride(true);
                   setMode("single");
                   setExtraction(null);
                   setSelectedRows(new Set());
