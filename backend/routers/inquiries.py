@@ -180,9 +180,19 @@ async def bulk_create_inquiries(
     test_call_to: Optional[str] = None
 
     if channel == "email":
-        # Best-effort email send. We don't roll back creates on send failure —
-        # the user still has draft inquiries they can retry from the Outreach tab.
+        # Group inquiries by destination email so we send ONE email per unique
+        # recipient. Multiple Excel rows can resolve to the same manufacturer
+        # (e.g. 25 MUE rows all directed at Fresenius Kabi) — without this
+        # dedup we'd fire 25 identical emails. Every sibling inquiry in a
+        # group still gets email_sent_at stamped so the response-writeback
+        # path (which fans out over source_inquiry_uuid siblings) updates
+        # every Excel row when the reply lands.
+        groups: dict[str, list[Inquiry]] = {}
         for obj in list(created_objs):
+            # Idempotency: if this inquiry was already dispatched (e.g. client
+            # retry after a network blip), skip it.
+            if obj.email_sent_at is not None:
+                continue
             mfr = db.get(ManufacturerContact, obj.manufacturer_id)
             if not mfr:
                 failed.append({"manufacturer_id": obj.manufacturer_id, "error": "Manufacturer disappeared after create"})
@@ -194,35 +204,49 @@ async def bulk_create_inquiries(
                     "error": f"{mfr.manufacturer} has no email address on file",
                 })
                 continue
+            groups.setdefault(to_email.strip().lower(), []).append(obj)
+
+        for to_email_key, siblings in groups.items():
+            primary = siblings[0]
+            mfr = db.get(ManufacturerContact, primary.manufacturer_id)
+            # Use the un-lowercased address from the manufacturer record for the
+            # actual send (SMTP is case-insensitive but users may care).
+            to_email = mfr.official_mi_email or mfr.team_verified_email
             try:
                 message_id = email_service.send_inquiry_email(
-                    inquiry_id=obj.id,
+                    inquiry_id=primary.id,
                     manufacturer_name=mfr.manufacturer,
                     to_email=to_email,
-                    subject=obj.subject,
-                    question=obj.question,
-                    requester_name=obj.requester_name,
-                    requester_email=obj.requester_email,
+                    subject=primary.subject,
+                    question=primary.question,
+                    requester_name=primary.requester_name,
+                    requester_email=primary.requester_email,
                 )
             except Exception as e:
-                failed.append({
-                    "manufacturer_id": obj.manufacturer_id,
-                    "error": f"Email send failed: {e}",
-                })
+                for sib in siblings:
+                    failed.append({
+                        "manufacturer_id": sib.manufacturer_id,
+                        "error": f"Email send failed: {e}",
+                    })
                 continue
             now = _now()
-            obj.status = "email_sent"
-            obj.email_sent_at = now
-            obj.email_message_id = message_id
-            obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
-            dispatched += 1
+            for sib in siblings:
+                sib.status = "email_sent"
+                sib.email_sent_at = now
+                sib.email_message_id = message_id
+                sib.call_scheduled_for = now + timedelta(hours=sib.fallback_after_hours)
+            dispatched += 1  # unique emails sent, not inquiries stamped
         db.commit()
 
     elif channel == "call":
-        # Sequentially place a voice-agent call for each created inquiry.
-        # Skip manufacturers with no phone / outside business hours rather
-        # than aborting the whole batch.
+        # Group by phone number so multiple MUE rows resolving to the same
+        # manufacturer place ONE call, not N. All siblings share the returned
+        # conversation_id so any inbound outcome updates every row.
+        call_groups: dict[str, list[Inquiry]] = {}
         for obj in list(created_objs):
+            if obj.call_conversation_id:
+                # Idempotency: already dispatched (e.g. client retry).
+                continue
             mfr = db.get(ManufacturerContact, obj.manufacturer_id)
             if not mfr:
                 failed.append({"manufacturer_id": obj.manufacturer_id, "error": "Manufacturer disappeared after create"})
@@ -240,30 +264,38 @@ async def bulk_create_inquiries(
                     "error": f"{mfr.manufacturer} is outside business hours ({mfr.mi_phone_hours})",
                 })
                 continue
+            call_groups.setdefault(mfr.mi_phone.strip(), []).append(obj)
+
+        for phone, siblings in call_groups.items():
+            primary = siblings[0]
+            mfr = db.get(ManufacturerContact, primary.manufacturer_id)
             try:
                 resp = await call_service.place_inquiry_call(
-                    inquiry_id=obj.id,
-                    to_number=mfr.mi_phone,
+                    inquiry_id=primary.id,
+                    to_number=phone,
                     manufacturer_name=mfr.manufacturer,
-                    subject=obj.subject,
-                    question=obj.question,
-                    requester_name=obj.requester_name,
-                    requester_email=obj.requester_email,
+                    subject=primary.subject,
+                    question=primary.question,
+                    requester_name=primary.requester_name,
+                    requester_email=primary.requester_email,
                 )
             except Exception as e:
-                failed.append({
-                    "manufacturer_id": obj.manufacturer_id,
-                    "error": f"Call failed: {e}",
-                })
+                for sib in siblings:
+                    failed.append({
+                        "manufacturer_id": sib.manufacturer_id,
+                        "error": f"Call failed: {e}",
+                    })
                 continue
-            obj.status = "call_pending"
-            obj.call_scheduled_for = _now()
-            obj.call_conversation_id = (
-                resp.get("conversation_id") or resp.get("conversationId")
-            )
-            obj.call_provider_status = resp.get("status") or "initiated"
-            obj.next_retry_at = None
-            dispatched += 1
+            conv_id = resp.get("conversation_id") or resp.get("conversationId")
+            provider_status = resp.get("status") or "initiated"
+            now = _now()
+            for sib in siblings:
+                sib.status = "call_pending"
+                sib.call_scheduled_for = now
+                sib.call_conversation_id = conv_id
+                sib.call_provider_status = provider_status
+                sib.next_retry_at = None
+            dispatched += 1  # unique calls placed, not inquiries stamped
         db.commit()
 
     elif channel == "test_call":
