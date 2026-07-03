@@ -185,6 +185,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     m = _SUBJECT_TAG.search(subject)
     if not m:
         log.info("pipeline: graph skip — no [InpharmD #N] tag in subject")
+        _mark_read(token, mailbox, msg["id"])
         return None
 
     inquiry_id = int(m.group(1))
@@ -193,8 +194,10 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     obj = db.get(Inquiry, inquiry_id)
     if not obj:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
+        _mark_read(token, mailbox, msg["id"])
         return None
     if obj.status == "closed":
+        _mark_read(token, mailbox, msg["id"])
         return None
     if obj.email_response:
         _mark_read(token, mailbox, msg["id"])
