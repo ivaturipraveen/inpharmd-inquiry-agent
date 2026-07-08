@@ -177,6 +177,11 @@ def _get_body(msg: dict) -> str:
 
 def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     """Process one Graph message. Returns reply data if the inquiry was updated, else None."""
+    # When Graph mark-read is unavailable (missing Mail.ReadWrite), messages
+    # stay unread and re-appear on every poll. Skip anything we've already
+    # touched this process lifetime so we don't spam logs / API calls.
+    if msg["id"] in _PROCESSED_MESSAGE_IDS:
+        return None
     subject = msg.get("subject", "") or ""
     log.info(
         "pipeline: graph processing msg subject=%r has_attachments=%s",
@@ -366,15 +371,33 @@ def _fetch_document_attachment(token: str, mailbox: str, message_id: str) -> Opt
     return {"name": original_name, "bytes": raw, "content_type": content_type}
 
 
+_MARK_READ_DISABLED = False  # flips to True on first 403 to stop hammering Graph
+_PROCESSED_MESSAGE_IDS: set[str] = set()  # in-memory skip list when we can't mark read
+
+
 def _mark_read(token: str, mailbox: str, message_id: str) -> None:
-    """Mark message read so the next poll skips it. Requires Mail.ReadWrite (optional)."""
+    """Mark message read so the next poll skips it. Requires Mail.ReadWrite (optional).
+
+    Falls back gracefully when the Graph app registration is missing
+    Mail.ReadWrite: we cache the message id in-memory so the same process
+    doesn't keep re-processing (and 403-PATCH'ing) the same messages every
+    tick. A restart resets the cache — that's fine; the untagged messages
+    are cheap to re-scan once."""
+    global _MARK_READ_DISABLED
+    _PROCESSED_MESSAGE_IDS.add(message_id)
+    if _MARK_READ_DISABLED:
+        return
     url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     try:
         with httpx.Client(timeout=10) as client:
             resp = client.patch(url, headers=headers, json={"isRead": True})
             if resp.status_code == 403:
-                log.debug("Cannot mark message read (add Mail.ReadWrite in Azure to enable)")
+                _MARK_READ_DISABLED = True
+                log.warning(
+                    "Graph mark-read got 403 — disabling for this process. "
+                    "Add Mail.ReadWrite to the Azure app registration to persist read state across restarts."
+                )
             elif resp.status_code >= 400:
                 log.warning("Mark-read failed: %s %s", resp.status_code, resp.text[:120])
     except Exception as e:
