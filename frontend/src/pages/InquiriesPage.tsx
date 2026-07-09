@@ -468,9 +468,6 @@ export default function InquiriesPage() {
                         <td className="cell-muted">#{i.id}</td>
                         <td>
                           <div className="cell-primary">{i.subject}</div>
-                          {outreachTab === "all" && i.created_by && (
-                            <div className="cell-muted" style={{fontSize:"11px"}}>by {i.created_by}</div>
-                          )}
                         </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
                         <td><StatusBadge status={i.status} /></td>
@@ -513,9 +510,6 @@ export default function InquiriesPage() {
                             <span className="mue-mfr-pill">
                               <strong>{total}</strong> manufacturers
                             </span>
-                            {outreachTab === "all" && sample.created_by && (
-                              <span className="cell-muted" style={{fontSize:"11px"}}>by {sample.created_by}</span>
-                            )}
                           </div>
                         </td>
                         <td className="mue-stats-cell">
