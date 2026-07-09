@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import InquiryForm from "../components/InquiryForm";
 import InquiryDetail from "../components/InquiryDetail";
@@ -46,6 +46,9 @@ type OutreachTab = "mine" | "all";
 
 export default function InquiriesPage() {
   const [outreachTab, setOutreachTab] = useState<OutreachTab>("mine");
+  // Ref so the auto-refresh interval always reads the current tab without
+  // needing to be re-created every time outreachTab changes.
+  const outreachTabRef = useRef<OutreachTab>("mine");
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,6 +79,7 @@ export default function InquiriesPage() {
   }, [outreachTab]);
 
   const switchTab = useCallback((tab: OutreachTab) => {
+    outreachTabRef.current = tab;
     setOutreachTab(tab);
     setStatusFilter("");
     setSearch("");
@@ -126,8 +130,9 @@ export default function InquiriesPage() {
   useEffect(() => {
     if (!hasInFlight) return;
     const id = setInterval(() => {
+      const params = outreachTabRef.current === "all" ? { all_users: true } : undefined;
       api.inquiries
-        .list()
+        .list(params)
         .then(setInquiries)
         .catch(() => {});
     }, 5000);
