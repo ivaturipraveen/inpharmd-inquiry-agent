@@ -166,6 +166,8 @@ async def bulk_create_inquiries(
             source_excel_url=payload.source_excel_url,
             source_excel_sheet=payload.source_excel_sheet,
             source_excel_row=tgt.source_excel_row,
+            medication_name=tgt.medication_name or None,
+            pi_storage_data=tgt.pi_storage_data or None,
             status="draft",
             user_id=current_user.id,
         )
@@ -221,6 +223,8 @@ async def bulk_create_inquiries(
                     question=primary.question,
                     requester_name=primary.requester_name,
                     requester_email=primary.requester_email,
+                    medication_name=primary.medication_name,
+                    pi_storage_data=primary.pi_storage_data,
                 )
             except Exception as e:
                 for sib in siblings:

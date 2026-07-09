@@ -57,6 +57,9 @@ def _ensure_columns():
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_row INTEGER",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS excel_response_url TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS excel_response_posted_at TIMESTAMPTZ",
+        # Per-row product details from the MUE Excel
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS medication_name TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pi_storage_data TEXT",
         # MUE / forwarded inquiry titles can exceed 255 chars.
         "ALTER TABLE inquiries ALTER COLUMN subject TYPE VARCHAR(1000)",
         # users table: handled by Base.metadata.create_all, but add columns

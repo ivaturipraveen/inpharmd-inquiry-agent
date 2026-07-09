@@ -290,6 +290,8 @@ export const api = {
           matched_id: number | null;
           matched_name: string | null;
           confidence: "exact" | "partial" | "loose" | "none";
+          medication_name: string;
+          pi_storage: string;
         }[];
       }>(`/api/external/inquiries/extract-manufacturers`, {
         method: "POST",

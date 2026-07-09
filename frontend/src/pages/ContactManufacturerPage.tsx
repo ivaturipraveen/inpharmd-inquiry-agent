@@ -30,6 +30,8 @@ interface DetectedRow {
   matched_id: number | null;
   matched_name: string | null;
   confidence: "exact" | "partial" | "loose" | "none";
+  medication_name: string;
+  pi_storage: string;
 }
 
 interface DetectedExtraction {
@@ -309,6 +311,8 @@ export default function ContactManufacturerPage() {
       .map((r) => ({
         manufacturer_id: r.matched_id as number,
         source_excel_row: r.row_index,
+        medication_name: r.medication_name || null,
+        pi_storage_data: r.pi_storage || null,
       }));
 
     if (targets.length === 0) {

@@ -51,6 +51,20 @@ def _decode_csv(buf: bytes) -> str:
 # matches anywhere in the workbook. We prefer the Medication/Vaccine column
 # over a generic "Manufacturer" so we don't grab e.g. "Fridge/Freezer
 # Manufacturer" by accident in stability-excursion templates.
+MEDICATION_NAME_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
+    ({"medication", "name"}, ("medicationname", "vaccinename", "medicationvaccinename")),
+    ({"vaccine", "name"}, ()),
+    ({"drug", "name"}, ("drugname",)),
+    ({"product", "name"}, ("productname",)),
+)
+
+PI_STORAGE_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
+    ({"pi", "storage"}, ("pistorage", "pistoragedata", "pistoragetemp", "pistoragetemperature")),
+    ({"storage", "condition"}, ("storagecondition", "storageconditions")),
+    ({"storage", "temperature"}, ("storagetemperature", "storagetemp")),
+    ({"storage", "requirement"}, ("storagerequirement", "storagerequirements")),
+)
+
 MANUFACTURER_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
     # Tier 1 — Medication/Vaccine Manufacturer (most specific)
     (
@@ -208,6 +222,8 @@ def _scan_headers(workbook: Workbook, *, max_rows: int = 20) -> list[str]:
 class ExtractedRow:
     row_index: int       # 1-based Excel row
     raw_name: str        # value as it appeared in the cell
+    medication_name: str = ""   # Medication/Vaccine Name column (if present)
+    pi_storage: str = ""        # PI Storage Data column (if present)
 
 
 def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation]:
@@ -244,13 +260,35 @@ def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocat
         raise ValueError(
             f"Could not find a Manufacturer column in the CSV. Headers I saw: {preview or '(none)'}"
         )
+
+    # Find optional extra columns
+    def _find_csv_col(tiers):
+        for required_tokens, exact_norms in tiers:
+            for idx, n, _toks in indexed:
+                if n in exact_norms:
+                    return idx
+            for idx, _n, toks in indexed:
+                if required_tokens.issubset(toks):
+                    return idx
+        return None
+
+    med_col_idx = _find_csv_col(MEDICATION_NAME_HEADER_TIERS)
+    pi_col_idx = _find_csv_col(PI_STORAGE_HEADER_TIERS)
+
     out: list[ExtractedRow] = []
     for r_idx, row in enumerate(rows_raw[1:], start=2):  # 1-based, header is row 1
         if col_idx >= len(row):
             continue
         val = (row[col_idx] or "").strip()
         if val:
-            out.append(ExtractedRow(row_index=r_idx, raw_name=val))
+            med_val = (row[med_col_idx] if med_col_idx is not None and med_col_idx < len(row) else "") or ""
+            pi_val = (row[pi_col_idx] if pi_col_idx is not None and pi_col_idx < len(row) else "") or ""
+            out.append(ExtractedRow(
+                row_index=r_idx,
+                raw_name=val,
+                medication_name=med_val.strip(),
+                pi_storage=pi_val.strip(),
+            ))
     loc = ColumnLocation(
         sheet_name="csv",
         header_row=1,
@@ -284,21 +322,39 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
                 "Could not find a Manufacturer column in the workbook. "
                 f"Headers I saw: {preview}"
             )
+        # Optionally find Medication/Vaccine Name and PI Storage columns
+        med_loc = _find_column(wb, MEDICATION_NAME_HEADER_TIERS)
+        pi_loc = _find_column(wb, PI_STORAGE_HEADER_TIERS)
+
         ws = wb[loc.sheet_name]
+
+        # Determine column range to iterate (span all three columns at once)
+        all_cols = [loc.col]
+        if med_loc and med_loc.sheet_name == loc.sheet_name:
+            all_cols.append(med_loc.col)
+        if pi_loc and pi_loc.sheet_name == loc.sheet_name:
+            all_cols.append(pi_loc.col)
+        min_col = min(all_cols)
+        max_col = max(all_cols)
+
         rows: list[ExtractedRow] = []
-        # iter_rows is much cheaper than ws.cell() on big sheets in read-only mode
-        for r_idx, row in enumerate(
-            ws.iter_rows(min_row=loc.header_row + 1, min_col=loc.col, max_col=loc.col),
+        for r_idx, row_cells in enumerate(
+            ws.iter_rows(min_row=loc.header_row + 1, min_col=min_col, max_col=max_col),
             start=loc.header_row + 1,
         ):
-            cell = row[0]
-            val = cell.value
-            if val is None:
-                continue
-            name = str(val).strip()
+            # Map column index → cell value
+            cell_map = {c.column: (str(c.value).strip() if c.value is not None else "") for c in row_cells}
+            name = cell_map.get(loc.col, "")
             if not name:
                 continue
-            rows.append(ExtractedRow(row_index=r_idx, raw_name=name))
+            med_val = cell_map.get(med_loc.col, "") if med_loc and med_loc.sheet_name == loc.sheet_name else ""
+            pi_val = cell_map.get(pi_loc.col, "") if pi_loc and pi_loc.sheet_name == loc.sheet_name else ""
+            rows.append(ExtractedRow(
+                row_index=r_idx,
+                raw_name=name,
+                medication_name=med_val,
+                pi_storage=pi_val,
+            ))
         return rows, loc
     finally:
         wb.close()
@@ -314,6 +370,8 @@ class ManufacturerMatch:
     matched_id: Optional[int]
     matched_name: Optional[str]
     confidence: str  # "exact" | "partial" | "loose" | "none"
+    medication_name: str = ""
+    pi_storage: str = ""
 
 
 def match_manufacturers(
@@ -344,8 +402,9 @@ def match_manufacturers(
     for row in rows:
         nkey = _normalize(row.raw_name)
         rtoks = _tokenize(row.raw_name)
+        extra = {"medication_name": row.medication_name, "pi_storage": row.pi_storage}
         if not nkey:
-            out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none"))
+            out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none", **extra))
             continue
 
         # 1) exact
@@ -353,7 +412,7 @@ def match_manufacturers(
         if m:
             out.append(
                 ManufacturerMatch(
-                    row.row_index, row.raw_name, m.id, m.manufacturer, "exact"
+                    row.row_index, row.raw_name, m.id, m.manufacturer, "exact", **extra
                 )
             )
             continue
@@ -369,7 +428,7 @@ def match_manufacturers(
         if sub_hit:
             out.append(
                 ManufacturerMatch(
-                    row.row_index, row.raw_name, sub_hit.id, sub_hit.manufacturer, "partial"
+                    row.row_index, row.raw_name, sub_hit.id, sub_hit.manufacturer, "partial", **extra
                 )
             )
             continue
@@ -383,12 +442,12 @@ def match_manufacturers(
         if loose_hit:
             out.append(
                 ManufacturerMatch(
-                    row.row_index, row.raw_name, loose_hit.id, loose_hit.manufacturer, "loose"
+                    row.row_index, row.raw_name, loose_hit.id, loose_hit.manufacturer, "loose", **extra
                 )
             )
             continue
 
-        out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none"))
+        out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none", **extra))
     return out
 
 

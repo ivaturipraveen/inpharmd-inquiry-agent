@@ -177,6 +177,8 @@ class ExtractedManufacturerRow(BaseModel):
     matched_id: Optional[int] = None
     matched_name: Optional[str] = None
     confidence: str
+    medication_name: str = ""
+    pi_storage: str = ""
 
 
 class ExtractManufacturersResponse(BaseModel):
@@ -254,6 +256,8 @@ def extract_manufacturers(
             matched_id=m.matched_id,
             matched_name=m.matched_name,
             confidence=m.confidence,
+            medication_name=m.medication_name,
+            pi_storage=m.pi_storage,
         )
         for m in matches
     ]

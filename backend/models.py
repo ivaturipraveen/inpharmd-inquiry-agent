@@ -130,6 +130,9 @@ class Inquiry(Base):
     source_excel_url = Column(Text)
     source_excel_sheet = Column(String(255))
     source_excel_row = Column(Integer)
+    # Per-row product details extracted from the MUE Excel alongside the manufacturer name.
+    medication_name = Column(Text)
+    pi_storage_data = Column(Text)
     # Where the updated Excel landed (S3) after we filled in the response.
     excel_response_url = Column(Text)
     excel_response_posted_at = Column(DateTime(timezone=True))

@@ -93,6 +93,9 @@ class BulkTarget(BaseModel):
     manufacturer_id: int
     # Optional per-target row index in the source Excel.
     source_excel_row: Optional[int] = None
+    # Product details extracted from the MUE Excel for this row.
+    medication_name: Optional[str] = None
+    pi_storage_data: Optional[str] = None
 
 
 class BulkInquiryCreate(BaseModel):
@@ -177,6 +180,8 @@ class InquiryOut(InquiryBase):
     legacy_response_posted_at: Optional[datetime] = None
     excel_response_url: Optional[str] = None
     excel_response_posted_at: Optional[datetime] = None
+    medication_name: Optional[str] = None
+    pi_storage_data: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     manufacturer: Optional[ManufacturerSummary] = None
