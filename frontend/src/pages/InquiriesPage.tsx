@@ -517,23 +517,6 @@ export default function InquiriesPage() {
                               <span className="cell-muted" style={{fontSize:"11px"}}>by {sample.created_by}</span>
                             )}
                           </div>
-                          <div className="mue-uuid-row">
-                            <span className="mue-uuid-label">SOURCE UUID</span>
-                            <span className="mue-uuid mono-small" title={row.uuid}>
-                              {row.uuid}
-                            </span>
-                            <button
-                              type="button"
-                              className="mue-uuid-copy"
-                              title="Copy UUID"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigator.clipboard?.writeText(row.uuid);
-                              }}
-                            >
-                              ⧉
-                            </button>
-                          </div>
                         </td>
                         <td className="mue-stats-cell">
                           <div className="mue-stat-pills">
