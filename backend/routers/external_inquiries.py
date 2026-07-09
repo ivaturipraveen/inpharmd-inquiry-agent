@@ -188,6 +188,8 @@ class ExtractManufacturersResponse(BaseModel):
     rows: list[ExtractedManufacturerRow]
     total: int
     matched: int
+    medication_col_header: Optional[str] = None   # None = column not found in file
+    pi_storage_col_header: Optional[str] = None   # None = column not found in file
     # Our own S3 copy of the workbook — the bulk_create endpoint stamps this
     # as `source_excel_url` on every inquiry so the response-writeback path
     # always operates on our copy (no dependence on the 10s InpharmD signed URL).
@@ -218,7 +220,7 @@ def extract_manufacturers(
         raise HTTPException(status_code=502, detail=f"Failed to download attachment: {e}")
 
     try:
-        rows, loc = excel_service.extract_manufacturer_rows(xlsx)
+        rows, loc, extra_cols = excel_service.extract_manufacturer_rows(xlsx)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -268,6 +270,8 @@ def extract_manufacturers(
         rows=out_rows,
         total=len(out_rows),
         matched=sum(1 for r in out_rows if r.matched_id is not None),
+        medication_col_header=extra_cols.medication_col_header,
+        pi_storage_col_header=extra_cols.pi_storage_col_header,
         excel_s3_url=s3_url,
     )
 

@@ -159,6 +159,7 @@ class CallResultPayload(BaseModel):
 class InquiryOut(InquiryBase):
     id: int
     user_id: Optional[int] = None
+    created_by: Optional[str] = None   # display_name or email of the creating user
     status: InquiryStatus
     email_sent_at: Optional[datetime] = None
     email_message_id: Optional[str] = None

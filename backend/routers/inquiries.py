@@ -56,19 +56,34 @@ def _get_or_404(
 def list_inquiries(
     status: Optional[str] = Query(None),
     manufacturer_id: Optional[int] = Query(None),
+    all_users: bool = Query(False, description="Return inquiries from all users (not just the caller's own)."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    q = (
-        db.query(Inquiry)
-        .options(joinedload(Inquiry.manufacturer))
-        .filter(Inquiry.user_id == current_user.id)
-    )
+    q = db.query(Inquiry).options(joinedload(Inquiry.manufacturer))
+    if not all_users:
+        q = q.filter(Inquiry.user_id == current_user.id)
     if status:
         q = q.filter(Inquiry.status == status)
     if manufacturer_id:
         q = q.filter(Inquiry.manufacturer_id == manufacturer_id)
-    return q.order_by(Inquiry.created_at.desc()).all()
+    inquiries = q.order_by(Inquiry.created_at.desc()).all()
+
+    # Attach creator display names when returning all-user results so the
+    # frontend can show "by <name>" without a separate user lookup.
+    if all_users:
+        user_ids = {i.user_id for i in inquiries if i.user_id}
+        users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+        result = []
+        for inq in inquiries:
+            out = InquiryOut.model_validate(inq)
+            u = users.get(inq.user_id)
+            if u:
+                out.created_by = u.display_name or u.email
+            result.append(out)
+        return result
+
+    return inquiries
 
 
 @router.get("/{inquiry_id}", response_model=InquiryOut)
@@ -409,6 +424,8 @@ def send_email(
             question=obj.question,
             requester_name=obj.requester_name,
             requester_email=obj.requester_email,
+            medication_name=obj.medication_name,
+            pi_storage_data=obj.pi_storage_data,
         )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))

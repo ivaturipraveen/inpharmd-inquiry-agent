@@ -226,7 +226,14 @@ class ExtractedRow:
     pi_storage: str = ""        # PI Storage Data column (if present)
 
 
-def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation]:
+@dataclass
+class ExtraColumns:
+    """Headers of optional columns detected alongside the manufacturer column."""
+    medication_col_header: Optional[str] = None   # None = not found in file
+    pi_storage_col_header: Optional[str] = None   # None = not found in file
+
+
+def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation, ExtraColumns]:
     """CSV equivalent of the xlsx extract. The first row is the header. We pick
     the best column match using the same MANUFACTURER_HEADER_TIERS, then walk
     the rest of the rows pulling non-empty values."""
@@ -274,6 +281,14 @@ def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocat
 
     med_col_idx = _find_csv_col(MEDICATION_NAME_HEADER_TIERS)
     pi_col_idx = _find_csv_col(PI_STORAGE_HEADER_TIERS)
+    extra_cols = ExtraColumns(
+        medication_col_header=headers[med_col_idx].strip() if med_col_idx is not None else None,
+        pi_storage_col_header=headers[pi_col_idx].strip() if pi_col_idx is not None else None,
+    )
+    log.info(
+        "csv.extract mfr_col=%r med_col=%r pi_col=%r",
+        headers[col_idx], extra_cols.medication_col_header, extra_cols.pi_storage_col_header,
+    )
 
     out: list[ExtractedRow] = []
     for r_idx, row in enumerate(rows_raw[1:], start=2):  # 1-based, header is row 1
@@ -295,10 +310,10 @@ def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocat
         col=col_idx + 1,
         header_value=headers[col_idx],
     )
-    return out, loc
+    return out, loc, extra_cols
 
 
-def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation]:
+def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation, ExtraColumns]:
     """Open the workbook in read-only mode and return every non-empty cell
     under the 'Medication/Vaccine Manufacturer' column.
 
@@ -325,6 +340,14 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
         # Optionally find Medication/Vaccine Name and PI Storage columns
         med_loc = _find_column(wb, MEDICATION_NAME_HEADER_TIERS)
         pi_loc = _find_column(wb, PI_STORAGE_HEADER_TIERS)
+        extra_cols = ExtraColumns(
+            medication_col_header=med_loc.header_value if med_loc else None,
+            pi_storage_col_header=pi_loc.header_value if pi_loc else None,
+        )
+        log.info(
+            "xlsx.extract mfr_col=%r med_col=%r pi_col=%r",
+            loc.header_value, extra_cols.medication_col_header, extra_cols.pi_storage_col_header,
+        )
 
         ws = wb[loc.sheet_name]
 
@@ -355,7 +378,7 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
                 medication_name=med_val,
                 pi_storage=pi_val,
             ))
-        return rows, loc
+        return rows, loc, extra_cols
     finally:
         wb.close()
 

@@ -40,6 +40,8 @@ interface DetectedExtraction {
   header_value: string;
   total: number;
   matched: number;
+  medication_col_header: string | null;
+  pi_storage_col_header: string | null;
   excel_s3_url: string | null;
   rows: DetectedRow[];
 }
@@ -150,7 +152,7 @@ export default function ContactManufacturerPage() {
   const reloadManufacturers = useCallback(() => {
     api.manufacturers
       .list()
-      .then(setManufacturers)
+      .then((data) => { setManufacturers(data); setError(null); })
       .catch((e: any) => setError(e?.message ?? "Failed to load manufacturers."))
       .finally(() => setLoadingMfrs(false));
   }, []);
@@ -298,13 +300,13 @@ export default function ContactManufacturerPage() {
     const targets = extraction.rows
       .filter((r) => {
         if (!selectedRows.has(r.row_index) || r.matched_id == null) return false;
-        if (channel === "email") {
-          const m = mfrById[r.matched_id];
-          return !!(m?.official_mi_email || m?.team_verified_email);
-        }
-        if (channel === "call") {
-          const m = mfrById[r.matched_id];
-          return !!m?.mi_phone;
+        const m = mfrById[r.matched_id];
+        // Only filter by contact info when we actually have the manufacturer
+        // record loaded. If the list failed to fetch, let the backend decide
+        // and report failures — it already validates and skips unreachable mfrs.
+        if (m) {
+          if (channel === "email") return !!(m.official_mi_email || m.team_verified_email);
+          if (channel === "call") return !!m.mi_phone;
         }
         return true;
       })
@@ -472,6 +474,14 @@ export default function ContactManufacturerPage() {
                 <>
                   {" "}· sheet "{extraction.sheet_name}", column
                   {" "}"{extraction.header_value.replace(/\n/g, " ")}"
+                  {extraction.medication_col_header
+                    ? <> · 💊 med col: "{extraction.medication_col_header}"</>
+                    : <> · <span style={{color:"#b45309"}}>⚠ no Medication/Vaccine Name column found</span></>
+                  }
+                  {extraction.pi_storage_col_header
+                    ? <> · 🌡 PI col: "{extraction.pi_storage_col_header}"</>
+                    : <> · <span style={{color:"#b45309"}}>⚠ no PI Storage column found</span></>
+                  }
                 </>
               )}
             </span>
@@ -604,6 +614,16 @@ export default function ContactManufacturerPage() {
                         ) : (
                           <div className="bulk-row-mfr">
                             <span className="cell-muted">No match in your manufacturer DB — add it first</span>
+                          </div>
+                        )}
+                        {(r.medication_name || r.pi_storage) && (
+                          <div className="bulk-row-product-info">
+                            {r.medication_name && (
+                              <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
+                            )}
+                            {r.pi_storage && (
+                              <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
+                            )}
                           </div>
                         )}
                         {matched && (() => {

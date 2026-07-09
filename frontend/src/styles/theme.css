@@ -172,6 +172,32 @@ a:hover {
 }
 
 /* ---------- Filter bar ---------- */
+.outreach-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 2px solid var(--line);
+  padding-bottom: 0;
+}
+.outreach-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius) var(--radius) 0 0;
+  transition: color 0.15s, border-color 0.15s;
+}
+.outreach-tab:hover { color: var(--text); }
+.outreach-tab-active {
+  color: var(--brand-orange-strong);
+  border-bottom-color: var(--brand-orange-strong);
+}
+
 .filter-bar {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -1258,6 +1284,24 @@ pre.raw-json {
 .bulk-row-warn {
   color: #b45309;
   font-weight: 600;
+}
+.bulk-row-product-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.bulk-row-product-pill {
+  font-size: 11px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #15803d;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- Manufacturer Outreach — grouped MUE rows ---------- */

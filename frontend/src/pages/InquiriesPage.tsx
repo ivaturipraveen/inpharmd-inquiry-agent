@@ -42,7 +42,10 @@ function matchesStatusFilter(status: string, filter: string): boolean {
 const fmtDate = (s?: string | null) =>
   s ? new Date(s).toLocaleDateString() : "—";
 
+type OutreachTab = "mine" | "all";
+
 export default function InquiriesPage() {
+  const [outreachTab, setOutreachTab] = useState<OutreachTab>("mine");
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,12 +57,13 @@ export default function InquiriesPage() {
   const [selected, setSelected] = useState<Inquiry | null>(null);
   const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (tab?: OutreachTab) => {
+    const activeTab = tab ?? outreachTab;
     setLoading(true);
     setError(null);
     try {
       const [is, ms] = await Promise.all([
-        api.inquiries.list(),
+        api.inquiries.list(activeTab === "all" ? { all_users: true } : undefined),
         api.manufacturers.list(),
       ]);
       setInquiries(is);
@@ -69,11 +73,19 @@ export default function InquiriesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [outreachTab]);
+
+  const switchTab = useCallback((tab: OutreachTab) => {
+    setOutreachTab(tab);
+    setStatusFilter("");
+    setSearch("");
+    load(tab);
+  }, [load]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    load(outreachTab);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // If the hash carries ?id=NN (e.g. from a Slack deep-link), pop open that inquiry
   // once the list is loaded.
@@ -292,6 +304,23 @@ export default function InquiriesPage() {
         </p>
       </section>
 
+      <div className="outreach-tabs">
+        <button
+          type="button"
+          className={`outreach-tab ${outreachTab === "mine" ? "outreach-tab-active" : ""}`}
+          onClick={() => outreachTab !== "mine" && switchTab("mine")}
+        >
+          My Outreaches
+        </button>
+        <button
+          type="button"
+          className={`outreach-tab ${outreachTab === "all" ? "outreach-tab-active" : ""}`}
+          onClick={() => outreachTab !== "all" && switchTab("all")}
+        >
+          All Outreaches
+        </button>
+      </div>
+
       <div className="stats-grid stats-grid-4">
         <button
           type="button"
@@ -432,7 +461,12 @@ export default function InquiriesPage() {
                         }}
                       >
                         <td className="cell-muted">#{i.id}</td>
-                        <td><div className="cell-primary">{i.subject}</div></td>
+                        <td>
+                          <div className="cell-primary">{i.subject}</div>
+                          {outreachTab === "all" && i.created_by && (
+                            <div className="cell-muted" style={{fontSize:"11px"}}>by {i.created_by}</div>
+                          )}
+                        </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
                         <td><StatusBadge status={i.status} /></td>
                         <td className="cell-muted">{fmtDate(i.created_at)}</td>
@@ -474,6 +508,9 @@ export default function InquiriesPage() {
                             <span className="mue-mfr-pill">
                               <strong>{total}</strong> manufacturers
                             </span>
+                            {outreachTab === "all" && sample.created_by && (
+                              <span className="cell-muted" style={{fontSize:"11px"}}>by {sample.created_by}</span>
+                            )}
                           </div>
                           <div className="mue-uuid-row">
                             <span className="mue-uuid-label">SOURCE UUID</span>

@@ -139,11 +139,12 @@ export const api = {
       request<void>(`/api/manufacturers/${id}`, { method: "DELETE" }),
   },
   inquiries: {
-    list: (params?: { status?: string; manufacturer_id?: number }) => {
+    list: (params?: { status?: string; manufacturer_id?: number; all_users?: boolean }) => {
       const q = new URLSearchParams();
       if (params?.status) q.set("status", params.status);
       if (params?.manufacturer_id)
         q.set("manufacturer_id", String(params.manufacturer_id));
+      if (params?.all_users) q.set("all_users", "true");
       const suffix = q.toString() ? `?${q}` : "";
       return request<Inquiry[]>(`/api/inquiries${suffix}`);
     },
@@ -194,7 +195,12 @@ export const api = {
     extractAnswer: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
     bulkCreate: (data: {
-      targets: { manufacturer_id: number; source_excel_row?: number }[];
+      targets: {
+        manufacturer_id: number;
+        source_excel_row?: number;
+        medication_name?: string | null;
+        pi_storage_data?: string | null;
+      }[];
       subject: string;
       question: string;
       requester_name?: string | null;
@@ -283,6 +289,8 @@ export const api = {
         header_value: string;
         total: number;
         matched: number;
+        medication_col_header: string | null;
+        pi_storage_col_header: string | null;
         excel_s3_url: string | null;
         rows: {
           row_index: number;

@@ -77,6 +77,8 @@ export interface Inquiry {
   manufacturer?: ManufacturerSummary | null;
   // Set when forwarded from an InpharmD platform inquiry (MUE Excel grouping).
   source_inquiry_uuid?: string | null;
+  // Populated only in all-users list: display name or email of the creator.
+  created_by?: string | null;
 }
 
 export interface InquiryInput {
