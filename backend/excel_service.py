@@ -365,8 +365,12 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
             ws.iter_rows(min_row=loc.header_row + 1, min_col=min_col, max_col=max_col),
             start=loc.header_row + 1,
         ):
-            # Map column index → cell value
-            cell_map = {c.column: (str(c.value).strip() if c.value is not None else "") for c in row_cells}
+            # Build column-index → value map using iteration position, not
+            # c.column, because openpyxl read-only mode returns EmptyCell
+            # objects for empty cells which have no .column attribute.
+            cell_map: dict[int, str] = {}
+            for col_pos, c in enumerate(row_cells, start=min_col):
+                cell_map[col_pos] = str(c.value).strip() if c.value is not None else ""
             name = cell_map.get(loc.col, "")
             if not name:
                 continue
