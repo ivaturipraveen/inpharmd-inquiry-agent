@@ -5,6 +5,7 @@ import VoiceFillButton from "./VoiceFillButton";
 
 interface Props {
   initial?: ManufacturerContact | null;
+  prefillManufacturer?: string;
   onClose: () => void;
   onSubmit: (data: ManufacturerContactInput) => Promise<void>;
 }
@@ -31,8 +32,10 @@ const emptyForm: ManufacturerContactInput = {
 const CHANNELS = ["Web Form", "Email", "Phone", "HCP Portal", "Fax", "Other"];
 const YES_NO = ["Yes", "No", "Unknown"];
 
-const ManufacturerForm: FC<Props> = ({ initial, onClose, onSubmit }) => {
-  const [form, setForm] = useState<ManufacturerContactInput>(emptyForm);
+const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, onSubmit }) => {
+  const [form, setForm] = useState<ManufacturerContactInput>(() =>
+    prefillManufacturer ? { ...emptyForm, manufacturer: prefillManufacturer } : emptyForm
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);

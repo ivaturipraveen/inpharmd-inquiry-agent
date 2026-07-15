@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
+import ManufacturerForm from "../components/ManufacturerForm";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import type {
   Inquiry,
   InquiryInput,
   ManufacturerContact,
+  ManufacturerContactInput,
 } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 
@@ -63,11 +65,19 @@ const readContext = (): ForwardContext | null => {
   } catch {
     /* ignore */
   }
+  // Fall back to URL params (page was refreshed — sessionStorage is gone).
+  // att_url + att_name are written by startContactManufacturerFlow so the
+  // extractable attachment survives a refresh without needing sessionStorage.
   const params = readQuery();
   const uuid = params.get("uuid") ?? "";
   const title = params.get("title") ?? "";
   if (!uuid && !title) return null;
-  return { uuid, title };
+  const attUrl = params.get("att_url");
+  const attName = params.get("att_name");
+  const attachments: Attachment[] = attUrl && attName
+    ? [{ id: 0, file_name: attName, doc_url: attUrl }]
+    : [];
+  return { uuid, title, attachments };
 };
 
 const goTo = (hash: string) => {
@@ -118,6 +128,9 @@ export default function ContactManufacturerPage() {
   const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // "Add manufacturer" modal — stores the raw name from the unmatched row to pre-fill the form
+  const [addingMfrName, setAddingMfrName] = useState<string | null>(null);
 
   // Multi-dispatch state
   const [mode, setMode] = useState<Mode>("single");
@@ -211,6 +224,16 @@ export default function ContactManufacturerPage() {
     },
     [ctx],
   );
+
+  const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
+    await api.manufacturers.create(data);
+    setAddingMfrName(null);
+    // Reload manufacturers list so every part of the app sees the new entry.
+    reloadManufacturers();
+    // Re-run extraction so the newly added manufacturer gets matched in the list.
+    setExtraction(null);
+    setSelectedRows(new Set());
+  }, [reloadManufacturers]);
 
   const runExtraction = useCallback(async () => {
     if (!extractableAttachment) return;
@@ -613,7 +636,7 @@ export default function ContactManufacturerPage() {
                           </div>
                         ) : (
                           <div className="bulk-row-mfr">
-                            <span className="cell-muted">No match in your manufacturer DB — add it first</span>
+                            <span className="cell-muted">Not in manufacturer DB</span>
                           </div>
                         )}
                         {(r.medication_name || r.pi_storage) && (
@@ -663,6 +686,18 @@ export default function ContactManufacturerPage() {
                           );
                         })()}
                       </div>
+                      {!matched && (
+                        <button
+                          type="button"
+                          className="bulk-row-add-btn"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setAddingMfrName(r.raw_name);
+                          }}
+                        >
+                          + Add manufacturer
+                        </button>
+                      )}
                     </label>
                   );
                 })}
@@ -1069,6 +1104,15 @@ export default function ContactManufacturerPage() {
           {banner}
         </div>
       )}
+
+      {addingMfrName !== null && (
+        <ManufacturerForm
+          initial={null}
+          prefillManufacturer={addingMfrName}
+          onClose={() => setAddingMfrName(null)}
+          onSubmit={handleAddManufacturer}
+        />
+      )}
     </>
   );
 }
@@ -1084,5 +1128,12 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   const qs = new URLSearchParams();
   if (ctx.uuid) qs.set("uuid", ctx.uuid);
   if (ctx.title) qs.set("title", ctx.title);
+  // Include the first extractable attachment in the URL so readContext can
+  // reconstruct it on page refresh (sessionStorage is gone after a reload).
+  const extractable = (ctx.attachments ?? []).find(isExtractable);
+  if (extractable) {
+    qs.set("att_url", extractable.doc_url);
+    qs.set("att_name", extractable.file_name);
+  }
   window.location.hash = `contact-manufacturer?${qs.toString()}`;
 }

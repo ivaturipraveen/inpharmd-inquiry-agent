@@ -50,6 +50,16 @@ const FilterBar: FC<Props> = ({
             value={filters.q}
             onChange={(e) => onChange({ ...filters, q: e.target.value })}
           />
+          {filters.q && (
+            <button
+              type="button"
+              className="search-clear"
+              onClick={() => onChange({ ...filters, q: "" })}
+              aria-label="Clear search"
+            >
+              ×
+            </button>
+          )}
         </div>
 
         <select
