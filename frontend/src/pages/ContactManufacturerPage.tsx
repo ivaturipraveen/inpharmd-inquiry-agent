@@ -111,6 +111,20 @@ const confidenceTone = (c: DetectedRow["confidence"]): string => {
 type Mode = "single" | "multi";
 type BulkChannel = "email" | "call" | "test_call";
 
+interface ReviewCard {
+  rowIndex: number;
+  manufacturerId: number;
+  manufacturerName: string;
+  toEmail: string;
+  subject: string;
+  question: string;
+  medicationName: string | null;
+  piStorageData: string | null;
+  sentInquiryId: number | null;
+  sending: boolean;
+  error: string | null;
+}
+
 const COUNTRY_CODES: { code: string; label: string }[] = [
   { code: "+1", label: "+1 US / CA" },
   { code: "+91", label: "+91 IN" },
@@ -155,6 +169,8 @@ export default function ContactManufacturerPage() {
     test_call_inquiry_id?: number | null;
     test_call_to?: string | null;
   } | null>(null);
+  const [emailReview, setEmailReview] = useState<ReviewCard[] | null>(null);
+  const [sendingAll, setSendingAll] = useState(false);
 
   // Refetch the manufacturers list whenever this page is shown — the
   // initial mount handles the first visit; the visibility listener
@@ -304,6 +320,97 @@ export default function ContactManufacturerPage() {
   };
 
   const selectNone = () => setSelectedRows(new Set());
+
+  const sendOne = async (card: ReviewCard, cardIndex: number) => {
+    if (!ctx) return;
+    setEmailReview((prev) =>
+      prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: true, error: null } : c) : prev
+    );
+    try {
+      const result = await api.inquiries.bulkCreate({
+        targets: [{
+          manufacturer_id: card.manufacturerId,
+          source_excel_row: card.rowIndex,
+          medication_name: card.medicationName,
+          pi_storage_data: card.piStorageData,
+        }],
+        subject: card.subject,
+        question: card.question,
+        fallback_after_hours: fallbackHours,
+        source_inquiry_uuid: ctx.uuid,
+        source_excel_url: extraction?.excel_s3_url ?? extractableAttachment?.doc_url ?? null,
+        source_excel_sheet: extraction?.sheet_name ?? null,
+        dispatch_channel: "none",
+      });
+      const inquiry = result.created[0];
+      if (!inquiry) throw new Error(result.failed[0]?.error ?? "Failed to create inquiry");
+      await api.inquiries.sendEmail(inquiry.id);
+      setEmailReview((prev) =>
+        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sentInquiryId: inquiry.id, sending: false } : c) : prev
+      );
+    } catch (e: any) {
+      setEmailReview((prev) =>
+        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: false, error: e?.message ?? "Send failed" } : c) : prev
+      );
+    }
+  };
+
+  const handleEnterEmailReview = () => {
+    if (!extraction || !ctx) return;
+    if (selectedRows.size === 0) {
+      setExtractError("Pick at least one manufacturer.");
+      return;
+    }
+    if (!subject.trim() || !question.trim()) {
+      setExtractError("Subject and question are required.");
+      return;
+    }
+    if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
+      setExtractError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
+      return;
+    }
+    const cards: ReviewCard[] = extraction.rows
+      .filter((r) => {
+        if (!selectedRows.has(r.row_index) || r.matched_id == null) return false;
+        const m = mfrById[r.matched_id];
+        if (m) return !!(m.official_mi_email || m.team_verified_email);
+        return true;
+      })
+      .map((r) => {
+        const mfr = mfrById[r.matched_id as number];
+        return {
+          rowIndex: r.row_index,
+          manufacturerId: r.matched_id as number,
+          manufacturerName: r.matched_name ?? "",
+          toEmail: mfr?.official_mi_email || mfr?.team_verified_email || "",
+          subject: subject.trim(),
+          question: question.trim(),
+          medicationName: r.medication_name || null,
+          piStorageData: r.pi_storage || null,
+          sentInquiryId: null,
+          sending: false,
+          error: null,
+        };
+      });
+    if (cards.length === 0) {
+      setExtractError("None of the selected manufacturers have an email address on file.");
+      return;
+    }
+    setExtractError(null);
+    setEmailReview(cards);
+  };
+
+  const handleSendAll = async () => {
+    if (!emailReview) return;
+    setSendingAll(true);
+    const unsent = emailReview
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => c.sentInquiryId === null && !c.sending);
+    for (const { c, i } of unsent) {
+      await sendOne(c, i);
+    }
+    setSendingAll(false);
+  };
 
   const handleBulkSubmit = async (channel: BulkChannel) => {
     if (!extraction || !ctx) return;
@@ -533,7 +640,7 @@ export default function ContactManufacturerPage() {
       {error && <div className="error-banner">{error}</div>}
 
       {/* MULTI mode: detected manufacturers + bulk form */}
-      {mode === "multi" && extraction && !bulkResult && (() => {
+      {mode === "multi" && extraction && !bulkResult && !emailReview && (() => {
         const searchTokens = search.trim().toLowerCase();
         const filteredRows = searchTokens
           ? extraction.rows.filter((r) => {
@@ -816,11 +923,9 @@ export default function ContactManufacturerPage() {
                         className="btn btn-primary"
                         type="button"
                         disabled={noneSelected || reachableByEmail === 0 || anyBusy}
-                        onClick={() => handleBulkSubmit("email")}
+                        onClick={handleEnterEmailReview}
                       >
-                        {submitting === "email"
-                          ? "Sending…"
-                          : `Send Email to ${reachableByEmail || total}`}
+                        {`Review & Send Email (${reachableByEmail || total})`}
                       </button>
                     </div>
 
@@ -954,6 +1059,158 @@ export default function ContactManufacturerPage() {
             );
           })()}
         </>
+        );
+      })()}
+
+      {/* EMAIL REVIEW mode */}
+      {emailReview !== null && !bulkResult && (() => {
+        const sentCount = emailReview.filter((c) => c.sentInquiryId !== null).length;
+        const errCount = emailReview.filter((c) => c.error !== null && c.sentInquiryId === null).length;
+        const pendingCount = emailReview.filter((c) => c.sentInquiryId === null).length;
+        const allDone = pendingCount === 0;
+        return (
+          <div className="page-form">
+            <div className="page-form-header">
+              <h2>Review emails before sending</h2>
+              <div className="mfr-detect-meta">
+                {emailReview.length} email{emailReview.length !== 1 ? "s" : ""}
+                {sentCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {sentCount} sent</span>}
+                {errCount > 0 && <span style={{ color: "var(--red)", marginLeft: 6 }}>· {errCount} failed</span>}
+                {pendingCount > 0 && <span className="cell-muted" style={{ marginLeft: 6 }}>· {pendingCount} pending</span>}
+              </div>
+            </div>
+            <div className="page-form-body">
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                {emailReview.map((card, i) => (
+                  <div
+                    key={card.rowIndex}
+                    style={{
+                      border: `1px solid ${card.sentInquiryId !== null ? "var(--green)" : card.error ? "#fecaca" : "var(--line)"}`,
+                      borderRadius: "var(--radius)",
+                      padding: "16px",
+                      background: card.sentInquiryId !== null ? "var(--green-soft)" : card.error ? "var(--red-soft)" : "var(--surface)",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px", gap: "12px" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <span style={{ fontWeight: 700, fontSize: "14px" }}>{card.manufacturerName}</span>
+                        {card.toEmail && (
+                          <span style={{ color: "var(--muted)", fontSize: "12px", marginLeft: "8px" }}>
+                            → {card.toEmail}
+                          </span>
+                        )}
+                        {(card.medicationName || card.piStorageData) && (
+                          <div style={{ marginTop: "6px", display: "flex", gap: "6px", flexWrap: "wrap" as const }}>
+                            {card.medicationName && (
+                              <span className="bulk-row-product-pill">💊 {card.medicationName}</span>
+                            )}
+                            {card.piStorageData && (
+                              <span className="bulk-row-product-pill">🌡 {card.piStorageData}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ flexShrink: 0 }}>
+                        {card.sentInquiryId !== null && (
+                          <span className="pill pill-green">✓ Sent #{card.sentInquiryId}</span>
+                        )}
+                        {card.sending && (
+                          <span className="cell-muted" style={{ fontSize: "13px" }}>Sending…</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="form-grid">
+                      <div className="field full">
+                        <label>Subject</label>
+                        <input
+                          type="text"
+                          value={card.subject}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEmailReview((prev) =>
+                              prev ? prev.map((c, j) => j === i ? { ...c, subject: val } : c) : prev
+                            );
+                          }}
+                          disabled={card.sending || card.sentInquiryId !== null || sendingAll}
+                          maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
+                        />
+                      </div>
+                      <div className="field full">
+                        <label>Question / Details</label>
+                        <textarea
+                          value={card.question}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEmailReview((prev) =>
+                              prev ? prev.map((c, j) => j === i ? { ...c, question: val } : c) : prev
+                            );
+                          }}
+                          rows={4}
+                          disabled={card.sending || card.sentInquiryId !== null || sendingAll}
+                        />
+                      </div>
+                    </div>
+
+                    {card.error && (
+                      <div className="error-banner" style={{ marginTop: "10px", marginBottom: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ flex: 1 }}>{card.error}</span>
+                        <button
+                          type="button"
+                          className="btn-link"
+                          onClick={() => sendOne(card, i)}
+                          disabled={sendingAll}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
+
+                    {card.sentInquiryId === null && !card.error && (
+                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "12px" }}>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          disabled={card.sending || sendingAll}
+                          onClick={() => sendOne(card, i)}
+                        >
+                          {card.sending ? "Sending…" : "Send"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="page-form-footer">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setEmailReview(null)}
+                disabled={sendingAll}
+              >
+                ← Edit selection
+              </button>
+              {allDone ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => goTo("inquiries")}
+                >
+                  View in Manufacturer Outreach →
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={sendingAll}
+                  onClick={handleSendAll}
+                >
+                  {sendingAll ? "Sending…" : `Send All (${pendingCount})`}
+                </button>
+              )}
+            </div>
+          </div>
         );
       })()}
 
