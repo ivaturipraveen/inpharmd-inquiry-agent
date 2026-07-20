@@ -131,51 +131,68 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 <div className="detail-prose">{inquiry.final_answer}</div>
               )}
 
-              {/* Render one summary + link per inbound attachment.
-                  Falls back to legacy scalar fields for old records. */}
+              {/* Render attachments grouped by reply when email_replies is available;
+                  fall back to flat list from inbound_attachments for old records. */}
               {(() => {
+                const attSummaryLabel = (filename?: string | null) => {
+                  const ext = (filename || "").split(".").pop()?.toLowerCase();
+                  return ext === "csv" ? "CSV Summary"
+                    : ext === "xlsx" || ext === "xls" ? "Spreadsheet Summary"
+                    : ext === "docx" || ext === "doc" ? "Document Summary"
+                    : "PDF Summary";
+                };
+                const renderAtt = (att: { id: number; url: string; filename?: string | null; summary?: string | null }, i: number, showFilename: boolean) => (
+                  <div key={att.id > 0 ? att.id : `att-${i}`}>
+                    {att.summary && (
+                      <div className="answer-subsection">
+                        <div className="answer-sublabel">
+                          {attSummaryLabel(att.filename)}
+                          {showFilename && att.filename && (
+                            <span style={{ fontWeight: 400, color: "var(--muted)", marginLeft: 4 }}>
+                              — {att.filename}
+                            </span>
+                          )}
+                        </div>
+                        <div className="detail-prose">{att.summary}</div>
+                      </div>
+                    )}
+                    {att.url && (
+                      <div className="answer-pdf-link">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <path d="M14 2v6h6" />
+                        </svg>
+                        <a href={att.url} target="_blank" rel="noreferrer">
+                          {att.filename || "Open attachment"}
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                );
+
+                const replies = (inquiry.email_replies ?? []).filter(r => r.attachments?.length);
+                if (replies.length > 0) {
+                  return replies.map((reply, replyIdx) => (
+                    <div key={reply.id}>
+                      {replies.length > 1 && (
+                        <div className="answer-reply-divider">
+                          Reply {replyIdx + 1} · {fmtDate(reply.sent_at)}
+                        </div>
+                      )}
+                      {reply.attachments.map((att, i) =>
+                        renderAtt(att, i, reply.attachments.length > 1)
+                      )}
+                    </div>
+                  ));
+                }
+
+                // Legacy: flat list from inbound_attachments or scalar pdf fields.
                 const atts = inquiry.inbound_attachments?.length
                   ? inquiry.inbound_attachments
                   : inquiry.pdf_url
-                  ? [{ id: 0, url: inquiry.pdf_url, filename: inquiry.pdf_filename, summary: inquiry.pdf_summary, content_type: null }]
+                  ? [{ id: 0, url: inquiry.pdf_url, filename: inquiry.pdf_filename, summary: inquiry.pdf_summary }]
                   : [];
-                return atts.map((att, i) => {
-                  const stableKey = att.id > 0 ? att.id : `att-${i}`;
-                  const ext = (att.filename || "").split(".").pop()?.toLowerCase();
-                  const summaryLabel =
-                    ext === "csv" ? "CSV Summary" :
-                    ext === "xlsx" || ext === "xls" ? "Spreadsheet Summary" :
-                    ext === "docx" || ext === "doc" ? "Document Summary" :
-                    "PDF Summary";
-                  return (
-                    <div key={stableKey}>
-                      {att.summary && (
-                        <div className="answer-subsection">
-                          <div className="answer-sublabel">
-                            {summaryLabel}
-                            {atts.length > 1 && att.filename && (
-                              <span style={{ fontWeight: 400, color: "var(--muted)", marginLeft: 4 }}>
-                                — {att.filename}
-                              </span>
-                            )}
-                          </div>
-                          <div className="detail-prose">{att.summary}</div>
-                        </div>
-                      )}
-                      {att.url && (
-                        <div className="answer-pdf-link">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                            <path d="M14 2v6h6" />
-                          </svg>
-                          <a href={att.url} target="_blank" rel="noreferrer">
-                            {att.filename || "Open attachment"}
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  );
-                });
+                return atts.map((att, i) => renderAtt(att, i, atts.length > 1));
               })()}
             </div>
           )}
