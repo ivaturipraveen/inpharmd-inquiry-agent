@@ -441,8 +441,10 @@ export default function ContactManufacturerPage() {
         targets: [{
           manufacturer_id: card.manufacturerId,
           source_excel_row: card.rowIndex,
-          medication_name: card.medicationName,
-          pi_storage_data: card.piStorageData,
+          // medication/PI already embedded in card.question — don't pass separately
+          // or the backend's _build_body() would duplicate the product details section.
+          medication_name: null,
+          pi_storage_data: null,
         }],
         subject: card.subject,
         question: card.question,
@@ -491,15 +493,25 @@ export default function ContactManufacturerPage() {
         })
         .forEach((r) => {
           const mfr = mfrById[r.matched_id as number];
+          // Build the full per-card question mirroring what _build_body() does on the
+          // backend, so the user sees (and can edit) the complete email content.
+          const medName = r.medication_name || null;
+          const piStorage = r.pi_storage || null;
+          let fullQuestion = question.trim();
+          if (medName || piStorage) {
+            fullQuestion += "\n\nPRODUCT DETAILS:";
+            if (medName) fullQuestion += `\nMedication/Vaccine: ${medName}`;
+            if (piStorage) fullQuestion += `\nPI Storage Information: ${piStorage}`;
+          }
           cards.push({
             rowIndex: r.row_index,
             manufacturerId: r.matched_id as number,
             manufacturerName: r.matched_name ?? "",
             toEmail: mfr?.official_mi_email || mfr?.team_verified_email || "",
             subject: subject.trim(),
-            question: question.trim(),
-            medicationName: r.medication_name || null,
-            piStorageData: r.pi_storage || null,
+            question: fullQuestion,
+            medicationName: medName,
+            piStorageData: piStorage,
             sentInquiryId: null,
             sending: false,
             error: null,
