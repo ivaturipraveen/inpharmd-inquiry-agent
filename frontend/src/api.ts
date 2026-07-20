@@ -139,11 +139,12 @@ export const api = {
       request<void>(`/api/manufacturers/${id}`, { method: "DELETE" }),
   },
   inquiries: {
-    list: (params?: { status?: string; manufacturer_id?: number; all_users?: boolean }) => {
+    list: (params?: { status?: string; manufacturer_id?: number; source_inquiry_uuid?: string; all_users?: boolean }) => {
       const q = new URLSearchParams();
       if (params?.status) q.set("status", params.status);
       if (params?.manufacturer_id)
         q.set("manufacturer_id", String(params.manufacturer_id));
+      if (params?.source_inquiry_uuid) q.set("source_inquiry_uuid", params.source_inquiry_uuid);
       if (params?.all_users) q.set("all_users", "true");
       const suffix = q.toString() ? `?${q}` : "";
       return request<Inquiry[]>(`/api/inquiries${suffix}`);

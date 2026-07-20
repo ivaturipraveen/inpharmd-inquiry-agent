@@ -63,6 +63,7 @@ def _get_or_404(
 def list_inquiries(
     status: Optional[str] = Query(None),
     manufacturer_id: Optional[int] = Query(None),
+    source_inquiry_uuid: Optional[str] = Query(None),
     all_users: bool = Query(False, description="Return inquiries from all users (not just the caller's own)."),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -78,6 +79,8 @@ def list_inquiries(
         q = q.filter(Inquiry.status == status)
     if manufacturer_id:
         q = q.filter(Inquiry.manufacturer_id == manufacturer_id)
+    if source_inquiry_uuid:
+        q = q.filter(Inquiry.source_inquiry_uuid == source_inquiry_uuid)
     inquiries = q.order_by(Inquiry.created_at.desc()).all()
 
     # Attach creator display names when returning all-user results so the

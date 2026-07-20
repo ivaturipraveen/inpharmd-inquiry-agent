@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
 import ManufacturerForm from "../components/ManufacturerForm";
+import StatusBadge from "../components/StatusBadge";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import type {
@@ -161,6 +162,7 @@ export default function ContactManufacturerPage() {
   const [ctx] = useState<ForwardContext | null>(readContext);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loadingMfrs, setLoadingMfrs] = useState(true);
+  const [existingInquiries, setExistingInquiries] = useState<Inquiry[]>([]);
   const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -266,6 +268,42 @@ export default function ContactManufacturerPage() {
     return m;
   }, [manufacturers]);
 
+  // Fetch any inquiries already sent for this source platform inquiry so we
+  // can mark those manufacturers as "already contacted" in the picker.
+  useEffect(() => {
+    if (!ctx?.uuid) return;
+    api.inquiries
+      .list({ source_inquiry_uuid: ctx.uuid })
+      .then(setExistingInquiries)
+      .catch(() => {});
+  }, [ctx?.uuid]);
+
+  // Map manufacturer_id → inquiry for the first (most-recent) contact per mfr.
+  const contactedMfrMap = useMemo(() => {
+    const m = new Map<number, Inquiry>();
+    for (const inq of existingInquiries) {
+      if (!m.has(inq.manufacturer_id)) m.set(inq.manufacturer_id, inq);
+    }
+    return m;
+  }, [existingInquiries]);
+
+  // Remove contacted manufacturers from the current selection whenever the
+  // map updates (e.g. after the fetch completes post-extraction).
+  useEffect(() => {
+    if (contactedMfrMap.size === 0) return;
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      attachmentExtractions.forEach((s, attIdx) => {
+        s.result?.rows.forEach((r) => {
+          if (r.matched_id != null && contactedMfrMap.has(r.matched_id)) {
+            next.delete(selKey(attIdx, r.row_index));
+          }
+        });
+      });
+      return next;
+    });
+  }, [contactedMfrMap, attachmentExtractions]);
+
   const handleCancel = useCallback(() => {
     goTo("platform-inquiries");
   }, []);
@@ -363,9 +401,11 @@ export default function ContactManufacturerPage() {
     const next = new Set<string>();
     attachmentExtractions.forEach((s, attIdx) => {
       if (!s.result) return;
-      s.result.rows.filter((r) => r.matched_id).forEach((r) => {
-        next.add(selKey(attIdx, r.row_index));
-      });
+      s.result.rows
+        .filter((r) => r.matched_id && !contactedMfrMap.has(r.matched_id))
+        .forEach((r) => {
+          next.add(selKey(attIdx, r.row_index));
+        });
     });
     setSelectedKeys(next);
   };
@@ -380,6 +420,16 @@ export default function ContactManufacturerPage() {
       ),
     [attachmentExtractions],
   );
+
+  const totalContactable = useMemo(() => {
+    let count = 0;
+    attachmentExtractions.forEach((s) => {
+      s.result?.rows.forEach((r) => {
+        if (r.matched_id && !contactedMfrMap.has(r.matched_id)) count++;
+      });
+    });
+    return count;
+  }, [attachmentExtractions, contactedMfrMap]);
 
   const sendOne = async (card: ReviewCard, cardIndex: number) => {
     if (!ctx) return;
@@ -782,12 +832,15 @@ export default function ContactManufacturerPage() {
                 </div>
                 <div className="bulk-select-toolbar">
                   <button type="button" className="btn-link" onClick={selectAll}>
-                    Select all matched ({totalMatched})
+                    Select all matched ({totalContactable})
                   </button>
                   <button type="button" className="btn-link" onClick={selectNone}>
                     Clear
                   </button>
                   <span className="cell-muted">{totalSelectedCount} selected</span>
+                  {contactedMfrMap.size > 0 && (
+                    <span className="cell-muted">· {contactedMfrMap.size} already contacted</span>
+                  )}
                 </div>
 
                 {/* One manufacturer list per source file */}
@@ -809,115 +862,168 @@ export default function ContactManufacturerPage() {
                           📎 {s.att.file_name} · {s.result.matched}/{s.result.total} matched
                         </div>
                       )}
-                      <div className="bulk-row-list">
-                        {filteredRows.length === 0 && (
-                          <div className="empty">
-                            <div className="empty-title">No manufacturers match "{search}".</div>
-                          </div>
-                        )}
-                        {filteredRows.map((r) => {
-                          const key = selKey(attIdx, r.row_index);
-                          const checked = selectedKeys.has(key);
-                          const matched = r.matched_id != null;
-                          const mfr = r.matched_id ? mfrById[r.matched_id] : undefined;
-                          const email = mfr?.official_mi_email || mfr?.team_verified_email;
-                          return (
-                            <label
-                              key={key}
-                              className={`bulk-row ${checked ? "bulk-row-checked" : ""} ${
-                                matched ? "" : "bulk-row-unmatched"
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={!matched}
-                                onChange={() => toggleRow(key)}
-                              />
-                              <div className="bulk-row-main">
-                                <div className="bulk-row-name">
-                                  <span className="bulk-row-raw">{r.raw_name}</span>
-                                  {matched && (
-                                    <span className={`ext-chip ext-chip-${confidenceTone(r.confidence)} ext-chip-static bulk-row-chip`}>
-                                      {confidenceLabel(r.confidence)}
-                                    </span>
-                                  )}
+                      {(() => {
+                        const uncontactedRows = filteredRows.filter(
+                          (r) => !(r.matched_id != null && contactedMfrMap.has(r.matched_id)),
+                        );
+                        const alreadyContactedRows = filteredRows.filter(
+                          (r) => r.matched_id != null && contactedMfrMap.has(r.matched_id),
+                        );
+                        return (
+                          <>
+                            <div className="bulk-row-list">
+                              {uncontactedRows.length === 0 && filteredRows.length === 0 && (
+                                <div className="empty">
+                                  <div className="empty-title">No manufacturers match "{search}".</div>
                                 </div>
-                                {matched ? (
-                                  <div className="bulk-row-mfr">
-                                    <span className="bulk-row-mfr-name">{r.matched_name}</span>
-                                    {mfr?.parent_owner && mfr.parent_owner !== r.matched_name && (
-                                      <span className="cell-muted">· {mfr.parent_owner}</span>
-                                    )}
+                              )}
+                              {uncontactedRows.length === 0 && filteredRows.length > 0 && alreadyContactedRows.length > 0 && (
+                                <div className="empty">
+                                  <div className="empty-title" style={{ fontSize: "13px" }}>
+                                    All matched manufacturers have already been contacted.
                                   </div>
-                                ) : (
-                                  <div className="bulk-row-mfr">
-                                    <span className="cell-muted">Not in manufacturer DB</span>
-                                  </div>
-                                )}
-                                {(r.medication_name || r.pi_storage) && (
-                                  <div className="bulk-row-product-info">
-                                    {r.medication_name && (
-                                      <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
+                                </div>
+                              )}
+                              {uncontactedRows.map((r) => {
+                                const key = selKey(attIdx, r.row_index);
+                                const checked = selectedKeys.has(key);
+                                const matched = r.matched_id != null;
+                                const mfr = r.matched_id ? mfrById[r.matched_id] : undefined;
+                                const email = mfr?.official_mi_email || mfr?.team_verified_email;
+                                return (
+                                  <label
+                                    key={key}
+                                    className={`bulk-row ${checked ? "bulk-row-checked" : ""} ${
+                                      matched ? "" : "bulk-row-unmatched"
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      disabled={!matched}
+                                      onChange={() => toggleRow(key)}
+                                    />
+                                    <div className="bulk-row-main">
+                                      <div className="bulk-row-name">
+                                        <span className="bulk-row-raw">{r.raw_name}</span>
+                                        {matched && (
+                                          <span className={`ext-chip ext-chip-${confidenceTone(r.confidence)} ext-chip-static bulk-row-chip`}>
+                                            {confidenceLabel(r.confidence)}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {matched ? (
+                                        <div className="bulk-row-mfr">
+                                          <span className="bulk-row-mfr-name">{r.matched_name}</span>
+                                          {mfr?.parent_owner && mfr.parent_owner !== r.matched_name && (
+                                            <span className="cell-muted">· {mfr.parent_owner}</span>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <div className="bulk-row-mfr">
+                                          <span className="cell-muted">Not in manufacturer DB</span>
+                                        </div>
+                                      )}
+                                      {(r.medication_name || r.pi_storage) && (
+                                        <div className="bulk-row-product-info">
+                                          {r.medication_name && (
+                                            <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
+                                          )}
+                                          {r.pi_storage && (
+                                            <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
+                                          )}
+                                        </div>
+                                      )}
+                                      {matched && (() => {
+                                        const inHours = isWithinBusinessHoursNow(mfr?.mi_phone_hours);
+                                        return (
+                                          <div className="bulk-row-mfr-meta">
+                                            {email && <span>📧 {email}</span>}
+                                            {mfr?.mi_phone && <span>📞 {mfr.mi_phone}</span>}
+                                            {mfr?.mi_phone_hours && (
+                                              <span
+                                                className={
+                                                  inHours === false
+                                                    ? "bulk-row-hours bulk-row-hours-out"
+                                                    : inHours === true
+                                                    ? "bulk-row-hours bulk-row-hours-in"
+                                                    : "bulk-row-hours"
+                                                }
+                                                title={
+                                                  inHours === false
+                                                    ? "Outside business hours right now — Call Agent will skip this number"
+                                                    : inHours === true
+                                                    ? "Inside business hours right now"
+                                                    : undefined
+                                                }
+                                              >
+                                                🕒 {mfr.mi_phone_hours}
+                                                {inHours === false && " · outside hours now"}
+                                              </span>
+                                            )}
+                                            {mfr?.typical_response_sla && (
+                                              <span>⏱ {mfr.typical_response_sla}</span>
+                                            )}
+                                            {!email && (
+                                              <span className="bulk-row-warn">No email on file — won't send</span>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                    {!matched && (
+                                      <button
+                                        type="button"
+                                        className="bulk-row-add-btn"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          setAddingMfrName(r.raw_name);
+                                        }}
+                                      >
+                                        + Add manufacturer
+                                      </button>
                                     )}
-                                    {r.pi_storage && (
-                                      <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
-                                    )}
-                                  </div>
-                                )}
-                                {matched && (() => {
-                                  const inHours = isWithinBusinessHoursNow(mfr?.mi_phone_hours);
+                                  </label>
+                                );
+                              })}
+                            </div>
+
+                            {alreadyContactedRows.length > 0 && (
+                              <div className="contacted-section">
+                                <div className="contacted-section-header">
+                                  Already contacted ({alreadyContactedRows.length})
+                                </div>
+                                {alreadyContactedRows.map((r) => {
+                                  const inq = contactedMfrMap.get(r.matched_id!)!;
                                   return (
-                                    <div className="bulk-row-mfr-meta">
-                                      {email && <span>📧 {email}</span>}
-                                      {mfr?.mi_phone && <span>📞 {mfr.mi_phone}</span>}
-                                      {mfr?.mi_phone_hours && (
-                                        <span
-                                          className={
-                                            inHours === false
-                                              ? "bulk-row-hours bulk-row-hours-out"
-                                              : inHours === true
-                                              ? "bulk-row-hours bulk-row-hours-in"
-                                              : "bulk-row-hours"
-                                          }
-                                          title={
-                                            inHours === false
-                                              ? "Outside business hours right now — Call Agent will skip this number"
-                                              : inHours === true
-                                              ? "Inside business hours right now"
-                                              : undefined
-                                          }
-                                        >
-                                          🕒 {mfr.mi_phone_hours}
-                                          {inHours === false && " · outside hours now"}
+                                    <div key={r.row_index} className="contacted-row">
+                                      <div className="contacted-row-main">
+                                        <span className="contacted-row-name">
+                                          {r.matched_name || r.raw_name}
                                         </span>
-                                      )}
-                                      {mfr?.typical_response_sla && (
-                                        <span>⏱ {mfr.typical_response_sla}</span>
-                                      )}
-                                      {!email && (
-                                        <span className="bulk-row-warn">No email on file — won't send</span>
-                                      )}
+                                        {(r.medication_name || r.pi_storage) && (
+                                          <div className="bulk-row-product-info" style={{ marginTop: 2 }}>
+                                            {r.medication_name && (
+                                              <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
+                                            )}
+                                            {r.pi_storage && (
+                                              <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="contacted-row-status">
+                                        <StatusBadge status={inq.status} />
+                                        <span className="contacted-row-id">#{inq.id}</span>
+                                      </div>
                                     </div>
                                   );
-                                })()}
+                                })}
                               </div>
-                              {!matched && (
-                                <button
-                                  type="button"
-                                  className="bulk-row-add-btn"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    setAddingMfrName(r.raw_name);
-                                  }}
-                                >
-                                  + Add manufacturer
-                                </button>
-                              )}
-                            </label>
-                          );
-                        })}
-                      </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   );
                 })}
