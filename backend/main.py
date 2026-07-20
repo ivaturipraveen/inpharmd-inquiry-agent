@@ -98,6 +98,18 @@ CREATE TABLE IF NOT EXISTS email_replies (
         # Link each attachment to the specific reply it arrived with.
         "ALTER TABLE inquiry_attachments ADD COLUMN IF NOT EXISTS reply_id INTEGER REFERENCES email_replies(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS ix_inquiry_attachments_reply_id ON inquiry_attachments (reply_id)",
+        # DailyMed NDC enrichment — PI link + storage text per inquiry
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pi_link TEXT",
+        # Persistent cache for DailyMed NDC lookups (avoids repeated API calls)
+        """
+CREATE TABLE IF NOT EXISTS dailymed_cache (
+    ndc        VARCHAR(50) PRIMARY KEY,
+    setid      VARCHAR(128),
+    pi_link    TEXT,
+    pi_storage TEXT,
+    fetched_at TIMESTAMPTZ NOT NULL
+)
+""",
     ]
     with engine.begin() as conn:
         for sql in statements:

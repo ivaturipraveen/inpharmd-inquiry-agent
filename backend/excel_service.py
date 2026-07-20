@@ -65,6 +65,11 @@ PI_STORAGE_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
     ({"storage", "requirement"}, ("storagerequirement", "storagerequirements")),
 )
 
+NDC_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
+    ({"ndc"}, ("ndc", "ndccode", "ndcnumber", "ndcnum")),
+    ({"national", "drug", "code"}, ("nationaldrugcode",)),
+)
+
 MANUFACTURER_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
     # Tier 1 — Medication/Vaccine Manufacturer (most specific)
     (
@@ -224,6 +229,7 @@ class ExtractedRow:
     raw_name: str        # value as it appeared in the cell
     medication_name: str = ""   # Medication/Vaccine Name column (if present)
     pi_storage: str = ""        # PI Storage Data column (if present)
+    ndc: str = ""               # NDC column (if present) — fed to DailyMed enrichment
 
 
 @dataclass
@@ -231,6 +237,7 @@ class ExtraColumns:
     """Headers of optional columns detected alongside the manufacturer column."""
     medication_col_header: Optional[str] = None   # None = not found in file
     pi_storage_col_header: Optional[str] = None   # None = not found in file
+    ndc_col_header: Optional[str] = None           # None = not found in file
 
 
 def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocation, ExtraColumns]:
@@ -281,13 +288,15 @@ def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocat
 
     med_col_idx = _find_csv_col(MEDICATION_NAME_HEADER_TIERS)
     pi_col_idx = _find_csv_col(PI_STORAGE_HEADER_TIERS)
+    ndc_col_idx = _find_csv_col(NDC_HEADER_TIERS)
     extra_cols = ExtraColumns(
         medication_col_header=headers[med_col_idx].strip() if med_col_idx is not None else None,
         pi_storage_col_header=headers[pi_col_idx].strip() if pi_col_idx is not None else None,
+        ndc_col_header=headers[ndc_col_idx].strip() if ndc_col_idx is not None else None,
     )
     log.info(
-        "csv.extract mfr_col=%r med_col=%r pi_col=%r",
-        headers[col_idx], extra_cols.medication_col_header, extra_cols.pi_storage_col_header,
+        "csv.extract mfr_col=%r med_col=%r pi_col=%r ndc_col=%r",
+        headers[col_idx], extra_cols.medication_col_header, extra_cols.pi_storage_col_header, extra_cols.ndc_col_header,
     )
 
     out: list[ExtractedRow] = []
@@ -298,11 +307,13 @@ def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocat
         if val:
             med_val = (row[med_col_idx] if med_col_idx is not None and med_col_idx < len(row) else "") or ""
             pi_val = (row[pi_col_idx] if pi_col_idx is not None and pi_col_idx < len(row) else "") or ""
+            ndc_val = (row[ndc_col_idx] if ndc_col_idx is not None and ndc_col_idx < len(row) else "") or ""
             out.append(ExtractedRow(
                 row_index=r_idx,
                 raw_name=val,
                 medication_name=med_val.strip(),
                 pi_storage=pi_val.strip(),
+                ndc=ndc_val.strip(),
             ))
     loc = ColumnLocation(
         sheet_name="csv",
@@ -337,26 +348,31 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
                 "Could not find a Manufacturer column in the workbook. "
                 f"Headers I saw: {preview}"
             )
-        # Optionally find Medication/Vaccine Name and PI Storage columns
+        # Optionally find Medication/Vaccine Name, PI Storage, and NDC columns
         med_loc = _find_column(wb, MEDICATION_NAME_HEADER_TIERS)
         pi_loc = _find_column(wb, PI_STORAGE_HEADER_TIERS)
+        ndc_loc = _find_column(wb, NDC_HEADER_TIERS)
         extra_cols = ExtraColumns(
             medication_col_header=med_loc.header_value if med_loc else None,
             pi_storage_col_header=pi_loc.header_value if pi_loc else None,
+            ndc_col_header=ndc_loc.header_value if ndc_loc else None,
         )
         log.info(
-            "xlsx.extract mfr_col=%r med_col=%r pi_col=%r",
-            loc.header_value, extra_cols.medication_col_header, extra_cols.pi_storage_col_header,
+            "xlsx.extract mfr_col=%r med_col=%r pi_col=%r ndc_col=%r",
+            loc.header_value, extra_cols.medication_col_header,
+            extra_cols.pi_storage_col_header, extra_cols.ndc_col_header,
         )
 
         ws = wb[loc.sheet_name]
 
-        # Determine column range to iterate (span all three columns at once)
+        # Determine column range to iterate (span all detected columns at once)
         all_cols = [loc.col]
         if med_loc and med_loc.sheet_name == loc.sheet_name:
             all_cols.append(med_loc.col)
         if pi_loc and pi_loc.sheet_name == loc.sheet_name:
             all_cols.append(pi_loc.col)
+        if ndc_loc and ndc_loc.sheet_name == loc.sheet_name:
+            all_cols.append(ndc_loc.col)
         min_col = min(all_cols)
         max_col = max(all_cols)
 
@@ -376,11 +392,13 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
                 continue
             med_val = cell_map.get(med_loc.col, "") if med_loc and med_loc.sheet_name == loc.sheet_name else ""
             pi_val = cell_map.get(pi_loc.col, "") if pi_loc and pi_loc.sheet_name == loc.sheet_name else ""
+            ndc_val = cell_map.get(ndc_loc.col, "") if ndc_loc and ndc_loc.sheet_name == loc.sheet_name else ""
             rows.append(ExtractedRow(
                 row_index=r_idx,
                 raw_name=name,
                 medication_name=med_val,
                 pi_storage=pi_val,
+                ndc=ndc_val,
             ))
         return rows, loc, extra_cols
     finally:
@@ -399,6 +417,8 @@ class ManufacturerMatch:
     confidence: str  # "exact" | "partial" | "loose" | "none"
     medication_name: str = ""
     pi_storage: str = ""
+    ndc: str = ""
+    pi_link: str = ""   # populated by dailymed_service.enrich_rows after matching
 
 
 def match_manufacturers(
@@ -429,7 +449,7 @@ def match_manufacturers(
     for row in rows:
         nkey = _normalize(row.raw_name)
         rtoks = _tokenize(row.raw_name)
-        extra = {"medication_name": row.medication_name, "pi_storage": row.pi_storage}
+        extra = {"medication_name": row.medication_name, "pi_storage": row.pi_storage, "ndc": row.ndc}
         if not nkey:
             out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none", **extra))
             continue

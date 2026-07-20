@@ -201,6 +201,7 @@ export const api = {
         source_excel_row?: number;
         medication_name?: string | null;
         pi_storage_data?: string | null;
+        pi_link?: string | null;
       }[];
       subject: string;
       question: string;
@@ -292,6 +293,7 @@ export const api = {
         matched: number;
         medication_col_header: string | null;
         pi_storage_col_header: string | null;
+        ndc_col_header: string | null;
         excel_s3_url: string | null;
         rows: {
           row_index: number;
@@ -301,6 +303,8 @@ export const api = {
           confidence: "exact" | "partial" | "loose" | "none";
           medication_name: string;
           pi_storage: string;
+          ndc: string;
+          pi_link: string;
         }[];
       }>(`/api/external/inquiries/extract-manufacturers`, {
         method: "POST",

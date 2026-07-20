@@ -118,6 +118,8 @@ class BulkTarget(BaseModel):
     # Product details extracted from the MUE Excel for this row.
     medication_name: Optional[str] = None
     pi_storage_data: Optional[str] = None
+    # DailyMed-enriched fields (populated by the extract-manufacturers endpoint).
+    pi_link: Optional[str] = None
 
 
 class BulkInquiryCreate(BaseModel):
@@ -207,6 +209,7 @@ class InquiryOut(InquiryBase):
     excel_response_posted_at: Optional[datetime] = None
     medication_name: Optional[str] = None
     pi_storage_data: Optional[str] = None
+    pi_link: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     manufacturer: Optional[ManufacturerSummary] = None

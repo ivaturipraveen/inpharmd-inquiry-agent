@@ -56,6 +56,7 @@ def _build_body(
     requester_email: Optional[str],
     medication_name: Optional[str] = None,
     pi_storage_data: Optional[str] = None,
+    pi_link: Optional[str] = None,
 ) -> str:
     requester_line = ""
     if requester_name and requester_email:
@@ -66,12 +67,14 @@ def _build_body(
         requester_line = f"\nRequested by: {requester_name}\n"
 
     product_section = ""
-    if medication_name or pi_storage_data:
+    if medication_name or pi_storage_data or pi_link:
         lines = ["PRODUCT DETAILS:"]
         if medication_name:
             lines.append(f"Medication/Vaccine: {medication_name}")
         if pi_storage_data:
             lines.append(f"PI Storage Information: {pi_storage_data}")
+        if pi_link:
+            lines.append(f"Prescribing Information: {pi_link}")
         product_section = "\n" + "\n".join(lines) + "\n"
 
     return f"""\
@@ -108,6 +111,7 @@ def send_inquiry_email(
     requester_email: Optional[str] = None,
     medication_name: Optional[str] = None,
     pi_storage_data: Optional[str] = None,
+    pi_link: Optional[str] = None,
 ) -> str:
     """Send the inquiry email via the SendGrid API.
 
@@ -125,6 +129,7 @@ def send_inquiry_email(
         requester_email=requester_email,
         medication_name=medication_name,
         pi_storage_data=pi_storage_data,
+        pi_link=pi_link,
     )
 
     payload = {

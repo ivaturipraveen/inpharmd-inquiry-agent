@@ -35,6 +35,8 @@ interface DetectedRow {
   confidence: "exact" | "partial" | "loose" | "none";
   medication_name: string;
   pi_storage: string;
+  ndc: string;
+  pi_link: string;
 }
 
 interface DetectedExtraction {
@@ -45,6 +47,7 @@ interface DetectedExtraction {
   matched: number;
   medication_col_header: string | null;
   pi_storage_col_header: string | null;
+  ndc_col_header: string | null;
   excel_s3_url: string | null;
   rows: DetectedRow[];
 }
@@ -137,6 +140,7 @@ interface ReviewCard {
   question: string;
   medicationName: string | null;
   piStorageData: string | null;
+  piLink: string | null;
   sentInquiryId: number | null;
   sending: boolean;
   error: string | null;
@@ -445,6 +449,7 @@ export default function ContactManufacturerPage() {
           // or the backend's _build_body() would duplicate the product details section.
           medication_name: null,
           pi_storage_data: null,
+          pi_link: card.piLink,
         }],
         subject: card.subject,
         question: card.question,
@@ -497,11 +502,13 @@ export default function ContactManufacturerPage() {
           // backend, so the user sees (and can edit) the complete email content.
           const medName = r.medication_name || null;
           const piStorage = r.pi_storage || null;
+          const piLink = r.pi_link || null;
           let fullQuestion = question.trim();
-          if (medName || piStorage) {
+          if (medName || piStorage || piLink) {
             fullQuestion += "\n\nPRODUCT DETAILS:";
             if (medName) fullQuestion += `\nMedication/Vaccine: ${medName}`;
             if (piStorage) fullQuestion += `\nPI Storage Information: ${piStorage}`;
+            if (piLink) fullQuestion += `\nPrescribing Information: ${piLink}`;
           }
           cards.push({
             rowIndex: r.row_index,
@@ -512,6 +519,7 @@ export default function ContactManufacturerPage() {
             question: fullQuestion,
             medicationName: medName,
             piStorageData: piStorage,
+            piLink,
             sentInquiryId: null,
             sending: false,
             error: null,
@@ -573,7 +581,7 @@ export default function ContactManufacturerPage() {
       // so each inquiry gets the correct source_excel_url for response writeback.
       const byFile: Array<{
         s: AttachmentExtractionState;
-        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null }[];
+        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null }[];
       }> = [];
 
       attachmentExtractions.forEach((s, attIdx) => {
@@ -593,6 +601,7 @@ export default function ContactManufacturerPage() {
             source_excel_row: r.row_index,
             medication_name: r.medication_name || null,
             pi_storage_data: r.pi_storage || null,
+            pi_link: r.pi_link || null,
           }));
         if (targets.length > 0) byFile.push({ s, targets });
       });
@@ -775,6 +784,9 @@ export default function ContactManufacturerPage() {
                       ? <> · 🌡 PI col: "{s.result.pi_storage_col_header}"</>
                       : <> · <span style={{color:"#b45309"}}>⚠ no PI Storage column found</span></>
                     }
+                    {s.result.ndc_col_header && (
+                      <> · 💊 NDC col: "{s.result.ndc_col_header}" (DailyMed lookup enabled)</>
+                    )}
                   </>
                 )}
                 {s.error && (
@@ -1318,13 +1330,24 @@ export default function ContactManufacturerPage() {
                             → {card.toEmail}
                           </span>
                         )}
-                        {(card.medicationName || card.piStorageData) && (
+                        {(card.medicationName || card.piStorageData || card.piLink) && (
                           <div style={{ marginTop: "6px", display: "flex", gap: "6px", flexWrap: "wrap" as const }}>
                             {card.medicationName && (
                               <span className="bulk-row-product-pill">💊 {card.medicationName}</span>
                             )}
                             {card.piStorageData && (
                               <span className="bulk-row-product-pill">🌡 {card.piStorageData}</span>
+                            )}
+                            {card.piLink && (
+                              <a
+                                href={card.piLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="bulk-row-product-pill"
+                                style={{ textDecoration: "none" }}
+                              >
+                                📄 PI
+                              </a>
                             )}
                           </div>
                         )}

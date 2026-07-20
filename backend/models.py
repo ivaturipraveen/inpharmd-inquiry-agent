@@ -9,6 +9,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from datetime import datetime
 
 from database import Base
 
@@ -133,6 +134,8 @@ class Inquiry(Base):
     # Per-row product details extracted from the MUE Excel alongside the manufacturer name.
     medication_name = Column(Text)
     pi_storage_data = Column(Text)
+    # DailyMed-enriched fields: canonical PI URL and storage/handling text.
+    pi_link = Column(Text)
     # Where the updated Excel landed (S3) after we filled in the response.
     excel_response_url = Column(Text)
     excel_response_posted_at = Column(DateTime(timezone=True))
@@ -237,3 +240,18 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_login_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DailymedCache(Base):
+    """Persistent cache for DailyMed NDC lookups (30-day TTL).
+
+    Keyed by normalized NDC string.  fetched_at is used by the service to
+    determine whether the entry is still within the TTL window.
+    """
+    __tablename__ = "dailymed_cache"
+
+    ndc = Column(String(50), primary_key=True)
+    setid = Column(String(128))          # DailyMed SPL set-id (UUID)
+    pi_link = Column(Text)               # https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<setid>
+    pi_storage = Column(Text)            # Full text of section 34069-5
+    fetched_at = Column(DateTime(timezone=True), nullable=False)

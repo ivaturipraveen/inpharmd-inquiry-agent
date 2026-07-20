@@ -29,6 +29,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import cache_service
+import dailymed_service
 import excel_service
 import inpharmd_service
 import s3_service
@@ -179,6 +180,8 @@ class ExtractedManufacturerRow(BaseModel):
     confidence: str
     medication_name: str = ""
     pi_storage: str = ""
+    ndc: str = ""
+    pi_link: str = ""   # filled in by DailyMed enrichment when ndc is present
 
 
 class ExtractManufacturersResponse(BaseModel):
@@ -190,6 +193,7 @@ class ExtractManufacturersResponse(BaseModel):
     matched: int
     medication_col_header: Optional[str] = None   # None = column not found in file
     pi_storage_col_header: Optional[str] = None   # None = column not found in file
+    ndc_col_header: Optional[str] = None           # None = NDC column not present in file
     # Our own S3 copy of the workbook — the bulk_create endpoint stamps this
     # as `source_excel_url` on every inquiry so the response-writeback path
     # always operates on our copy (no dependence on the 10s InpharmD signed URL).
@@ -197,7 +201,7 @@ class ExtractManufacturersResponse(BaseModel):
 
 
 @router.post("/extract-manufacturers", response_model=ExtractManufacturersResponse)
-def extract_manufacturers(
+async def extract_manufacturers(
     payload: ExtractManufacturersRequest = Body(...),
     current: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -230,6 +234,12 @@ def extract_manufacturers(
     mfrs = db.query(ManufacturerContact).all()
     matches = excel_service.match_manufacturers(rows, mfrs)
 
+    # DailyMed NDC enrichment — fills pi_link + pi_storage on matched rows
+    # that carry an NDC but are missing those fields. Runs concurrently
+    # (semaphore-capped), writes results to the persistent dailymed_cache table,
+    # and never raises (failures are logged and the row is left unchanged).
+    await dailymed_service.enrich_rows(matches, db)
+
     # Mirror the workbook into our own S3 right now, before any responses
     # arrive. Every inquiry created from this dispatch will point at this
     # URL so writeback always works against our copy.
@@ -260,6 +270,8 @@ def extract_manufacturers(
             confidence=m.confidence,
             medication_name=m.medication_name,
             pi_storage=m.pi_storage,
+            ndc=m.ndc,
+            pi_link=m.pi_link,
         )
         for m in matches
     ]
@@ -272,6 +284,7 @@ def extract_manufacturers(
         matched=sum(1 for r in out_rows if r.matched_id is not None),
         medication_col_header=extra_cols.medication_col_header,
         pi_storage_col_header=extra_cols.pi_storage_col_header,
+        ndc_col_header=extra_cols.ndc_col_header,
         excel_s3_url=s3_url,
     )
 
