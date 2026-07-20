@@ -196,7 +196,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
 
     inquiry_id = int(m.group(1))
 
-    obj = db.get(Inquiry, inquiry_id)
+    obj = db.query(Inquiry).filter(Inquiry.id == inquiry_id).with_for_update().first()
     if not obj:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
         _mark_read(token, mailbox, msg["id"])

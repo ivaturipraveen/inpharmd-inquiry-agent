@@ -193,7 +193,7 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
         return None
 
     inquiry_id = int(m.group(1))
-    obj = db.get(Inquiry, inquiry_id)
+    obj = db.query(Inquiry).filter(Inquiry.id == inquiry_id).with_for_update().first()
     if not obj:
         log.info("Reply tagged inquiry %s but no such inquiry; skipping", inquiry_id)
         return None
