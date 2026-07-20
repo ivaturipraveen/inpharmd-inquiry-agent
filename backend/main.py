@@ -80,6 +80,24 @@ CREATE TABLE IF NOT EXISTS inquiry_attachments (
         "CREATE INDEX IF NOT EXISTS ix_inquiry_attachments_inquiry_id ON inquiry_attachments (inquiry_id)",
         # Guard for deployments where the table was created before created_at was added.
         "ALTER TABLE inquiry_attachments ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        # Per-reply email thread storage — one row per manufacturer reply.
+        """
+CREATE TABLE IF NOT EXISTS email_replies (
+    id               SERIAL PRIMARY KEY,
+    inquiry_id       INTEGER NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
+    direction        VARCHAR(10) NOT NULL,
+    sender_email     VARCHAR(255),
+    body             TEXT,
+    sent_at          TIMESTAMPTZ NOT NULL,
+    graph_message_id VARCHAR(512)
+)
+""",
+        "CREATE INDEX IF NOT EXISTS ix_email_replies_inquiry_id ON email_replies (inquiry_id)",
+        # Prevents the same Graph/IMAP message from being inserted twice.
+        "CREATE UNIQUE INDEX IF NOT EXISTS uix_email_replies_inquiry_graph_msg ON email_replies (inquiry_id, graph_message_id) WHERE graph_message_id IS NOT NULL",
+        # Link each attachment to the specific reply it arrived with.
+        "ALTER TABLE inquiry_attachments ADD COLUMN IF NOT EXISTS reply_id INTEGER REFERENCES email_replies(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS ix_inquiry_attachments_reply_id ON inquiry_attachments (reply_id)",
     ]
     with engine.begin() as conn:
         for sql in statements:

@@ -29,7 +29,7 @@ import legacy_response_service
 import s3_service
 import summary_service
 from database import SessionLocal
-from models import Inquiry, InquiryAttachment
+from models import EmailReply, Inquiry, InquiryAttachment
 
 log = logging.getLogger("inquiry.imap")
 
@@ -199,8 +199,15 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
         return None
     if obj.status == "closed":
         return None
-    if obj.email_response:
-        # Already captured a reply for this inquiry — don't reprocess.
+
+    imap_message_id = (_decode(msg.get("Message-ID")) or "").strip()
+
+    # Dedup by IMAP Message-ID — prevents the same email from being processed
+    # twice across process restarts.
+    if imap_message_id and db.query(EmailReply).filter(
+        EmailReply.inquiry_id == inquiry_id,
+        EmailReply.graph_message_id == imap_message_id,
+    ).first():
         return inquiry_id
 
     sender = _decode(msg.get("From"))
@@ -210,29 +217,21 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
         log.info("Inquiry %s reply had no extractable body; skipping", inquiry_id)
         return inquiry_id
 
-    obj.email_response = reply
-    obj.email_response_at = datetime.now(timezone.utc)
-    obj.status = "email_responded"
-    # A real reply means we no longer need the fallback call / pending retries.
-    obj.next_retry_at = None
-    obj.call_scheduled_for = None
-
+    mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
     final = reply
     if summary_service.is_configured():
         try:
-            mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
             final = summary_service.extract_answer_from_email(
                 question=obj.question,
                 manufacturer=mfr_name,
                 reply_text=reply,
             )
         except summary_service.SummaryConfigError:
-            final = reply  # soft-fail to raw reply
-    obj.final_answer = final
+            final = reply
 
     # Upload any document attachments and write InquiryAttachment rows.
     attachments = _collect_attachments(msg)
-    uploaded_count = 0
+    uploaded_atts: list[dict] = []
     for order, att in enumerate(attachments):
         url = s3_service.upload_bytes(
             att["bytes"],
@@ -246,7 +245,6 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
                 inquiry_id, order, att["name"],
             )
             continue
-        uploaded_count += 1
         att_summary = None
         if summary_service.is_configured():
             att_text = summary_service.extract_document_text(att["name"], att["bytes"])
@@ -254,7 +252,7 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
                 try:
                     att_summary = summary_service.summarize_pdf(
                         question=obj.question,
-                        manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
+                        manufacturer=mfr_name,
                         pdf_text=att_text,
                     )
                 except Exception as e:
@@ -266,21 +264,55 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
             "Inquiry %s attachment %d '%s' (%d bytes) uploaded",
             inquiry_id, order, att["name"], len(att["bytes"]),
         )
+        uploaded_atts.append({
+            "url": url,
+            "filename": att["name"],
+            "content_type": att["content_type"],
+            "summary": att_summary,
+            "display_order": order,
+        })
+
+    # Create the EmailReply row; flush to get its id before linking attachments.
+    email_reply = EmailReply(
+        inquiry_id=inquiry_id,
+        direction="inbound",
+        sender_email=sender,
+        body=reply,
+        sent_at=datetime.now(timezone.utc),
+        graph_message_id=imap_message_id or None,
+    )
+    db.add(email_reply)
+    db.flush()
+
+    uploaded_count = 0
+    for att in uploaded_atts:
+        uploaded_count += 1
         db.add(InquiryAttachment(
             inquiry_id=inquiry_id,
-            url=url,
-            filename=att["name"],
+            reply_id=email_reply.id,
+            url=att["url"],
+            filename=att["filename"],
             content_type=att["content_type"],
-            summary=att_summary,
-            display_order=order,
+            summary=att["summary"],
+            display_order=att["display_order"],
         ))
-        # Backward-compat scalars — first successfully-uploaded attachment wins.
-        if uploaded_count == 1:
-            obj.pdf_url = url
-            obj.pdf_filename = att["name"]
-            obj.pdf_summary = att_summary
 
-    log.info("Captured email reply for inquiry %s from %s", inquiry_id, sender)
+    # Only update inquiry scalar fields on the first reply.
+    is_first_reply = not obj.email_response
+    if is_first_reply:
+        obj.email_response = reply
+        obj.email_response_at = email_reply.sent_at
+        obj.status = "email_responded"
+        obj.next_retry_at = None
+        obj.call_scheduled_for = None
+        obj.final_answer = final
+        if uploaded_count > 0:
+            first = uploaded_atts[0]
+            obj.pdf_url = first["url"]
+            obj.pdf_filename = first["filename"]
+            obj.pdf_summary = first["summary"]
+
+    log.info("Captured email reply for inquiry %s from %s (first=%s)", inquiry_id, sender, is_first_reply)
     return inquiry_id
 
 

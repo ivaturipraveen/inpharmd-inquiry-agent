@@ -12,7 +12,7 @@ import email_service
 import legacy_response_service
 import summary_service
 from database import get_db
-from models import Inquiry, InquiryAttachment, ManufacturerContact, User
+from models import EmailReply, Inquiry, InquiryAttachment, ManufacturerContact, User
 from routers.auth import get_current_user
 from schemas import (
     BulkInquiryCreate,
@@ -46,7 +46,8 @@ def _get_or_404(
         db.query(Inquiry)
         .options(
             joinedload(Inquiry.manufacturer),
-            joinedload(Inquiry.inbound_attachments),
+            selectinload(Inquiry.inbound_attachments),
+            selectinload(Inquiry.email_replies).selectinload(EmailReply.attachments),
         )
         .filter(Inquiry.id == inquiry_id)
     )
@@ -69,6 +70,7 @@ def list_inquiries(
     q = db.query(Inquiry).options(
         joinedload(Inquiry.manufacturer),
         selectinload(Inquiry.inbound_attachments),
+        selectinload(Inquiry.email_replies).selectinload(EmailReply.attachments),
     )
     if not all_users:
         q = q.filter(Inquiry.user_id == current_user.id)

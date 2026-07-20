@@ -73,7 +73,18 @@ class InquiryAttachmentOut(BaseModel):
     content_type: Optional[str] = None
     summary: Optional[str] = None
     display_order: int = 0
+    reply_id: Optional[int] = None
     created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EmailReplyOut(BaseModel):
+    id: int
+    direction: str
+    sender_email: Optional[str] = None
+    body: Optional[str] = None
+    sent_at: datetime
+    attachments: list[InquiryAttachmentOut] = []
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -190,6 +201,7 @@ class InquiryOut(InquiryBase):
     pdf_filename: Optional[str] = None
     pdf_summary: Optional[str] = None
     inbound_attachments: list[InquiryAttachmentOut] = []
+    email_replies: list[EmailReplyOut] = []
     legacy_response_posted_at: Optional[datetime] = None
     excel_response_url: Optional[str] = None
     excel_response_posted_at: Optional[datetime] = None

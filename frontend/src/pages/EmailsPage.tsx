@@ -432,8 +432,11 @@ interface ReaderProps {
 function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
   const m = inquiry.manufacturer;
   const to = m?.official_mi_email || m?.team_verified_email || "—";
-  const hasReply = Boolean(inquiry.email_response || inquiry.email_response_at);
-  const replyBody = inquiry.email_response || inquiry.final_answer;
+
+  // Use email_replies array when available (new); fall back to scalar email_response (old inquiries).
+  const replies = inquiry.email_replies ?? [];
+  const hasAnyReply = replies.length > 0 || Boolean(inquiry.email_response || inquiry.email_response_at);
+  const replyCount = replies.length || (hasAnyReply ? 1 : 0);
 
   return (
     <div className="gm-thread">
@@ -441,9 +444,11 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
         <h2 className="gm-thread-subject">{inquiry.subject}</h2>
         <div className="gm-thread-tags">
           <span className={`gm-chip gm-chip-${
-            hasReply ? "replied" : inquiry.status === "email_sent" ? "awaiting" : "closed"
+            hasAnyReply ? "replied" : inquiry.status === "email_sent" ? "awaiting" : "closed"
           }`}>
-            {hasReply ? "Responded" : inquiry.status === "email_sent" ? "Awaiting reply" : "Closed"}
+            {hasAnyReply
+              ? replyCount > 1 ? `${replyCount} replies` : "Responded"
+              : inquiry.status === "email_sent" ? "Awaiting reply" : "Closed"}
           </span>
           <span className="gm-thread-id-chip">#{inquiry.id}</span>
           <button
@@ -466,18 +471,34 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
         avatarColor={avatarColor("InpharmD")}
         avatarInitials="IN"
         senderName="InpharmD Medical Information"
-        senderHandle="medinfo@inpharmd.com"
+        senderHandle="druginfo@inpharmd.com"
         recipientLabel={`to ${to}`}
         timestamp={fmtLong(inquiry.email_sent_at || inquiry.created_at)}
         body={inquiry.question}
         direction="out"
       />
 
-      {/* Incoming — manufacturer -> us. We show three distinct blocks when a
-          PDF is attached: direct reply body, AI summary of the PDF, then the
-          PDF link at the bottom. */}
-      {hasReply ? (
-        <>
+      {/* Inbound replies */}
+      {hasAnyReply ? (
+        replies.length > 0 ? (
+          // New path: render each reply from email_replies in order
+          replies.map((r) => (
+            <Message
+              key={r.id}
+              avatarColor={avatarColor(m?.manufacturer ?? "Manufacturer")}
+              avatarInitials={initials(m?.manufacturer)}
+              senderName={`${m?.manufacturer ?? "Manufacturer"} Medical Information`}
+              senderHandle={r.sender_email ?? to}
+              recipientLabel="to InpharmD"
+              timestamp={fmtLong(r.sent_at)}
+              body={r.body ?? ""}
+              direction="in"
+              highlight
+              inboundAttachments={r.attachments?.length ? r.attachments : undefined}
+            />
+          ))
+        ) : (
+          // Legacy path: single reply from inquiry scalar fields
           <Message
             avatarColor={avatarColor(m?.manufacturer ?? "Manufacturer")}
             avatarInitials={initials(m?.manufacturer)}
@@ -485,7 +506,7 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
             senderHandle={to}
             recipientLabel="to InpharmD"
             timestamp={fmtLong(inquiry.email_response_at)}
-            body={replyBody ?? ""}
+            body={inquiry.email_response || inquiry.final_answer || ""}
             direction="in"
             highlight
             inboundAttachments={inquiry.inbound_attachments?.length ? inquiry.inbound_attachments : undefined}
@@ -493,7 +514,7 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
             pdfUrl={inquiry.pdf_url}
             pdfFilename={inquiry.pdf_filename}
           />
-        </>
+        )
       ) : (
         <div className="gm-awaiting">
           <div className="gm-awaiting-dot" />

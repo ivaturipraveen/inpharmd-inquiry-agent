@@ -23,13 +23,14 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+
 import httpx
 
 import legacy_response_service
 import s3_service
 import summary_service
 from database import SessionLocal
-from models import Inquiry, InquiryAttachment
+from models import EmailReply, Inquiry, InquiryAttachment
 
 log = logging.getLogger("inquiry.graph")
 
@@ -204,13 +205,13 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     if obj.status == "closed":
         _mark_read(token, mailbox, msg["id"])
         return None
-    if obj.email_response:
-        if msg.get("hasAttachments") and not obj.pdf_url:
-            log.warning(
-                "Inquiry %s has email_response but no pdf_url and message has attachments — "
-                "use POST /api/inquiries/%s/reprocess-pdf to recover",
-                inquiry_id, inquiry_id,
-            )
+
+    # Dedup by Graph message ID — prevents the same email from being processed
+    # twice across process restarts or concurrent deploys.
+    if db.query(EmailReply).filter(
+        EmailReply.inquiry_id == inquiry_id,
+        EmailReply.graph_message_id == msg["id"],
+    ).first():
         _mark_read(token, mailbox, msg["id"])
         return None
 
@@ -228,8 +229,6 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     uploaded_atts: list[dict] = []
 
     if msg.get("hasAttachments"):
-        # List metadata first (no bytes), then download-one → process-one so only
-        # one attachment's bytes are in memory at a time.
         att_metadata = _list_document_attachment_metadata(token, mailbox, msg["id"])
         for order, meta in enumerate(att_metadata):
             doc = _download_attachment(token, mailbox, msg["id"], meta["id"], meta["name"])
@@ -262,72 +261,89 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
                             "Attachment summary unavailable for inquiry %s attachment %d: %s",
                             inquiry_id, order, e,
                         )
-            db.add(InquiryAttachment(
-                inquiry_id=inquiry_id,
-                url=url,
-                filename=doc["name"],
-                content_type=doc["content_type"],
-                summary=att_summary,
-                display_order=order,
-            ))
             uploaded_atts.append({
                 "url": url,
                 "filename": doc["name"],
                 "content_type": doc["content_type"],
                 "summary": att_summary,
+                "display_order": order,
             })
             log.info(
                 "Inquiry %s attachment %d '%s' (%d bytes) uploaded",
                 inquiry_id, order, doc["name"], len(doc["bytes"]),
             )
 
-    # Backward-compat scalars — first attachment's values kept on the inquiry.
-    first = uploaded_atts[0] if uploaded_atts else {}
-    pdf_url: Optional[str] = first.get("url")
-    pdf_filename: Optional[str] = first.get("filename")
-    pdf_summary: Optional[str] = first.get("summary")
+    first_att = uploaded_atts[0] if uploaded_atts else {}
+    pdf_url: Optional[str] = first_att.get("url")
+    pdf_filename: Optional[str] = first_att.get("filename")
+    pdf_summary: Optional[str] = first_att.get("summary")
 
-    # Keep the rep's actual reply text as the primary answer — even if it's
-    # short. The PDF summary is supplemental context, not a replacement.
-    # Only fall back to the PDF summary when there's literally no reply body
-    # (e.g. blank email with only an attachment).
-    final_answer = reply or pdf_summary or ""
-
-    if not final_answer and not pdf_url:
+    reply_text = reply or pdf_summary or ""
+    if not reply_text and not pdf_url:
         log.info("Inquiry %s reply had no extractable body and no PDF; skipping", inquiry_id)
         return None
 
-    obj.email_response = reply or pdf_summary or ""
-    obj.email_response_at = datetime.now(timezone.utc)
-    obj.status = "email_responded"
-    obj.next_retry_at = None
-    obj.call_scheduled_for = None
-    obj.final_answer = final_answer
-    obj.pdf_url = pdf_url
-    obj.pdf_filename = pdf_filename
-    obj.pdf_summary = pdf_summary
+    # Create the EmailReply row; flush to get its id before linking attachments.
+    email_reply = EmailReply(
+        inquiry_id=inquiry_id,
+        direction="inbound",
+        sender_email=sender,
+        body=reply_text,
+        sent_at=datetime.now(timezone.utc),
+        graph_message_id=msg["id"],
+    )
+    db.add(email_reply)
+    db.flush()
+
+    for att in uploaded_atts:
+        db.add(InquiryAttachment(
+            inquiry_id=inquiry_id,
+            reply_id=email_reply.id,
+            url=att["url"],
+            filename=att["filename"],
+            content_type=att["content_type"],
+            summary=att["summary"],
+            display_order=att["display_order"],
+        ))
+
+    # Only update inquiry scalar fields on the first reply.
+    is_first_reply = not obj.email_response
+    if is_first_reply:
+        obj.email_response = reply_text
+        obj.email_response_at = email_reply.sent_at
+        obj.status = "email_responded"
+        obj.next_retry_at = None
+        obj.call_scheduled_for = None
+        obj.final_answer = reply or pdf_summary or ""
+        obj.pdf_url = pdf_url
+        obj.pdf_filename = pdf_filename
+        obj.pdf_summary = pdf_summary
+
     log.info(
-        "Captured Graph email reply for inquiry %s from %s (reply=%d chars, pdf=%s)",
-        inquiry_id, sender, len(reply or ""), bool(pdf_url),
+        "Captured Graph email reply for inquiry %s from %s (reply=%d chars, pdf=%s, first=%s)",
+        inquiry_id, sender, len(reply or ""), bool(pdf_url), is_first_reply,
     )
     log.info(
-        "pipeline: graph stored email_response inquiry=%s status=email_responded "
-        "final_answer_chars=%d pdf_attached=%s",
-        inquiry_id, len(final_answer or ""), bool(pdf_url),
+        "pipeline: graph stored email_reply inquiry=%s status=%s "
+        "final_answer_chars=%d pdf_attached=%s is_first=%s",
+        inquiry_id, obj.status, len(reply_text), bool(pdf_url), is_first_reply,
     )
     return {
         "inquiry_id": inquiry_id,
         "manufacturer": mfr_name,
         "subject": obj.subject,
         "question": obj.question,
-        "answer": obj.final_answer or "(See attached PDF.)",
+        "answer": reply or pdf_summary or "(See attached PDF.)",
         "pdf_summary": pdf_summary,
         "requester_name": obj.requester_name,
         "requester_email": obj.requester_email,
         "sender_email": sender,
         "pdf_url": pdf_url,
         "pdf_filename": pdf_filename,
-        "inbound_attachments": uploaded_atts,
+        "inbound_attachments": [
+            {"url": a["url"], "filename": a["filename"], "content_type": a["content_type"], "summary": a["summary"]}
+            for a in uploaded_atts
+        ],
     }
 
 

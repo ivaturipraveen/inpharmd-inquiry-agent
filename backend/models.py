@@ -148,8 +148,38 @@ class Inquiry(Base):
         cascade="all, delete-orphan",
         order_by="InquiryAttachment.display_order",
     )
+    email_replies = relationship(
+        "EmailReply",
+        back_populates="inquiry",
+        cascade="all, delete-orphan",
+        order_by="EmailReply.sent_at",
+    )
 
     manufacturer = relationship("ManufacturerContact", back_populates="inquiries")
+
+
+class EmailReply(Base):
+    __tablename__ = "email_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    inquiry_id = Column(
+        Integer,
+        ForeignKey("inquiries.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    direction = Column(String(10), nullable=False)  # "inbound" | "outbound"
+    sender_email = Column(String(255))
+    body = Column(Text)
+    sent_at = Column(DateTime(timezone=True), nullable=False)
+    graph_message_id = Column(String(512))  # dedup key; unique per inquiry
+
+    inquiry = relationship("Inquiry", back_populates="email_replies")
+    attachments = relationship(
+        "InquiryAttachment",
+        back_populates="reply",
+        order_by="InquiryAttachment.display_order",
+    )
 
 
 class InquiryAttachment(Base):
@@ -162,6 +192,12 @@ class InquiryAttachment(Base):
         nullable=False,
         index=True,
     )
+    reply_id = Column(
+        Integer,
+        ForeignKey("email_replies.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     url = Column(Text, nullable=False)
     filename = Column(String(512))
     content_type = Column(String(128))
@@ -170,6 +206,7 @@ class InquiryAttachment(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     inquiry = relationship("Inquiry", back_populates="inbound_attachments")
+    reply = relationship("EmailReply", back_populates="attachments")
 
 
 class User(Base):

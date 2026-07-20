@@ -54,7 +54,17 @@ export interface InquiryAttachment {
   content_type?: string | null;
   summary?: string | null;
   display_order?: number;
+  reply_id?: number | null;
   created_at?: string | null;
+}
+
+export interface EmailReply {
+  id: number;
+  direction: "inbound" | "outbound";
+  sender_email?: string | null;
+  body?: string | null;
+  sent_at: string;
+  attachments: InquiryAttachment[];
 }
 
 export interface Inquiry {
@@ -88,6 +98,7 @@ export interface Inquiry {
   // Set when forwarded from an InpharmD platform inquiry (MUE Excel grouping).
   source_inquiry_uuid?: string | null;
   inbound_attachments?: InquiryAttachment[] | null;
+  email_replies?: EmailReply[] | null;
   // Populated only in all-users list: display name or email of the creator.
   created_by?: string | null;
 }
