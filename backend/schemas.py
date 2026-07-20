@@ -66,6 +66,17 @@ class ManufacturerSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class InquiryAttachmentOut(BaseModel):
+    id: int
+    url: str
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    summary: Optional[str] = None
+    display_order: int = 0
+    created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InquiryBase(BaseModel):
     manufacturer_id: int
     subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
@@ -178,6 +189,7 @@ class InquiryOut(InquiryBase):
     pdf_url: Optional[str] = None
     pdf_filename: Optional[str] = None
     pdf_summary: Optional[str] = None
+    inbound_attachments: list[InquiryAttachmentOut] = []
     legacy_response_posted_at: Optional[datetime] = None
     excel_response_url: Optional[str] = None
     excel_response_posted_at: Optional[datetime] = None

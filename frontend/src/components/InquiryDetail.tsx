@@ -131,32 +131,52 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 <div className="detail-prose">{inquiry.final_answer}</div>
               )}
 
-              {inquiry.pdf_summary && (
-                <div className="answer-subsection">
-                  <div className="answer-sublabel">
-                    {(() => {
-                      const ext = (inquiry.pdf_filename || "").split(".").pop()?.toLowerCase();
-                      if (ext === "csv") return "CSV Summary";
-                      if (ext === "xlsx" || ext === "xls") return "Spreadsheet Summary";
-                      if (ext === "docx" || ext === "doc") return "Document Summary";
-                      return "PDF Summary";
-                    })()}
-                  </div>
-                  <div className="detail-prose">{inquiry.pdf_summary}</div>
-                </div>
-              )}
-
-              {inquiry.pdf_url && (
-                <div className="answer-pdf-link">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <path d="M14 2v6h6" />
-                  </svg>
-                  <a href={inquiry.pdf_url} target="_blank" rel="noreferrer">
-                    {inquiry.pdf_filename || "Open attachment"}
-                  </a>
-                </div>
-              )}
+              {/* Render one summary + link per inbound attachment.
+                  Falls back to legacy scalar fields for old records. */}
+              {(() => {
+                const atts = inquiry.inbound_attachments?.length
+                  ? inquiry.inbound_attachments
+                  : inquiry.pdf_url
+                  ? [{ id: 0, url: inquiry.pdf_url, filename: inquiry.pdf_filename, summary: inquiry.pdf_summary, content_type: null }]
+                  : [];
+                return atts.map((att, i) => {
+                  const stableKey = att.id > 0 ? att.id : `att-${i}`;
+                  const ext = (att.filename || "").split(".").pop()?.toLowerCase();
+                  const summaryLabel =
+                    ext === "csv" ? "CSV Summary" :
+                    ext === "xlsx" || ext === "xls" ? "Spreadsheet Summary" :
+                    ext === "docx" || ext === "doc" ? "Document Summary" :
+                    "PDF Summary";
+                  return (
+                    <div key={stableKey}>
+                      {att.summary && (
+                        <div className="answer-subsection">
+                          <div className="answer-sublabel">
+                            {summaryLabel}
+                            {atts.length > 1 && att.filename && (
+                              <span style={{ fontWeight: 400, color: "var(--muted)", marginLeft: 4 }}>
+                                — {att.filename}
+                              </span>
+                            )}
+                          </div>
+                          <div className="detail-prose">{att.summary}</div>
+                        </div>
+                      )}
+                      {att.url && (
+                        <div className="answer-pdf-link">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 2v6h6" />
+                          </svg>
+                          <a href={att.url} target="_blank" rel="noreferrer">
+                            {att.filename || "Open attachment"}
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
             </div>
           )}
 

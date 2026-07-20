@@ -64,6 +64,22 @@ def _ensure_columns():
         "ALTER TABLE inquiries ALTER COLUMN subject TYPE VARCHAR(1000)",
         # users table: handled by Base.metadata.create_all, but add columns
         # here when the table grows in future iterations.
+        # Inbound attachment rows — one per file attached to a manufacturer reply.
+        """
+CREATE TABLE IF NOT EXISTS inquiry_attachments (
+    id            SERIAL PRIMARY KEY,
+    inquiry_id    INTEGER NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
+    url           TEXT NOT NULL,
+    filename      VARCHAR(512),
+    content_type  VARCHAR(128),
+    summary       TEXT,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+""",
+        "CREATE INDEX IF NOT EXISTS ix_inquiry_attachments_inquiry_id ON inquiry_attachments (inquiry_id)",
+        # Guard for deployments where the table was created before created_at was added.
+        "ALTER TABLE inquiry_attachments ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     ]
     with engine.begin() as conn:
         for sql in statements:

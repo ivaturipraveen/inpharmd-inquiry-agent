@@ -26,9 +26,10 @@ from email.message import Message
 from typing import Optional
 
 import legacy_response_service
+import s3_service
 import summary_service
 from database import SessionLocal
-from models import Inquiry
+from models import Inquiry, InquiryAttachment
 
 log = logging.getLogger("inquiry.imap")
 
@@ -43,6 +44,24 @@ _QUOTE_MARKERS = (
     re.compile(r"^Sent from my ", re.IGNORECASE),
     re.compile(r"^\[InpharmD #\d+\]", re.IGNORECASE),
 )
+
+
+_IMAP_SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"}
+_IMAP_CONTENT_TYPE_FOR_EXT = {
+    ".pdf":  "application/pdf",
+    ".doc":  "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls":  "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".csv":  "text/csv",
+}
+# Include application/csv — a non-standard but common alternative MIME type for CSV.
+# Matches graph_service which also accepts it. Without this, CSV files sent with
+# Content-Type: application/csv (and no file extension) would be silently dropped.
+_IMAP_SUPPORTED_CONTENT_TYPES = set(_IMAP_CONTENT_TYPE_FOR_EXT.values()) | {"application/csv"}
+
+# Mirror the same cap used by graph_service so both paths behave identically.
+_MAX_ATTACHMENTS_PER_EMAIL = 20
 
 
 def is_configured() -> bool:
@@ -130,6 +149,40 @@ def _strip_quoted(text: str) -> str:
     return cleaned if cleaned else text.strip()
 
 
+def _collect_attachments(msg: email.message.Message) -> list[dict]:
+    """Extract all supported document attachments from an email Message.
+
+    Returns a list of {'name': str, 'bytes': bytes, 'content_type': str}
+    in the order they appear in the message.
+    """
+    results = []
+    if not msg.is_multipart():
+        return results
+    for part in msg.walk():
+        if len(results) >= _MAX_ATTACHMENTS_PER_EMAIL:
+            log.warning("Email has >%d supported attachments; truncating", _MAX_ATTACHMENTS_PER_EMAIL)
+            break
+        disp = str(part.get("Content-Disposition") or "")
+        if "attachment" not in disp.lower():
+            continue
+        filename = (part.get_filename() or "").replace("\x00", "").strip()[:512]
+        ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        ctype = (part.get_content_type() or "").lower()
+        if ext not in _IMAP_SUPPORTED_EXTENSIONS and not any(
+            ctype.startswith(k) for k in _IMAP_SUPPORTED_CONTENT_TYPES
+        ):
+            continue
+        try:
+            payload = part.get_payload(decode=True)
+        except Exception:
+            continue
+        if not payload:
+            continue
+        content_type = _IMAP_CONTENT_TYPE_FOR_EXT.get(ext, ctype or "application/octet-stream")
+        results.append({"name": filename or "attachment", "bytes": payload, "content_type": content_type})
+    return results
+
+
 def _process_message(db, raw_bytes: bytes) -> Optional[int]:
     """Parse one raw email; if it matches an inquiry, store the reply. Returns
     the inquiry id if matched/processed, else None."""
@@ -177,6 +230,56 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
             final = reply  # soft-fail to raw reply
     obj.final_answer = final
 
+    # Upload any document attachments and write InquiryAttachment rows.
+    attachments = _collect_attachments(msg)
+    uploaded_count = 0
+    for order, att in enumerate(attachments):
+        url = s3_service.upload_bytes(
+            att["bytes"],
+            original_name=att["name"],
+            inquiry_id=inquiry_id,
+            content_type=att["content_type"],
+        )
+        if url is None:
+            log.warning(
+                "S3 upload returned None for inquiry %s attachment %d '%s'; skipping",
+                inquiry_id, order, att["name"],
+            )
+            continue
+        uploaded_count += 1
+        att_summary = None
+        if summary_service.is_configured():
+            att_text = summary_service.extract_document_text(att["name"], att["bytes"])
+            if att_text:
+                try:
+                    att_summary = summary_service.summarize_pdf(
+                        question=obj.question,
+                        manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
+                        pdf_text=att_text,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "Attachment summary unavailable for inquiry %s attachment %d: %s",
+                        inquiry_id, order, e,
+                    )
+        log.info(
+            "Inquiry %s attachment %d '%s' (%d bytes) uploaded",
+            inquiry_id, order, att["name"], len(att["bytes"]),
+        )
+        db.add(InquiryAttachment(
+            inquiry_id=inquiry_id,
+            url=url,
+            filename=att["name"],
+            content_type=att["content_type"],
+            summary=att_summary,
+            display_order=order,
+        ))
+        # Backward-compat scalars — first successfully-uploaded attachment wins.
+        if uploaded_count == 1:
+            obj.pdf_url = url
+            obj.pdf_filename = att["name"]
+            obj.pdf_summary = att_summary
+
     log.info("Captured email reply for inquiry %s from %s", inquiry_id, sender)
     return inquiry_id
 
@@ -219,6 +322,7 @@ def poll_once() -> int:
                     matched = _process_message(db, raw_bytes)
                 except Exception as e:
                     log.exception("Failed to process message %s: %s", mid, e)
+                    db.rollback()  # discard any partial db.add() calls from this message
                     continue
                 if matched is not None:
                     db.commit()

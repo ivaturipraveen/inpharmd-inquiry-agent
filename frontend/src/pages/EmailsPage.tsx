@@ -488,6 +488,7 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
             body={replyBody ?? ""}
             direction="in"
             highlight
+            inboundAttachments={inquiry.inbound_attachments?.length ? inquiry.inbound_attachments : undefined}
             summary={inquiry.pdf_summary}
             pdfUrl={inquiry.pdf_url}
             pdfFilename={inquiry.pdf_filename}
@@ -524,6 +525,7 @@ interface MessageProps {
   summary?: string | null;
   pdfUrl?: string | null;
   pdfFilename?: string | null;
+  inboundAttachments?: import("../types").InquiryAttachment[] | null;
 }
 
 function Message(p: MessageProps) {
@@ -544,22 +546,34 @@ function Message(p: MessageProps) {
       </header>
       <div className="gm-msg-body">{p.body}</div>
 
-      {p.summary && (
-        <div className="gm-msg-section">
-          <div className="gm-msg-section-label">PDF Summary</div>
-          <div className="gm-msg-section-body">{p.summary}</div>
-        </div>
-      )}
-
-      {p.pdfUrl && (
-        <a href={p.pdfUrl} target="_blank" rel="noreferrer" className="gm-msg-pdf-link">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            <path d="M14 2v6h6" />
-          </svg>
-          <span>{p.pdfFilename || "Open attached PDF"}</span>
-        </a>
-      )}
+      {(() => {
+        const atts = p.inboundAttachments?.length
+          ? p.inboundAttachments
+          : p.pdfUrl
+          ? [{ id: 0, url: p.pdfUrl, filename: p.pdfFilename, summary: p.summary }]
+          : [];
+        return atts.map((att, i) => (
+          <div key={att.id > 0 ? att.id : `att-${i}`}>
+            {att.summary && (
+              <div className="gm-msg-section">
+                <div className="gm-msg-section-label">
+                  {atts.length > 1 && att.filename ? `Attachment Summary — ${att.filename}` : "Attachment Summary"}
+                </div>
+                <div className="gm-msg-section-body">{att.summary}</div>
+              </div>
+            )}
+            {att.url && (
+              <a href={att.url} target="_blank" rel="noreferrer" className="gm-msg-pdf-link">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                </svg>
+                <span>{att.filename || "Open attachment"}</span>
+              </a>
+            )}
+          </div>
+        ));
+      })()}
     </article>
   );
 }

@@ -1,17 +1,18 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 import call_service
 import email_service
 import legacy_response_service
 import summary_service
 from database import get_db
-from models import Inquiry, ManufacturerContact, User
+from models import Inquiry, InquiryAttachment, ManufacturerContact, User
 from routers.auth import get_current_user
 from schemas import (
     BulkInquiryCreate,
@@ -27,6 +28,8 @@ from schemas import (
 class TestCallPayload(BaseModel):
     phone_number: str = Field(..., min_length=7, description="Number to dial in E.164 format, e.g. +17705551234")
 
+log = logging.getLogger("inquiry.inquiries")
+
 router = APIRouter(prefix="/api/inquiries", tags=["inquiries"])
 
 
@@ -41,7 +44,10 @@ def _get_or_404(
     (returns 404, not 403, so we don't leak existence to other users)."""
     q = (
         db.query(Inquiry)
-        .options(joinedload(Inquiry.manufacturer))
+        .options(
+            joinedload(Inquiry.manufacturer),
+            joinedload(Inquiry.inbound_attachments),
+        )
         .filter(Inquiry.id == inquiry_id)
     )
     if current_user is not None:
@@ -60,7 +66,10 @@ def list_inquiries(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    q = db.query(Inquiry).options(joinedload(Inquiry.manufacturer))
+    q = db.query(Inquiry).options(
+        joinedload(Inquiry.manufacturer),
+        selectinload(Inquiry.inbound_attachments),
+    )
     if not all_users:
         q = q.filter(Inquiry.user_id == current_user.id)
     if status:
@@ -698,10 +707,13 @@ def reprocess_pdf(
     current_user: User = Depends(get_current_user),
 ):
     """Backfill: re-search the InpharmD mailbox for the original reply that
-    matches this inquiry's subject tag, pull the first PDF attachment, upload
-    + summarize it, and patch the inquiry. Use this if the email was already
-    processed but the PDF capture failed (e.g. earlier bug, S3 misconfig)."""
-    import os, httpx, base64
+    matches this inquiry's subject tag, pull all supported document attachments,
+    upload + summarize each one, and replace the stored attachment rows.
+
+    If no attachments can be uploaded (e.g. S3 outage), the operation is fully
+    rolled back — original attachment rows and scalar fields are preserved."""
+    import os
+    import httpx
     import graph_service
     import s3_service
     import summary_service
@@ -716,9 +728,6 @@ def reprocess_pdf(
     headers = {"Authorization": f"Bearer {token}"}
     tag = f"[InpharmD #{inquiry_id}]"
 
-    # Find any message whose subject contains the tag. Don't filter by isRead;
-    # we want messages we've already marked read too. Use params= so httpx
-    # URL-encodes the search value (# is a URL fragment separator).
     search_url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages"
     with httpx.Client(timeout=20) as client:
         r = client.get(
@@ -731,32 +740,96 @@ def reprocess_pdf(
             },
         )
         if r.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Graph search failed: {r.status_code} {r.text[:200]}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Graph search failed: {r.status_code} {r.text[:200]}",
+            )
         msgs = r.json().get("value", [])
 
     target = next((m for m in msgs if m.get("hasAttachments")), None)
     if not target:
-        raise HTTPException(status_code=404, detail=f"No message with attachments found for {tag}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No message with attachments found for {tag}",
+        )
 
-    pdf = graph_service._fetch_pdf_attachment(token, mailbox, target["id"])
-    if not pdf:
-        raise HTTPException(status_code=404, detail="Message has attachments but no PDF")
+    docs = graph_service._fetch_all_document_attachments(token, mailbox, target["id"])
+    if not docs:
+        raise HTTPException(
+            status_code=404,
+            detail="Message has attachments but none are a supported document type (PDF, DOCX, XLSX, CSV, …)",
+        )
 
-    obj.pdf_filename = pdf["name"]
-    obj.pdf_url = s3_service.upload_pdf(
-        pdf["bytes"], original_name=pdf["name"], inquiry_id=inquiry_id
-    )
-    if summary_service.is_configured():
-        text = summary_service.extract_pdf_text(pdf["bytes"])
-        if text:
-            try:
-                obj.pdf_summary = summary_service.summarize_pdf(
-                    question=obj.question,
-                    manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
-                    pdf_text=text,
-                )
-            except Exception:
-                pass
+    mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
+
+    # Stage the delete inside the transaction — only committed if at least one
+    # upload succeeds. If everything fails, we never call db.commit() and the
+    # get_db finally-close rolls the delete back, leaving the original rows intact.
+    db.query(InquiryAttachment).filter(InquiryAttachment.inquiry_id == inquiry_id).delete()
+
+    # Clear backward-compat scalars now; they'll be set from the first
+    # successfully-uploaded attachment. If all uploads fail, the transaction
+    # rolls back and these assignments are discarded too.
+    obj.pdf_url = None
+    obj.pdf_filename = None
+    obj.pdf_summary = None
+
+    uploaded_count = 0
+    for order, doc in enumerate(docs):
+        url = s3_service.upload_bytes(
+            doc["bytes"],
+            original_name=doc["name"],
+            inquiry_id=inquiry_id,
+            content_type=doc["content_type"],
+        )
+        if url is None:
+            log.warning(
+                "S3 upload returned None for inquiry %s attachment %d '%s'; skipping",
+                inquiry_id, order, doc["name"],
+            )
+            continue
+        uploaded_count += 1
+        att_summary = None
+        if summary_service.is_configured():
+            text = summary_service.extract_document_text(doc["name"], doc["bytes"])
+            if text:
+                try:
+                    att_summary = summary_service.summarize_pdf(
+                        question=obj.question,
+                        manufacturer=mfr_name,
+                        pdf_text=text,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "Attachment summary unavailable for inquiry %s attachment %d: %s",
+                        inquiry_id, order, e,
+                    )
+        log.info(
+            "Inquiry %s attachment %d '%s' (%d bytes) uploaded",
+            inquiry_id, order, doc["name"], len(doc["bytes"]),
+        )
+        db.add(InquiryAttachment(
+            inquiry_id=inquiry_id,
+            url=url,
+            filename=doc["name"],
+            content_type=doc["content_type"],
+            summary=att_summary,
+            display_order=order,
+        ))
+        # Backward-compat scalars point to the first successfully-uploaded
+        # attachment (not necessarily order==0 if earlier uploads failed).
+        if uploaded_count == 1:
+            obj.pdf_url = url
+            obj.pdf_filename = doc["name"]
+            obj.pdf_summary = att_summary
+
+    if uploaded_count == 0:
+        # Nothing uploaded — do not commit. The transaction rolls back on
+        # db.close(), restoring the original InquiryAttachment rows exactly.
+        raise HTTPException(
+            status_code=503,
+            detail="All attachment uploads failed; original attachments preserved. Check S3/R2 configuration.",
+        )
 
     db.commit()
-    return _get_or_404(db, inquiry_id, current_user)
+    return _get_or_404(db, obj.id, current_user)

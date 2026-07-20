@@ -142,7 +142,34 @@ class Inquiry(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    inbound_attachments = relationship(
+        "InquiryAttachment",
+        back_populates="inquiry",
+        cascade="all, delete-orphan",
+        order_by="InquiryAttachment.display_order",
+    )
+
     manufacturer = relationship("ManufacturerContact", back_populates="inquiries")
+
+
+class InquiryAttachment(Base):
+    __tablename__ = "inquiry_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    inquiry_id = Column(
+        Integer,
+        ForeignKey("inquiries.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    url = Column(Text, nullable=False)
+    filename = Column(String(512))
+    content_type = Column(String(128))
+    summary = Column(Text)
+    display_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    inquiry = relationship("Inquiry", back_populates="inbound_attachments")
 
 
 class User(Base):

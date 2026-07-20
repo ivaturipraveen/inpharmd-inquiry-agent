@@ -25,6 +25,12 @@ _MAX_TEXT = 2900
 # Slack hard-limits plain_text inside a button to 75 chars — overshooting
 # returns 400 invalid_blocks for the whole message.
 _MAX_BUTTON_LABEL = 70
+# Slack allows max 25 elements in an actions block and max 50 blocks per
+# message. Cap attachment rendering well below both limits. With 5 fixed
+# header/body blocks + up to 10 summary blocks + 1 actions block (1 "View"
+# button + up to 10 attachment buttons), we stay at most 17 blocks / 11
+# action elements — comfortably within all limits.
+_MAX_ATT_IN_SLACK = 10
 
 
 def is_configured() -> bool:
@@ -72,6 +78,7 @@ def notify_reply(
     pdf_url: Optional[str] = None,
     pdf_filename: Optional[str] = None,
     pdf_summary: Optional[str] = None,
+    inbound_attachments: Optional[list] = None,
 ) -> bool:
     """Post a manufacturer-response card to Slack. Returns True if delivered.
 
@@ -122,19 +129,33 @@ def notify_reply(
         },
     ]
 
-    # PDF summary, when distinct from the reply text, goes in its own block so
-    # readers can see what the attachment actually says without opening it.
-    if pdf_summary and pdf_summary.strip() and pdf_summary.strip() != (answer or "").strip():
-        blocks.append({
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*PDF summary*\n{_truncate(pdf_summary)}",
-            },
-        })
+    # Build effective attachment list: prefer inbound_attachments, fall back to legacy scalars.
+    if inbound_attachments:
+        _atts_all = inbound_attachments
+    elif pdf_url:
+        _atts_all = [{"url": pdf_url, "filename": pdf_filename, "summary": pdf_summary}]
+    else:
+        _atts_all = []
+
+    # Cap to stay within Slack's 50-block and 25-actions-element limits.
+    _overflow = len(_atts_all) - _MAX_ATT_IN_SLACK
+    _atts = _atts_all[:_MAX_ATT_IN_SLACK]
+
+    # One summary block per attachment that has one (and whose summary differs from the answer body).
+    for _att in _atts:
+        _att_summary = (_att.get("summary") or "").strip()
+        if _att_summary and _att_summary != (answer or "").strip():
+            _att_label = _att.get("filename") or "Attachment"
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Attachment summary — {_att_label}*\n{_truncate(_att_summary)}",
+                },
+            })
 
     # Action button row: UI link (transcript for calls / thread for emails)
-    # plus a PDF button when an attachment was captured.
+    # plus one button per attachment when files were captured.
     action_elements = []
     if inquiry_url:
         action_elements.append({
@@ -147,29 +168,34 @@ def notify_reply(
             "url": inquiry_url,
             "style": "primary",
         })
-    if pdf_url:
-        raw_label = f"\U0001F4CE {pdf_filename or 'Download PDF'}"
-        # Slack rejects the entire message with `invalid_blocks` when a
-        # plain_text button label exceeds 75 chars. Truncate from the FRONT
-        # of the filename (keeping the extension at the tail) so the user
-        # can still tell what kind of file it is.
+    for _att in _atts:
+        _att_url = _att.get("url")
+        if not _att_url:
+            continue
+        _att_name = _att.get("filename") or "Download attachment"
+        raw_label = f"\U0001F4CE {_att_name}"
         if len(raw_label) > _MAX_BUTTON_LABEL:
-            head, _, ext = (pdf_filename or "").rpartition(".")
+            head, _, ext = (_att_name).rpartition(".")
             ext_tail = f".{ext}" if ext else ""
-            keep = _MAX_BUTTON_LABEL - len(ext_tail) - 4  # 4 = "📎 …"
+            keep = _MAX_BUTTON_LABEL - len(ext_tail) - 4
             short_name = (head or "").strip("_")[:keep].rstrip("_-. ") + "…"
             raw_label = f"\U0001F4CE {short_name}{ext_tail}"
         action_elements.append({
             "type": "button",
-            "text": {
-                "type": "plain_text",
-                "text": raw_label,
-                "emoji": True,
-            },
-            "url": pdf_url,
+            "text": {"type": "plain_text", "text": raw_label, "emoji": True},
+            "url": _att_url,
         })
     if action_elements:
         blocks.append({"type": "actions", "elements": action_elements})
+
+    if _overflow > 0:
+        blocks.append({
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": f"_+{_overflow} more attachment{'s' if _overflow != 1 else ''} — open the thread to view all_",
+            }],
+        })
 
     if sender_email:
         blocks.append(

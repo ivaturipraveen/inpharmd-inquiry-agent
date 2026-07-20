@@ -47,6 +47,16 @@ export interface ManufacturerSummary {
   typical_response_sla?: string | null;
 }
 
+export interface InquiryAttachment {
+  id: number;
+  url: string;
+  filename?: string | null;
+  content_type?: string | null;
+  summary?: string | null;
+  display_order?: number;
+  created_at?: string | null;
+}
+
 export interface Inquiry {
   id: number;
   manufacturer_id: number;
@@ -77,6 +87,7 @@ export interface Inquiry {
   manufacturer?: ManufacturerSummary | null;
   // Set when forwarded from an InpharmD platform inquiry (MUE Excel grouping).
   source_inquiry_uuid?: string | null;
+  inbound_attachments?: InquiryAttachment[] | null;
   // Populated only in all-users list: display name or email of the creator.
   created_by?: string | null;
 }

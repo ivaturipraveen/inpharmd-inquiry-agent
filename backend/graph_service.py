@@ -16,6 +16,7 @@ Optional env vars:
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -28,7 +29,7 @@ import legacy_response_service
 import s3_service
 import summary_service
 from database import SessionLocal
-from models import Inquiry
+from models import Inquiry, InquiryAttachment
 
 log = logging.getLogger("inquiry.graph")
 
@@ -195,7 +196,6 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
 
     inquiry_id = int(m.group(1))
 
-    from models import Inquiry
     obj = db.get(Inquiry, inquiry_id)
     if not obj:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
@@ -205,6 +205,12 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         _mark_read(token, mailbox, msg["id"])
         return None
     if obj.email_response:
+        if msg.get("hasAttachments") and not obj.pdf_url:
+            log.warning(
+                "Inquiry %s has email_response but no pdf_url and message has attachments — "
+                "use POST /api/inquiries/%s/reprocess-pdf to recover",
+                inquiry_id, inquiry_id,
+            )
         _mark_read(token, mailbox, msg["id"])
         return None
 
@@ -218,34 +224,68 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         inquiry_id, sender, mfr_name, len(body or ""), len(reply or ""),
     )
 
-    # ---- Document attachment (optional: PDF / DOCX / DOC / XLSX / XLS / CSV) ----
-    pdf_url: Optional[str] = None
-    pdf_filename: Optional[str] = None
-    pdf_summary: Optional[str] = None
+    # ---- Document attachments (one or more) ----
+    uploaded_atts: list[dict] = []
 
     if msg.get("hasAttachments"):
-        doc = _fetch_document_attachment(token, mailbox, msg["id"])
-        if doc:
-            log.info("Inquiry %s reply has attachment '%s' (%d bytes)",
-                     inquiry_id, doc["name"], len(doc["bytes"]))
-            pdf_filename = doc["name"]
-            pdf_url = s3_service.upload_bytes(
+        # List metadata first (no bytes), then download-one → process-one so only
+        # one attachment's bytes are in memory at a time.
+        att_metadata = _list_document_attachment_metadata(token, mailbox, msg["id"])
+        for order, meta in enumerate(att_metadata):
+            doc = _download_attachment(token, mailbox, msg["id"], meta["id"], meta["name"])
+            if not doc:
+                continue
+            url = s3_service.upload_bytes(
                 doc["bytes"],
                 original_name=doc["name"],
                 inquiry_id=inquiry_id,
                 content_type=doc["content_type"],
             )
+            if url is None:
+                log.warning(
+                    "S3 upload returned None for inquiry %s attachment %d '%s'; skipping",
+                    inquiry_id, order, doc["name"],
+                )
+                continue
+            att_summary = None
             if summary_service.is_configured():
                 doc_text = summary_service.extract_document_text(doc["name"], doc["bytes"])
                 if doc_text:
                     try:
-                        pdf_summary = summary_service.summarize_pdf(
+                        att_summary = summary_service.summarize_pdf(
                             question=obj.question,
                             manufacturer=mfr_name,
                             pdf_text=doc_text,
                         )
                     except Exception as e:
-                        log.warning("Attachment summary unavailable for inquiry %s: %s", inquiry_id, e)
+                        log.warning(
+                            "Attachment summary unavailable for inquiry %s attachment %d: %s",
+                            inquiry_id, order, e,
+                        )
+            db.add(InquiryAttachment(
+                inquiry_id=inquiry_id,
+                url=url,
+                filename=doc["name"],
+                content_type=doc["content_type"],
+                summary=att_summary,
+                display_order=order,
+            ))
+            uploaded_atts.append({
+                "url": url,
+                "filename": doc["name"],
+                "content_type": doc["content_type"],
+                "summary": att_summary,
+            })
+            log.info(
+                "Inquiry %s attachment %d '%s' (%d bytes) uploaded",
+                inquiry_id, order, doc["name"], len(doc["bytes"]),
+            )
+
+    # Backward-compat scalars — first attachment's values kept on the inquiry.
+    first = uploaded_atts[0] if uploaded_atts else {}
+    pdf_url: Optional[str] = first.get("url")
+    pdf_filename: Optional[str] = first.get("filename")
+    pdf_summary: Optional[str] = first.get("summary")
 
     # Keep the rep's actual reply text as the primary answer — even if it's
     # short. The PDF summary is supplemental context, not a replacement.
@@ -287,6 +327,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         "sender_email": sender,
         "pdf_url": pdf_url,
         "pdf_filename": pdf_filename,
+        "inbound_attachments": uploaded_atts,
     }
 
 
@@ -302,6 +343,10 @@ _SUPPORTED_ATTACHMENT_TYPES = {
 }
 _SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"}
 
+# Safety cap: never process more than this many attachments from a single email.
+# Prevents runaway S3 + LLM cost from unusual messages and caps peak memory usage.
+_MAX_ATTACHMENTS_PER_EMAIL = 20
+
 _CONTENT_TYPE_FOR_EXT = {
     ".pdf":  "application/pdf",
     ".doc":  "application/msword",
@@ -312,11 +357,14 @@ _CONTENT_TYPE_FOR_EXT = {
 }
 
 
-def _fetch_document_attachment(token: str, mailbox: str, message_id: str) -> Optional[dict]:
-    """Return the first supported document attachment from the message (if any).
+def _list_document_attachment_metadata(
+    token: str, mailbox: str, message_id: str
+) -> list[dict]:
+    """Return metadata (id, name, content_type) for all supported attachments — no bytes.
 
-    Supported formats: PDF, DOCX, DOC, XLSX, XLS, CSV.
-    Returns a dict {'name': str, 'bytes': bytes, 'content_type': str} or None.
+    Capped at _MAX_ATTACHMENTS_PER_EMAIL entries.
+    Callers can then download each attachment individually so only one
+    attachment's bytes are in memory at a time.
     """
     url = (
         f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments"
@@ -330,23 +378,36 @@ def _fetch_document_attachment(token: str, mailbox: str, message_id: str) -> Opt
             items = r.json().get("value", [])
     except Exception as e:
         log.warning("Failed to list attachments for message %s: %s", message_id, e)
-        return None
+        return []
 
-    chosen = None
+    results = []
     for a in items:
+        if len(results) >= _MAX_ATTACHMENTS_PER_EMAIL:
+            log.warning(
+                "Message %s has >%d supported attachments; truncating at %d",
+                message_id, _MAX_ATTACHMENTS_PER_EMAIL, _MAX_ATTACHMENTS_PER_EMAIL,
+            )
+            break
         if a.get("@odata.type") != "#microsoft.graph.fileAttachment":
             continue
         name = (a.get("name") or "").lower()
         ctype = (a.get("contentType") or "").lower()
         ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
-        if ext in _SUPPORTED_EXTENSIONS or any(ctype.startswith(k) for k in _SUPPORTED_ATTACHMENT_TYPES):
-            chosen = a
-            break
-    if not chosen:
-        return None
+        if ext in _SUPPORTED_EXTENSIONS or any(
+            ctype.startswith(k) for k in _SUPPORTED_ATTACHMENT_TYPES
+        ):
+            results.append({"id": a["id"], "name": a.get("name", ""), "content_type": ctype})
+    return results
 
-    att_id = chosen["id"]
+
+def _download_attachment(
+    token: str, mailbox: str, message_id: str, att_id: str, original_name: str
+) -> Optional[dict]:
+    """Download a single attachment by ID.
+    Returns {'name': str, 'bytes': bytes, 'content_type': str} or None.
+    """
     full_url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments/{att_id}"
+    headers = {"Authorization": f"Bearer {token}"}
     try:
         with httpx.Client(timeout=60) as client:
             r = client.get(full_url, headers=headers)
@@ -356,7 +417,6 @@ def _fetch_document_attachment(token: str, mailbox: str, message_id: str) -> Opt
         log.warning("Failed to fetch attachment %s: %s", att_id, e)
         return None
 
-    import base64
     try:
         raw = base64.b64decode(data.get("contentBytes", ""))
     except Exception as e:
@@ -365,10 +425,28 @@ def _fetch_document_attachment(token: str, mailbox: str, message_id: str) -> Opt
     if not raw:
         return None
 
-    original_name = data.get("name") or chosen.get("name") or "attachment"
-    ext = "." + original_name.rsplit(".", 1)[-1].lower() if "." in original_name else ""
+    name = (data.get("name") or original_name or "attachment").replace("\x00", "").strip()[:512] or "attachment"
+    ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     content_type = _CONTENT_TYPE_FOR_EXT.get(ext, "application/octet-stream")
-    return {"name": original_name, "bytes": raw, "content_type": content_type}
+    return {"name": name, "bytes": raw, "content_type": content_type}
+
+
+def _fetch_all_document_attachments(
+    token: str, mailbox: str, message_id: str
+) -> list[dict]:
+    """Return all supported document attachments with bytes downloaded.
+
+    Used by the reprocess_pdf endpoint where all bytes are needed upfront.
+    Background pollers should use _list_document_attachment_metadata +
+    _download_attachment to process one at a time and limit peak memory.
+    """
+    metadata = _list_document_attachment_metadata(token, mailbox, message_id)
+    results = []
+    for meta in metadata:
+        doc = _download_attachment(token, mailbox, message_id, meta["id"], meta["name"])
+        if doc:
+            results.append(doc)
+    return results
 
 
 _MARK_READ_DISABLED = False  # flips to True on first 403 to stop hammering Graph
@@ -445,6 +523,7 @@ def poll_once() -> int:
                 changed = _process_message(db, token, mailbox, msg)
             except Exception as e:
                 log.exception("Failed to process Graph message %s: %s", msg.get("id"), e)
+                db.rollback()  # discard any partial db.add() calls from this message
                 continue
             if changed:
                 db.commit()
