@@ -48,6 +48,13 @@ interface DetectedExtraction {
   rows: DetectedRow[];
 }
 
+interface AttachmentExtractionState {
+  att: Attachment;
+  result: DetectedExtraction | null;
+  extracting: boolean;
+  error: string | null;
+}
+
 const CTX_KEY = "inpharmd:contact-manufacturer:ctx";
 
 const readQuery = (): URLSearchParams => {
@@ -66,17 +73,27 @@ const readContext = (): ForwardContext | null => {
     /* ignore */
   }
   // Fall back to URL params (page was refreshed — sessionStorage is gone).
-  // att_url + att_name are written by startContactManufacturerFlow so the
-  // extractable attachment survives a refresh without needing sessionStorage.
   const params = readQuery();
   const uuid = params.get("uuid") ?? "";
   const title = params.get("title") ?? "";
   if (!uuid && !title) return null;
-  const attUrl = params.get("att_url");
-  const attName = params.get("att_name");
-  const attachments: Attachment[] = attUrl && attName
-    ? [{ id: 0, file_name: attName, doc_url: attUrl }]
-    : [];
+
+  // Reconstruct attachments from indexed URL params (new format: att_url_0, att_url_1, …)
+  // with fallback to legacy single-attachment params (att_url, att_name).
+  const attachments: Attachment[] = [];
+  let i = 0;
+  while (true) {
+    const url = params.get(`att_url_${i}`);
+    const name = params.get(`att_name_${i}`);
+    if (!url || !name) break;
+    attachments.push({ id: i, file_name: name, doc_url: url });
+    i++;
+  }
+  if (attachments.length === 0) {
+    const attUrl = params.get("att_url");
+    const attName = params.get("att_name");
+    if (attUrl && attName) attachments.push({ id: 0, file_name: attName, doc_url: attUrl });
+  }
   return { uuid, title, attachments };
 };
 
@@ -84,8 +101,7 @@ const goTo = (hash: string) => {
   window.location.hash = hash;
 };
 
-// Accept both .xlsx and .csv — backend extract handles both formats (sniffs
-// magic bytes, then dispatches to openpyxl or csv module).
+// Accept both .xlsx and .csv — backend extract handles both formats.
 const isExtractable = (a: Attachment): boolean =>
   /\.(xlsx|csv)(\?|$)/i.test(a.file_name) ||
   /\.(xlsx|csv)(\?|$)/i.test(a.doc_url);
@@ -123,6 +139,9 @@ interface ReviewCard {
   sentInquiryId: number | null;
   sending: boolean;
   error: string | null;
+  // Which source file this row belongs to — needed for per-file writeback.
+  excelS3Url: string | null;
+  excelSheetName: string | null;
 }
 
 const COUNTRY_CODES: { code: string; label: string }[] = [
@@ -135,6 +154,9 @@ const COUNTRY_CODES: { code: string; label: string }[] = [
 
 const digitsOnly = (s: string) => s.replace(/\D+/g, "");
 
+// selectedKeys format: `${attIdx}:${rowIndex}` — namespaces row indices across files.
+const selKey = (attIdx: number, rowIndex: number) => `${attIdx}:${rowIndex}`;
+
 export default function ContactManufacturerPage() {
   const [ctx] = useState<ForwardContext | null>(readContext);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
@@ -143,22 +165,21 @@ export default function ContactManufacturerPage() {
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // "Add manufacturer" modal — stores the raw name from the unmatched row to pre-fill the form
+  // "Add manufacturer" modal
   const [addingMfrName, setAddingMfrName] = useState<string | null>(null);
 
   // Multi-dispatch state
   const [mode, setMode] = useState<Mode>("single");
-  const [extraction, setExtraction] = useState<DetectedExtraction | null>(null);
-  const [extracting, setExtracting] = useState(false);
+  const [attachmentExtractions, setAttachmentExtractions] = useState<AttachmentExtractionState[]>([]);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [manualOverride, setManualOverride] = useState(false);
-  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
+  // selectedKeys: `${attIdx}:${rowIndex}` for every checked row across all files.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState("");
   const [question, setQuestion] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
   const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
-  // Test-call inputs
   const [testCountryCode, setTestCountryCode] = useState("+1");
   const [testLocal, setTestLocal] = useState("");
   const [bulkResult, setBulkResult] = useState<{
@@ -169,15 +190,34 @@ export default function ContactManufacturerPage() {
     test_call_inquiry_id?: number | null;
     test_call_to?: string | null;
   } | null>(null);
-  const [emailReview, setEmailReview] = useState<ReviewCard[] | null>(null);
   const [sendingAll, setSendingAll] = useState(false);
 
-  // Refetch the manufacturers list whenever this page is shown — the
-  // initial mount handles the first visit; the visibility listener
-  // catches the case where the user edits an email/phone on the
-  // Manufacturers page (or in another tab) and returns here. Without
-  // this the cached mfrById lookup serves stale contact info even
-  // though the extraction itself was just rerun.
+  // emailReview is persisted to sessionStorage so the green "sent" status
+  // survives a page refresh. Keyed by inquiry UUID so it doesn't bleed
+  // across different inquiries.
+  const emailReviewKey = ctx?.uuid ? `inpharmd:email-review:${ctx.uuid}` : null;
+  const [emailReview, setEmailReview] = useState<ReviewCard[] | null>(() => {
+    if (!ctx?.uuid) return null;
+    try {
+      const raw = sessionStorage.getItem(`inpharmd:email-review:${ctx.uuid}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as ReviewCard[];
+        // A refresh means no HTTP requests are in flight — clear sending flag.
+        return parsed.map((c) => ({ ...c, sending: false }));
+      }
+    } catch { /* ignore */ }
+    return null;
+  });
+
+  useEffect(() => {
+    if (!emailReviewKey) return;
+    if (emailReview === null) {
+      sessionStorage.removeItem(emailReviewKey);
+    } else {
+      sessionStorage.setItem(emailReviewKey, JSON.stringify(emailReview));
+    }
+  }, [emailReview, emailReviewKey]);
+
   const reloadManufacturers = useCallback(() => {
     api.manufacturers
       .list()
@@ -214,11 +254,12 @@ export default function ContactManufacturerPage() {
     return () => clearTimeout(t);
   }, [banner]);
 
-  const extractableAttachment = useMemo(() => {
-    return (ctx?.attachments ?? []).find(isExtractable);
-  }, [ctx]);
+  // All attachments that can be processed for manufacturer extraction.
+  const extractableAttachments = useMemo(
+    () => (ctx?.attachments ?? []).filter(isExtractable),
+    [ctx],
+  );
 
-  // Quick lookup for matched-manufacturer details (email/phone/SLA).
   const mfrById = useMemo(() => {
     const m: Record<number, ManufacturerContact> = {};
     for (const x of manufacturers) m[x.id] = x;
@@ -244,87 +285,106 @@ export default function ContactManufacturerPage() {
   const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
     await api.manufacturers.create(data);
     setAddingMfrName(null);
-    // Reload manufacturers list so every part of the app sees the new entry.
     reloadManufacturers();
-    // Re-run extraction so the newly added manufacturer gets matched in the list.
-    setExtraction(null);
-    setSelectedRows(new Set());
+    // Re-run extraction so the newly added manufacturer appears matched.
+    setAttachmentExtractions([]);
+    setSelectedKeys(new Set());
   }, [reloadManufacturers]);
 
-  const runExtraction = useCallback(async () => {
-    if (!extractableAttachment) return;
-    setExtracting(true);
+  const runExtractions = useCallback(async () => {
+    if (extractableAttachments.length === 0) return;
     setExtractError(null);
-    try {
-      // Re-pull manufacturers in parallel with the extract so the
-      // email/phone/hours displayed for each matched row reflect
-      // edits made on the Manufacturers page since this view loaded.
-      const [result] = await Promise.all([
-        api.externalInquiries.extractManufacturers(
-          extractableAttachment.doc_url,
-          ctx?.uuid,
-        ),
-        api.manufacturers.list().then(setManufacturers).catch(() => {
-          /* extract is the primary signal; ignore mfr-refetch failures here */
-        }),
-      ]);
-      setExtraction(result);
-      // Pre-select every row that has a confident match (exact + partial).
-      const pre = new Set<number>();
-      for (const r of result.rows) {
-        if (r.matched_id && (r.confidence === "exact" || r.confidence === "partial")) {
-          pre.add(r.row_index);
+    // Initialize per-file loading state.
+    setAttachmentExtractions(
+      extractableAttachments.map((att) => ({ att, result: null, extracting: true, error: null })),
+    );
+    setMode("multi");
+
+    // Run all files in parallel; each updates its own slot as it completes.
+    await Promise.all(
+      extractableAttachments.map(async (att, attIdx) => {
+        try {
+          const [result] = await Promise.all([
+            api.externalInquiries.extractManufacturers(att.doc_url, ctx?.uuid),
+            api.manufacturers.list().then(setManufacturers).catch(() => {}),
+          ]);
+          setAttachmentExtractions((prev) =>
+            prev.map((s, i) => (i === attIdx ? { ...s, result, extracting: false } : s)),
+          );
+          // Pre-select exact + partial matches from this file.
+          setSelectedKeys((prev) => {
+            const next = new Set(prev);
+            for (const r of result.rows) {
+              if (r.matched_id && (r.confidence === "exact" || r.confidence === "partial")) {
+                next.add(selKey(attIdx, r.row_index));
+              }
+            }
+            return next;
+          });
+        } catch (e: any) {
+          setAttachmentExtractions((prev) =>
+            prev.map((s, i) =>
+              i === attIdx
+                ? { ...s, extracting: false, error: e?.message ?? "Could not read manufacturers from the spreadsheet." }
+                : s,
+            ),
+          );
         }
-      }
-      setSelectedRows(pre);
-      setMode("multi");
-    } catch (e: any) {
-      setExtractError(
-        e?.message ?? "Could not read manufacturers from the spreadsheet.",
-      );
-    } finally {
-      setExtracting(false);
-    }
-  }, [extractableAttachment, ctx]);
+      }),
+    );
+  }, [extractableAttachments, ctx]);
 
-  // Auto-detect on mount if the inquiry has an extractable attachment. No
-  // button — the user lands on a populated checklist instead of an empty form.
-  //
-  // IMPORTANT: gate on `extractError` too. Without that, a failed extract
-  // (e.g. backend 502) would: finally{setExtracting(false)} → effect re-runs
-  // because `extracting` flipped → tries again → hammers the backend in an
-  // infinite tight loop until the tab is closed. With extractError in the
-  // guard, the user sees the error and can manually retry (which clears
-  // extractError at the top of runExtraction).
+  // Auto-run on mount when extractable attachments are present. Gated on
+  // extractError to avoid a retry loop on persistent backend errors.
   useEffect(() => {
-    if (!extractableAttachment || extraction || extracting || extractError || manualOverride)
-      return;
-    runExtraction();
-  }, [extractableAttachment, extraction, extracting, extractError, manualOverride, runExtraction]);
+    const anyExtracting = attachmentExtractions.some((s) => s.extracting);
+    const anyDone = attachmentExtractions.some((s) => s.result !== null);
+    if (
+      extractableAttachments.length === 0 ||
+      anyExtracting ||
+      anyDone ||
+      extractError ||
+      manualOverride ||
+      emailReview !== null  // already in email-review — don't re-run
+    ) return;
+    runExtractions();
+  }, [extractableAttachments, attachmentExtractions, extractError, manualOverride, emailReview, runExtractions]);
 
-  const toggleRow = (rowIndex: number) => {
-    setSelectedRows((prev) => {
+  const toggleRow = (key: string) => {
+    setSelectedKeys((prev) => {
       const next = new Set(prev);
-      if (next.has(rowIndex)) next.delete(rowIndex);
-      else next.add(rowIndex);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
   const selectAll = () => {
-    if (!extraction) return;
-    const all = new Set(
-      extraction.rows.filter((r) => r.matched_id).map((r) => r.row_index),
-    );
-    setSelectedRows(all);
+    const next = new Set<string>();
+    attachmentExtractions.forEach((s, attIdx) => {
+      if (!s.result) return;
+      s.result.rows.filter((r) => r.matched_id).forEach((r) => {
+        next.add(selKey(attIdx, r.row_index));
+      });
+    });
+    setSelectedKeys(next);
   };
 
-  const selectNone = () => setSelectedRows(new Set());
+  const selectNone = () => setSelectedKeys(new Set());
+
+  const totalMatched = useMemo(
+    () =>
+      attachmentExtractions.reduce(
+        (sum, s) => sum + (s.result?.matched ?? 0),
+        0,
+      ),
+    [attachmentExtractions],
+  );
 
   const sendOne = async (card: ReviewCard, cardIndex: number) => {
     if (!ctx) return;
     setEmailReview((prev) =>
-      prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: true, error: null } : c) : prev
+      prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: true, error: null } : c) : prev,
     );
     try {
       const result = await api.inquiries.bulkCreate({
@@ -338,26 +398,26 @@ export default function ContactManufacturerPage() {
         question: card.question,
         fallback_after_hours: fallbackHours,
         source_inquiry_uuid: ctx.uuid,
-        source_excel_url: extraction?.excel_s3_url ?? extractableAttachment?.doc_url ?? null,
-        source_excel_sheet: extraction?.sheet_name ?? null,
+        source_excel_url: card.excelS3Url,
+        source_excel_sheet: card.excelSheetName,
         dispatch_channel: "none",
       });
       const inquiry = result.created[0];
       if (!inquiry) throw new Error(result.failed[0]?.error ?? "Failed to create inquiry");
       await api.inquiries.sendEmail(inquiry.id);
       setEmailReview((prev) =>
-        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sentInquiryId: inquiry.id, sending: false } : c) : prev
+        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sentInquiryId: inquiry.id, sending: false } : c) : prev,
       );
     } catch (e: any) {
       setEmailReview((prev) =>
-        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: false, error: e?.message ?? "Send failed" } : c) : prev
+        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: false, error: e?.message ?? "Send failed" } : c) : prev,
       );
     }
   };
 
   const handleEnterEmailReview = () => {
-    if (!extraction || !ctx) return;
-    if (selectedRows.size === 0) {
+    if (attachmentExtractions.length === 0 || !ctx) return;
+    if (selectedKeys.size === 0) {
       setExtractError("Pick at least one manufacturer.");
       return;
     }
@@ -369,29 +429,35 @@ export default function ContactManufacturerPage() {
       setExtractError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
       return;
     }
-    const cards: ReviewCard[] = extraction.rows
-      .filter((r) => {
-        if (!selectedRows.has(r.row_index) || r.matched_id == null) return false;
-        const m = mfrById[r.matched_id];
-        if (m) return !!(m.official_mi_email || m.team_verified_email);
-        return true;
-      })
-      .map((r) => {
-        const mfr = mfrById[r.matched_id as number];
-        return {
-          rowIndex: r.row_index,
-          manufacturerId: r.matched_id as number,
-          manufacturerName: r.matched_name ?? "",
-          toEmail: mfr?.official_mi_email || mfr?.team_verified_email || "",
-          subject: subject.trim(),
-          question: question.trim(),
-          medicationName: r.medication_name || null,
-          piStorageData: r.pi_storage || null,
-          sentInquiryId: null,
-          sending: false,
-          error: null,
-        };
-      });
+    const cards: ReviewCard[] = [];
+    attachmentExtractions.forEach((s, attIdx) => {
+      if (!s.result) return;
+      s.result.rows
+        .filter((r) => {
+          if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
+          const m = mfrById[r.matched_id];
+          if (m) return !!(m.official_mi_email || m.team_verified_email);
+          return true;
+        })
+        .forEach((r) => {
+          const mfr = mfrById[r.matched_id as number];
+          cards.push({
+            rowIndex: r.row_index,
+            manufacturerId: r.matched_id as number,
+            manufacturerName: r.matched_name ?? "",
+            toEmail: mfr?.official_mi_email || mfr?.team_verified_email || "",
+            subject: subject.trim(),
+            question: question.trim(),
+            medicationName: r.medication_name || null,
+            piStorageData: r.pi_storage || null,
+            sentInquiryId: null,
+            sending: false,
+            error: null,
+            excelS3Url: s.result!.excel_s3_url ?? s.att.doc_url,
+            excelSheetName: s.result!.sheet_name,
+          });
+        });
+    });
     if (cards.length === 0) {
       setExtractError("None of the selected manufacturers have an email address on file.");
       return;
@@ -413,8 +479,8 @@ export default function ContactManufacturerPage() {
   };
 
   const handleBulkSubmit = async (channel: BulkChannel) => {
-    if (!extraction || !ctx) return;
-    if (selectedRows.size === 0) {
+    if (attachmentExtractions.length === 0 || !ctx) return;
+    if (selectedKeys.size === 0) {
       setExtractError("Pick at least one manufacturer.");
       return;
     }
@@ -424,31 +490,6 @@ export default function ContactManufacturerPage() {
     }
     if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
       setExtractError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
-      return;
-    }
-
-    const targets = extraction.rows
-      .filter((r) => {
-        if (!selectedRows.has(r.row_index) || r.matched_id == null) return false;
-        const m = mfrById[r.matched_id];
-        // Only filter by contact info when we actually have the manufacturer
-        // record loaded. If the list failed to fetch, let the backend decide
-        // and report failures — it already validates and skips unreachable mfrs.
-        if (m) {
-          if (channel === "email") return !!(m.official_mi_email || m.team_verified_email);
-          if (channel === "call") return !!m.mi_phone;
-        }
-        return true;
-      })
-      .map((r) => ({
-        manufacturer_id: r.matched_id as number,
-        source_excel_row: r.row_index,
-        medication_name: r.medication_name || null,
-        pi_storage_data: r.pi_storage || null,
-      }));
-
-    if (targets.length === 0) {
-      setExtractError("None of the selected rows have a matched manufacturer in your DB.");
       return;
     }
 
@@ -464,37 +505,92 @@ export default function ContactManufacturerPage() {
 
     setSubmitting(channel);
     setExtractError(null);
+
     try {
-      const result = await api.inquiries.bulkCreate({
-        targets,
-        subject: subject.trim(),
-        question: question.trim(),
-        fallback_after_hours: fallbackHours,
-        source_inquiry_uuid: ctx.uuid,
-        // Prefer our own S3 mirror so the response-writeback path is
-        // independent of InpharmD's 10-second signed URLs.
-        source_excel_url:
-          extraction.excel_s3_url ?? extractableAttachment?.doc_url ?? null,
-        source_excel_sheet: extraction.sheet_name,
-        dispatch_channel: channel,
-        test_call_to_number: testCallTo,
+      // Group selected rows by source file and make one bulkCreate per file
+      // so each inquiry gets the correct source_excel_url for response writeback.
+      const byFile: Array<{
+        s: AttachmentExtractionState;
+        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null }[];
+      }> = [];
+
+      attachmentExtractions.forEach((s, attIdx) => {
+        if (!s.result) return;
+        const targets = s.result.rows
+          .filter((r) => {
+            if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
+            const m = mfrById[r.matched_id];
+            if (m) {
+              if (channel === "email") return !!(m.official_mi_email || m.team_verified_email);
+              if (channel === "call") return !!m.mi_phone;
+            }
+            return true;
+          })
+          .map((r) => ({
+            manufacturer_id: r.matched_id as number,
+            source_excel_row: r.row_index,
+            medication_name: r.medication_name || null,
+            pi_storage_data: r.pi_storage || null,
+          }));
+        if (targets.length > 0) byFile.push({ s, targets });
       });
-      setBulkResult(result);
+
+      if (byFile.length === 0) {
+        setExtractError("None of the selected rows have a matched manufacturer in your DB.");
+        return;
+      }
+
+      const allCreated: Inquiry[] = [];
+      const allFailed: { manufacturer_id: number; error: string }[] = [];
+      let totalDispatched = 0;
+      let mergedResult: typeof bulkResult = null;
+
+      for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
+        const { s, targets } = byFile[fileIdx];
+        const result = await api.inquiries.bulkCreate({
+          targets,
+          subject: subject.trim(),
+          question: question.trim(),
+          fallback_after_hours: fallbackHours,
+          source_inquiry_uuid: ctx.uuid,
+          source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
+          source_excel_sheet: s.result!.sheet_name,
+          dispatch_channel: channel,
+          // Only the first file fires the test call — all others become drafts.
+          test_call_to_number: fileIdx === 0 ? testCallTo : null,
+        });
+        allCreated.push(...result.created);
+        allFailed.push(...result.failed);
+        totalDispatched += result.dispatched ?? 0;
+        if (fileIdx === 0) mergedResult = result;
+      }
+
+      const merged = {
+        created: allCreated,
+        failed: allFailed,
+        dispatch_channel: channel,
+        dispatched: totalDispatched,
+        test_call_inquiry_id: mergedResult?.test_call_inquiry_id ?? null,
+        test_call_to: mergedResult?.test_call_to ?? null,
+      };
+      setBulkResult(merged);
+
       if (channel === "test_call") {
         setBanner(
-          result.test_call_to
-            ? `Test call dialing ${result.test_call_to} — drafts saved for ${result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}.`
-            : `Test call attempted — drafts saved for ${result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}.`,
+          merged.test_call_to
+            ? `Test call dialing ${merged.test_call_to} — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`
+            : `Test call attempted — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`,
         );
       } else if (channel === "call") {
         setBanner(
-          `Calling ${result.dispatched ?? 0} manufacturer${result.dispatched === 1 ? "" : "s"}` +
-            (result.failed.length > 0 ? ` · ${result.failed.length} skipped` : ""),
+          `Calling ${totalDispatched} manufacturer${totalDispatched === 1 ? "" : "s"}` +
+            (allFailed.length > 0 ? ` · ${allFailed.length} skipped` : ""),
         );
       } else {
+        const sent = allCreated.length;
         setBanner(
-          `Emailed ${result.dispatched ?? result.created.length} manufacturer${result.created.length === 1 ? "" : "s"}` +
-            (result.failed.length > 0 ? ` · ${result.failed.length} failed` : ""),
+          `Emailed ${sent} manufacturer${sent === 1 ? "" : "s"}` +
+            (allFailed.length > 0 ? ` · ${allFailed.length} failed` : ""),
         );
       }
     } catch (e: any) {
@@ -522,6 +618,9 @@ export default function ContactManufacturerPage() {
       </section>
     );
   }
+
+  const anyExtracting = attachmentExtractions.some((s) => s.extracting);
+  const anyExtracted = attachmentExtractions.some((s) => s.result !== null);
 
   return (
     <>
@@ -586,479 +685,481 @@ export default function ContactManufacturerPage() {
         )}
       </div>
 
-      {/* Auto-detect status banner — appears only while detecting or after
-          a successful detection. No button: detection runs on mount. */}
-      {extractableAttachment && !bulkResult && (extracting || extraction) && (
-        <div className="dispatch-mode-card">
-          <div className="dispatch-mode-head">
-            <strong>
-              {extracting
-                ? "Reading spreadsheet…"
-                : extraction
-                ? `Detected ${extraction.matched} of ${extraction.total} manufacturers`
-                : ""}
-            </strong>
-            <span className="dispatch-mode-sub">
-              From <em>{extractableAttachment.file_name}</em>
-              {extraction && (
-                <>
-                  {" "}· sheet "{extraction.sheet_name}", column
-                  {" "}"{extraction.header_value.replace(/\n/g, " ")}"
-                  {extraction.medication_col_header
-                    ? <> · 💊 med col: "{extraction.medication_col_header}"</>
-                    : <> · <span style={{color:"#b45309"}}>⚠ no Medication/Vaccine Name column found</span></>
-                  }
-                  {extraction.pi_storage_col_header
-                    ? <> · 🌡 PI col: "{extraction.pi_storage_col_header}"</>
-                    : <> · <span style={{color:"#b45309"}}>⚠ no PI Storage column found</span></>
-                  }
-                </>
-              )}
-            </span>
-          </div>
-          {extraction && (
-            <div className="dispatch-mode-actions">
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => {
-                  setManualOverride(true);
-                  setMode("single");
-                  setExtraction(null);
-                  setSelectedRows(new Set());
-                }}
-                title="Pick a single manufacturer manually instead"
-              >
-                Manual instead
-              </button>
+      {/* Per-file detection banners */}
+      {extractableAttachments.length > 0 && !bulkResult && (anyExtracting || anyExtracted) &&
+        attachmentExtractions.map((s, attIdx) => (
+          <div className="dispatch-mode-card" key={s.att.id || attIdx}>
+            <div className="dispatch-mode-head">
+              <strong>
+                {s.extracting
+                  ? "Reading spreadsheet…"
+                  : s.result
+                  ? `Detected ${s.result.matched} of ${s.result.total} manufacturers`
+                  : s.error
+                  ? "Could not read spreadsheet"
+                  : ""}
+              </strong>
+              <span className="dispatch-mode-sub">
+                From <em>{s.att.file_name}</em>
+                {s.result && (
+                  <>
+                    {" "}· sheet "{s.result.sheet_name}", column
+                    {" "}"{s.result.header_value.replace(/\n/g, " ")}"
+                    {s.result.medication_col_header
+                      ? <> · 💊 med col: "{s.result.medication_col_header}"</>
+                      : <> · <span style={{color:"#b45309"}}>⚠ no Medication/Vaccine Name column found</span></>
+                    }
+                    {s.result.pi_storage_col_header
+                      ? <> · 🌡 PI col: "{s.result.pi_storage_col_header}"</>
+                      : <> · <span style={{color:"#b45309"}}>⚠ no PI Storage column found</span></>
+                    }
+                  </>
+                )}
+                {s.error && (
+                  <span style={{ color: "#b45309", marginLeft: 4 }}>{s.error}</span>
+                )}
+              </span>
             </div>
-          )}
-        </div>
-      )}
+            {anyExtracted && attIdx === 0 && (
+              <div className="dispatch-mode-actions">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setManualOverride(true);
+                    setMode("single");
+                    setAttachmentExtractions([]);
+                    setSelectedKeys(new Set());
+                  }}
+                  title="Pick a single manufacturer manually instead"
+                >
+                  Manual instead
+                </button>
+              </div>
+            )}
+          </div>
+        ))
+      }
 
       {extractError && <div className="error-banner">{extractError}</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      {/* MULTI mode: detected manufacturers + bulk form */}
-      {mode === "multi" && extraction && !bulkResult && !emailReview && (() => {
+      {/* MULTI mode: manufacturer lists grouped by file */}
+      {mode === "multi" && anyExtracted && !bulkResult && !emailReview && (() => {
         const searchTokens = search.trim().toLowerCase();
-        const filteredRows = searchTokens
-          ? extraction.rows.filter((r) => {
-              const hay = `${r.raw_name} ${r.matched_name ?? ""}`.toLowerCase();
-              return hay.includes(searchTokens);
-            })
-          : extraction.rows;
-        const visibleSelectedCount = filteredRows.filter((r) =>
-          selectedRows.has(r.row_index),
-        ).length;
+
+        // Aggregate counts across all files for toolbar.
+        const totalSelectedCount = selectedKeys.size;
+
         return (
-        <>
-          <div className="page-form">
-            <div className="page-form-header">
-              <h2>Detected manufacturers</h2>
-              <div className="mfr-detect-meta">
-                {extraction.matched} of {extraction.total} matched to your DB
-                <span className="cell-muted">
-                  {" "}· sheet "{extraction.sheet_name}", column "{extraction.header_value}"
-                </span>
+          <>
+            <div className="page-form">
+              <div className="page-form-header">
+                <h2>Detected manufacturers</h2>
+                <div className="mfr-detect-meta">
+                  {totalMatched} matched across {attachmentExtractions.filter(s => s.result).length} file{attachmentExtractions.filter(s => s.result).length !== 1 ? "s" : ""}
+                </div>
               </div>
-            </div>
-            <div className="page-form-body">
-              <div className="bulk-search-row">
-                <span className="bulk-search-icon" aria-hidden>🔍</span>
-                <input
-                  type="search"
-                  className="bulk-search-input"
-                  placeholder="Search manufacturers (e.g. Pfizer, Teva)…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-                {search && (
-                  <button
-                    type="button"
-                    className="btn-link bulk-search-clear"
-                    onClick={() => setSearch("")}
-                  >
+              <div className="page-form-body">
+                <div className="bulk-search-row">
+                  <span className="bulk-search-icon" aria-hidden>🔍</span>
+                  <input
+                    type="search"
+                    className="bulk-search-input"
+                    placeholder="Search manufacturers (e.g. Pfizer, Teva)…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                  {search && (
+                    <button
+                      type="button"
+                      className="btn-link bulk-search-clear"
+                      onClick={() => setSearch("")}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="bulk-select-toolbar">
+                  <button type="button" className="btn-link" onClick={selectAll}>
+                    Select all matched ({totalMatched})
+                  </button>
+                  <button type="button" className="btn-link" onClick={selectNone}>
                     Clear
                   </button>
-                )}
-              </div>
-              <div className="bulk-select-toolbar">
-                <button type="button" className="btn-link" onClick={selectAll}>
-                  Select all matched ({extraction.matched})
-                </button>
-                <button type="button" className="btn-link" onClick={selectNone}>
-                  Clear
-                </button>
-                <span className="cell-muted">
-                  {selectedRows.size} selected
-                  {search && filteredRows.length !== extraction.rows.length && (
-                    <>
-                      {" "}· showing {filteredRows.length} of {extraction.rows.length}
-                      {visibleSelectedCount !== selectedRows.size &&
-                        ` (${visibleSelectedCount} visible selected)`}
-                    </>
-                  )}
-                </span>
-              </div>
-              <div className="bulk-row-list">
-                {filteredRows.length === 0 && (
-                  <div className="empty">
-                    <div className="empty-title">No manufacturers match "{search}".</div>
-                  </div>
-                )}
-                {filteredRows.map((r) => {
-                  const checked = selectedRows.has(r.row_index);
-                  const matched = r.matched_id != null;
-                  const mfr = r.matched_id ? mfrById[r.matched_id] : undefined;
-                  const email = mfr?.official_mi_email || mfr?.team_verified_email;
+                  <span className="cell-muted">{totalSelectedCount} selected</span>
+                </div>
+
+                {/* One manufacturer list per source file */}
+                {attachmentExtractions.map((s, attIdx) => {
+                  if (!s.result) return null;
+                  const filteredRows = searchTokens
+                    ? s.result.rows.filter((r) => {
+                        const hay = `${r.raw_name} ${r.matched_name ?? ""}`.toLowerCase();
+                        return hay.includes(searchTokens);
+                      })
+                    : s.result.rows;
                   return (
-                    <label
-                      key={r.row_index}
-                      className={`bulk-row ${checked ? "bulk-row-checked" : ""} ${
-                        matched ? "" : "bulk-row-unmatched"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={!matched}
-                        onChange={() => toggleRow(r.row_index)}
-                      />
-                      <div className="bulk-row-main">
-                        <div className="bulk-row-name">
-                          <span className="bulk-row-raw">{r.raw_name}</span>
-                          {matched && (
-                            <span className={`ext-chip ext-chip-${confidenceTone(r.confidence)} ext-chip-static bulk-row-chip`}>
-                              {confidenceLabel(r.confidence)}
-                            </span>
-                          )}
-                        </div>
-                        {matched ? (
-                          <div className="bulk-row-mfr">
-                            <span className="bulk-row-mfr-name">{r.matched_name}</span>
-                            {mfr?.parent_owner && mfr.parent_owner !== r.matched_name && (
-                              <span className="cell-muted">· {mfr.parent_owner}</span>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="bulk-row-mfr">
-                            <span className="cell-muted">Not in manufacturer DB</span>
-                          </div>
-                        )}
-                        {(r.medication_name || r.pi_storage) && (
-                          <div className="bulk-row-product-info">
-                            {r.medication_name && (
-                              <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
-                            )}
-                            {r.pi_storage && (
-                              <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
-                            )}
-                          </div>
-                        )}
-                        {matched && (() => {
-                          const inHours = isWithinBusinessHoursNow(mfr?.mi_phone_hours);
-                          return (
-                            <div className="bulk-row-mfr-meta">
-                              {email && <span>📧 {email}</span>}
-                              {mfr?.mi_phone && <span>📞 {mfr.mi_phone}</span>}
-                              {mfr?.mi_phone_hours && (
-                                <span
-                                  className={
-                                    inHours === false
-                                      ? "bulk-row-hours bulk-row-hours-out"
-                                      : inHours === true
-                                      ? "bulk-row-hours bulk-row-hours-in"
-                                      : "bulk-row-hours"
-                                  }
-                                  title={
-                                    inHours === false
-                                      ? "Outside business hours right now — Call Agent will skip this number"
-                                      : inHours === true
-                                      ? "Inside business hours right now"
-                                      : undefined
-                                  }
-                                >
-                                  🕒 {mfr.mi_phone_hours}
-                                  {inHours === false && " · outside hours now"}
-                                </span>
-                              )}
-                              {mfr?.typical_response_sla && (
-                                <span>⏱ {mfr.typical_response_sla}</span>
-                              )}
-                              {!email && (
-                                <span className="bulk-row-warn">No email on file — won't send</span>
-                              )}
-                            </div>
-                          );
-                        })()}
-                      </div>
-                      {!matched && (
-                        <button
-                          type="button"
-                          className="bulk-row-add-btn"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            setAddingMfrName(r.raw_name);
-                          }}
+                    <div key={s.att.id || attIdx} style={{ marginTop: attIdx > 0 ? "24px" : "0" }}>
+                      {attachmentExtractions.filter(x => x.result).length > 1 && (
+                        <div
+                          className="cell-muted"
+                          style={{ fontSize: "12px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "8px", paddingBottom: "6px", borderBottom: "1px solid var(--line)" }}
                         >
-                          + Add manufacturer
-                        </button>
+                          📎 {s.att.file_name} · {s.result.matched}/{s.result.total} matched
+                        </div>
                       )}
-                    </label>
+                      <div className="bulk-row-list">
+                        {filteredRows.length === 0 && (
+                          <div className="empty">
+                            <div className="empty-title">No manufacturers match "{search}".</div>
+                          </div>
+                        )}
+                        {filteredRows.map((r) => {
+                          const key = selKey(attIdx, r.row_index);
+                          const checked = selectedKeys.has(key);
+                          const matched = r.matched_id != null;
+                          const mfr = r.matched_id ? mfrById[r.matched_id] : undefined;
+                          const email = mfr?.official_mi_email || mfr?.team_verified_email;
+                          return (
+                            <label
+                              key={key}
+                              className={`bulk-row ${checked ? "bulk-row-checked" : ""} ${
+                                matched ? "" : "bulk-row-unmatched"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!matched}
+                                onChange={() => toggleRow(key)}
+                              />
+                              <div className="bulk-row-main">
+                                <div className="bulk-row-name">
+                                  <span className="bulk-row-raw">{r.raw_name}</span>
+                                  {matched && (
+                                    <span className={`ext-chip ext-chip-${confidenceTone(r.confidence)} ext-chip-static bulk-row-chip`}>
+                                      {confidenceLabel(r.confidence)}
+                                    </span>
+                                  )}
+                                </div>
+                                {matched ? (
+                                  <div className="bulk-row-mfr">
+                                    <span className="bulk-row-mfr-name">{r.matched_name}</span>
+                                    {mfr?.parent_owner && mfr.parent_owner !== r.matched_name && (
+                                      <span className="cell-muted">· {mfr.parent_owner}</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="bulk-row-mfr">
+                                    <span className="cell-muted">Not in manufacturer DB</span>
+                                  </div>
+                                )}
+                                {(r.medication_name || r.pi_storage) && (
+                                  <div className="bulk-row-product-info">
+                                    {r.medication_name && (
+                                      <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
+                                    )}
+                                    {r.pi_storage && (
+                                      <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
+                                    )}
+                                  </div>
+                                )}
+                                {matched && (() => {
+                                  const inHours = isWithinBusinessHoursNow(mfr?.mi_phone_hours);
+                                  return (
+                                    <div className="bulk-row-mfr-meta">
+                                      {email && <span>📧 {email}</span>}
+                                      {mfr?.mi_phone && <span>📞 {mfr.mi_phone}</span>}
+                                      {mfr?.mi_phone_hours && (
+                                        <span
+                                          className={
+                                            inHours === false
+                                              ? "bulk-row-hours bulk-row-hours-out"
+                                              : inHours === true
+                                              ? "bulk-row-hours bulk-row-hours-in"
+                                              : "bulk-row-hours"
+                                          }
+                                          title={
+                                            inHours === false
+                                              ? "Outside business hours right now — Call Agent will skip this number"
+                                              : inHours === true
+                                              ? "Inside business hours right now"
+                                              : undefined
+                                          }
+                                        >
+                                          🕒 {mfr.mi_phone_hours}
+                                          {inHours === false && " · outside hours now"}
+                                        </span>
+                                      )}
+                                      {mfr?.typical_response_sla && (
+                                        <span>⏱ {mfr.typical_response_sla}</span>
+                                      )}
+                                      {!email && (
+                                        <span className="bulk-row-warn">No email on file — won't send</span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                              {!matched && (
+                                <button
+                                  type="button"
+                                  className="bulk-row-add-btn"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setAddingMfrName(r.raw_name);
+                                  }}
+                                >
+                                  + Add manufacturer
+                                </button>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
                   );
                 })}
               </div>
             </div>
-          </div>
 
-          {/* Bulk subject + question + fallback */}
-          <div className="page-form">
-            <div className="page-form-header">
-              <h2>Inquiry text</h2>
-            </div>
-            <div className="page-form-body">
-              <div className="form-grid">
-                <div className="field full">
-                  <label>Subject<span className="req">*</span></label>
-                  <input
-                    type="text"
-                    value={subject}
-                    onChange={(e) => setSubject(e.target.value)}
-                    placeholder="Subject line for every recipient"
-                    maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
-                  />
-                </div>
-                <div className="field full">
-                  <label>Question / Details<span className="req">*</span></label>
-                  <textarea
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    rows={5}
-                  />
-                </div>
-                <div className="field full">
-                  <label>If no email response within</label>
-                  <select
-                    className="filter-select"
-                    value={fallbackHours}
-                    onChange={(e) => setFallbackHours(Number(e.target.value))}
-                  >
-                    <option value={12}>12 hours</option>
-                    <option value={24}>24 hours</option>
-                    <option value={48}>48 hours</option>
-                    <option value={72}>3 days</option>
-                    <option value={168}>7 days</option>
-                  </select>
+            {/* Bulk subject + question + fallback */}
+            <div className="page-form">
+              <div className="page-form-header">
+                <h2>Inquiry text</h2>
+              </div>
+              <div className="page-form-body">
+                <div className="form-grid">
+                  <div className="field full">
+                    <label>Subject<span className="req">*</span></label>
+                    <input
+                      type="text"
+                      value={subject}
+                      onChange={(e) => setSubject(e.target.value)}
+                      placeholder="Subject line for every recipient"
+                      maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
+                    />
+                  </div>
+                  <div className="field full">
+                    <label>Question / Details<span className="req">*</span></label>
+                    <textarea
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      rows={5}
+                    />
+                  </div>
+                  <div className="field full">
+                    <label>If no email response within</label>
+                    <select
+                      className="filter-select"
+                      value={fallbackHours}
+                      onChange={(e) => setFallbackHours(Number(e.target.value))}
+                    >
+                      <option value={12}>12 hours</option>
+                      <option value={24}>24 hours</option>
+                      <option value={48}>48 hours</option>
+                      <option value={72}>3 days</option>
+                      <option value={168}>7 days</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* Send to manufacturer: three channels */}
-          {(() => {
-            // Count selected rows by reachability so each card shows what it
-            // can actually do for THIS selection (e.g. "5 of 6 have email").
-            const selectedMatched = extraction.rows.filter(
-              (r) => selectedRows.has(r.row_index) && r.matched_id != null,
-            );
-            const reachableByEmail = selectedMatched.filter((r) => {
-              const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-              return !!(m?.official_mi_email || m?.team_verified_email);
-            }).length;
-            const phoneRows = selectedMatched.filter((r) => {
-              const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-              return !!m?.mi_phone;
-            });
-            const reachableByPhone = phoneRows.length;
-            // How many of those have hours we can determine to be out-of-window
-            // right now. Treat null (unknown) as still-callable since the
-            // backend will fall back to its own check.
-            const outOfHoursNow = phoneRows.filter((r) => {
-              const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-              return isWithinBusinessHoursNow(m?.mi_phone_hours) === false;
-            }).length;
-            const callableNow = reachableByPhone - outOfHoursNow;
-            const total = selectedMatched.length;
-            const noneSelected = total === 0;
-            const testDigits = digitsOnly(testLocal);
-            const testValid = testDigits.length >= 7;
-            const anyBusy = submitting !== null;
+            {/* Send to manufacturer: three channels */}
+            {(() => {
+              const allSelectedRows = attachmentExtractions.flatMap((s, attIdx) =>
+                (s.result?.rows ?? []).filter((r) => selectedKeys.has(selKey(attIdx, r.row_index)) && r.matched_id != null),
+              );
+              const reachableByEmail = allSelectedRows.filter((r) => {
+                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+                return !!(m?.official_mi_email || m?.team_verified_email);
+              }).length;
+              const phoneRows = allSelectedRows.filter((r) => {
+                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+                return !!m?.mi_phone;
+              });
+              const reachableByPhone = phoneRows.length;
+              const outOfHoursNow = phoneRows.filter((r) => {
+                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+                return isWithinBusinessHoursNow(m?.mi_phone_hours) === false;
+              }).length;
+              const callableNow = reachableByPhone - outOfHoursNow;
+              const total = allSelectedRows.length;
+              const noneSelected = total === 0;
+              const testDigits = digitsOnly(testLocal);
+              const testValid = testDigits.length >= 7;
+              const anyBusy = submitting !== null;
 
-            return (
-              <div className="page-form">
-                <div className="page-form-header">
-                  <h2>Send to manufacturer</h2>
-                  <div className="mfr-detect-meta">
-                    {noneSelected
-                      ? "Pick at least one manufacturer above."
-                      : `${total} selected · choose how to reach them`}
+              return (
+                <div className="page-form">
+                  <div className="page-form-header">
+                    <h2>Send to manufacturer</h2>
+                    <div className="mfr-detect-meta">
+                      {noneSelected
+                        ? "Pick at least one manufacturer above."
+                        : `${total} selected · choose how to reach them`}
+                    </div>
                   </div>
-                </div>
-                <div className="page-form-body">
-                  <div className="channel-grid">
-                    {/* Email card */}
-                    <div className={`channel-card ${reachableByEmail === 0 ? "channel-disabled" : ""}`}>
-                      <div className="channel-icon channel-icon-email">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                          <rect x="3" y="5" width="18" height="14" rx="2" />
-                          <path d="m3 7 9 6 9-6" />
-                        </svg>
-                      </div>
-                      <div className="channel-title">Send Email</div>
-                      <div className="channel-sub">
-                        Email all {total} selected manufacturer{total === 1 ? "" : "s"}.
-                        Voice agent will call any that don't reply within{" "}
-                        <strong>{fallbackHours}h</strong>.
-                      </div>
-                      <ul className="channel-meta">
-                        <li>
-                          <span>Reachable</span> {reachableByEmail} of {total} have email
-                        </li>
-                        <li>
-                          <span>Fallback</span> agent call after {fallbackHours}h
-                        </li>
-                      </ul>
-                      <button
-                        className="btn btn-primary"
-                        type="button"
-                        disabled={noneSelected || reachableByEmail === 0 || anyBusy}
-                        onClick={handleEnterEmailReview}
-                      >
-                        {`Review & Send Email (${reachableByEmail || total})`}
-                      </button>
-                    </div>
-
-                    {/* Call card */}
-                    <div className={`channel-card ${callableNow === 0 ? "channel-disabled" : ""}`}>
-                      <div className="channel-icon channel-icon-call">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
-                        </svg>
-                      </div>
-                      <div className="channel-title">Call Agent</div>
-                      <div className="channel-sub">
-                        Voice agent dials each callable manufacturer in sequence.
-                        Numbers outside their business hours right now stay as
-                        drafts — you can retry them later from Outreach.
-                      </div>
-                      <ul className="channel-meta">
-                        <li>
-                          <span>Callable now</span>{" "}
-                          {callableNow} of {total}
-                          {reachableByPhone < total && (
-                            <span className="cell-muted">
-                              {" "}· {total - reachableByPhone} no phone
-                            </span>
-                          )}
-                          {outOfHoursNow > 0 && (
-                            <span className="bulk-row-warn">
-                              {" "}· {outOfHoursNow} outside hours
-                            </span>
-                          )}
-                        </li>
-                        <li>
-                          <span>Order</span> sequentially, one at a time
-                        </li>
-                      </ul>
-                      <button
-                        className="btn btn-primary"
-                        type="button"
-                        disabled={noneSelected || callableNow === 0 || anyBusy}
-                        title={
-                          callableNow === 0 && reachableByPhone > 0
-                            ? "All selected manufacturers are outside business hours right now."
-                            : callableNow === 0
-                            ? "No selected manufacturers have a phone number on file."
-                            : undefined
-                        }
-                        onClick={() => handleBulkSubmit("call")}
-                      >
-                        {submitting === "call"
-                          ? "Calling…"
-                          : callableNow === 0
-                          ? "Nobody callable now"
-                          : `Call ${callableNow} Now`}
-                      </button>
-                    </div>
-
-                    {/* Test Call card */}
-                    <div className="channel-card channel-card-test">
-                      <div className="channel-icon channel-icon-test">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 2v4" />
-                          <path d="M12 18v4" />
-                          <path d="M4.93 4.93l2.83 2.83" />
-                          <path d="M16.24 16.24l2.83 2.83" />
-                          <path d="M2 12h4" />
-                          <path d="M18 12h4" />
-                          <path d="M4.93 19.07l2.83-2.83" />
-                          <path d="M16.24 7.76l2.83-2.83" />
-                        </svg>
-                      </div>
-                      <div className="channel-title">Test Call</div>
-                      <div className="channel-sub">
-                        Dial <strong>your own number</strong> with the first
-                        selected manufacturer's context. Lets you hear the
-                        script before contacting any real MI desk —{" "}
-                        <strong>no manufacturer is called</strong>. Drafts are
-                        still saved for all {total} selected.
-                      </div>
-                      <div className="phone-input-row">
-                        <select
-                          className="phone-cc-select"
-                          value={testCountryCode}
-                          onChange={(e) => setTestCountryCode(e.target.value)}
-                          disabled={anyBusy}
-                          aria-label="Country code"
+                  <div className="page-form-body">
+                    <div className="channel-grid">
+                      {/* Email card */}
+                      <div className={`channel-card ${reachableByEmail === 0 ? "channel-disabled" : ""}`}>
+                        <div className="channel-icon channel-icon-email">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="3" y="5" width="18" height="14" rx="2" />
+                            <path d="m3 7 9 6 9-6" />
+                          </svg>
+                        </div>
+                        <div className="channel-title">Send Email</div>
+                        <div className="channel-sub">
+                          Email all {total} selected manufacturer{total === 1 ? "" : "s"}.
+                          Voice agent will call any that don't reply within{" "}
+                          <strong>{fallbackHours}h</strong>.
+                        </div>
+                        <ul className="channel-meta">
+                          <li>
+                            <span>Reachable</span> {reachableByEmail} of {total} have email
+                          </li>
+                          <li>
+                            <span>Fallback</span> agent call after {fallbackHours}h
+                          </li>
+                        </ul>
+                        <button
+                          className="btn btn-primary"
+                          type="button"
+                          disabled={noneSelected || reachableByEmail === 0 || anyBusy}
+                          onClick={handleEnterEmailReview}
                         >
-                          {COUNTRY_CODES.map((c) => (
-                            <option key={c.code} value={c.code}>
-                              {c.label}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="tel"
-                          inputMode="numeric"
-                          className="channel-test-input"
-                          placeholder="phone number"
-                          value={testLocal}
-                          onChange={(e) => setTestLocal(e.target.value)}
-                          disabled={anyBusy}
-                        />
+                          {`Review & Send Email (${reachableByEmail || total})`}
+                        </button>
                       </div>
-                      <div className="channel-test-hint">
-                        Dialing:{" "}
-                        <strong>
-                          {testValid ? `${testCountryCode}${testDigits}` : "—"}
-                        </strong>
+
+                      {/* Call card */}
+                      <div className={`channel-card ${callableNow === 0 ? "channel-disabled" : ""}`}>
+                        <div className="channel-icon channel-icon-call">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
+                          </svg>
+                        </div>
+                        <div className="channel-title">Call Agent</div>
+                        <div className="channel-sub">
+                          Voice agent dials each callable manufacturer in sequence.
+                          Numbers outside their business hours right now stay as
+                          drafts — you can retry them later from Outreach.
+                        </div>
+                        <ul className="channel-meta">
+                          <li>
+                            <span>Callable now</span>{" "}
+                            {callableNow} of {total}
+                            {reachableByPhone < total && (
+                              <span className="cell-muted">
+                                {" "}· {total - reachableByPhone} no phone
+                              </span>
+                            )}
+                            {outOfHoursNow > 0 && (
+                              <span className="bulk-row-warn">
+                                {" "}· {outOfHoursNow} outside hours
+                              </span>
+                            )}
+                          </li>
+                          <li>
+                            <span>Order</span> sequentially, one at a time
+                          </li>
+                        </ul>
+                        <button
+                          className="btn btn-primary"
+                          type="button"
+                          disabled={noneSelected || callableNow === 0 || anyBusy}
+                          title={
+                            callableNow === 0 && reachableByPhone > 0
+                              ? "All selected manufacturers are outside business hours right now."
+                              : callableNow === 0
+                              ? "No selected manufacturers have a phone number on file."
+                              : undefined
+                          }
+                          onClick={() => handleBulkSubmit("call")}
+                        >
+                          {submitting === "call"
+                            ? "Calling…"
+                            : callableNow === 0
+                            ? "Nobody callable now"
+                            : `Call ${callableNow} Now`}
+                        </button>
                       </div>
-                      <button
-                        className="btn btn-primary"
-                        type="button"
-                        disabled={noneSelected || !testValid || anyBusy}
-                        onClick={() => handleBulkSubmit("test_call")}
-                      >
-                        {submitting === "test_call" ? "Dialing…" : "Call My Number"}
-                      </button>
+
+                      {/* Test Call card */}
+                      <div className="channel-card channel-card-test">
+                        <div className="channel-icon channel-icon-test">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 2v4" /><path d="M12 18v4" />
+                            <path d="M4.93 4.93l2.83 2.83" /><path d="M16.24 16.24l2.83 2.83" />
+                            <path d="M2 12h4" /><path d="M18 12h4" />
+                            <path d="M4.93 19.07l2.83-2.83" /><path d="M16.24 7.76l2.83-2.83" />
+                          </svg>
+                        </div>
+                        <div className="channel-title">Test Call</div>
+                        <div className="channel-sub">
+                          Dial <strong>your own number</strong> with the first
+                          selected manufacturer's context. Lets you hear the
+                          script before contacting any real MI desk —{" "}
+                          <strong>no manufacturer is called</strong>. Drafts are
+                          still saved for all {total} selected.
+                        </div>
+                        <div className="phone-input-row">
+                          <select
+                            className="phone-cc-select"
+                            value={testCountryCode}
+                            onChange={(e) => setTestCountryCode(e.target.value)}
+                            disabled={anyBusy}
+                            aria-label="Country code"
+                          >
+                            {COUNTRY_CODES.map((c) => (
+                              <option key={c.code} value={c.code}>{c.label}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="tel"
+                            inputMode="numeric"
+                            className="channel-test-input"
+                            placeholder="phone number"
+                            value={testLocal}
+                            onChange={(e) => setTestLocal(e.target.value)}
+                            disabled={anyBusy}
+                          />
+                        </div>
+                        <div className="channel-test-hint">
+                          Dialing:{" "}
+                          <strong>
+                            {testValid ? `${testCountryCode}${testDigits}` : "—"}
+                          </strong>
+                        </div>
+                        <button
+                          className="btn btn-primary"
+                          type="button"
+                          disabled={noneSelected || !testValid || anyBusy}
+                          onClick={() => handleBulkSubmit("test_call")}
+                        >
+                          {submitting === "test_call" ? "Dialing…" : "Call My Number"}
+                        </button>
+                      </div>
                     </div>
                   </div>
+                  <div className="page-form-footer">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={handleCancel}
+                      disabled={anyBusy}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
-                <div className="page-form-footer">
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={handleCancel}
-                    disabled={anyBusy}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            );
-          })()}
-        </>
+              );
+            })()}
+          </>
         );
       })()}
 
@@ -1129,7 +1230,7 @@ export default function ContactManufacturerPage() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setEmailReview((prev) =>
-                              prev ? prev.map((c, j) => j === i ? { ...c, subject: val } : c) : prev
+                              prev ? prev.map((c, j) => j === i ? { ...c, subject: val } : c) : prev,
                             );
                           }}
                           disabled={card.sending || card.sentInquiryId !== null || sendingAll}
@@ -1143,7 +1244,7 @@ export default function ContactManufacturerPage() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setEmailReview((prev) =>
-                              prev ? prev.map((c, j) => j === i ? { ...c, question: val } : c) : prev
+                              prev ? prev.map((c, j) => j === i ? { ...c, question: val } : c) : prev,
                             );
                           }}
                           rows={4}
@@ -1195,7 +1296,10 @@ export default function ContactManufacturerPage() {
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() => goTo("inquiries")}
+                  onClick={() => {
+                    if (emailReviewKey) sessionStorage.removeItem(emailReviewKey);
+                    goTo("inquiries");
+                  }}
                 >
                   View in Manufacturer Outreach →
                 </button>
@@ -1385,12 +1489,12 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   const qs = new URLSearchParams();
   if (ctx.uuid) qs.set("uuid", ctx.uuid);
   if (ctx.title) qs.set("title", ctx.title);
-  // Include the first extractable attachment in the URL so readContext can
-  // reconstruct it on page refresh (sessionStorage is gone after a reload).
-  const extractable = (ctx.attachments ?? []).find(isExtractable);
-  if (extractable) {
-    qs.set("att_url", extractable.doc_url);
-    qs.set("att_name", extractable.file_name);
-  }
+  // Encode ALL extractable attachments in the URL (indexed: att_url_0, att_url_1, …)
+  // so readContext can reconstruct them on page refresh when sessionStorage is gone.
+  const extractables = (ctx.attachments ?? []).filter(isExtractable);
+  extractables.forEach((att, i) => {
+    qs.set(`att_url_${i}`, att.doc_url);
+    qs.set(`att_name_${i}`, att.file_name);
+  });
   window.location.hash = `contact-manufacturer?${qs.toString()}`;
 }
