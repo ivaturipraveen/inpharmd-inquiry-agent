@@ -671,11 +671,6 @@ export default function ContactManufacturerPage() {
     }
   };
 
-  const contextNote = useMemo(() => {
-    if (!ctx?.uuid && !ctx?.title) return undefined;
-    const idChunk = ctx.uuid ? ` (${ctx.uuid.slice(0, 8)}…)` : "";
-    return `Forwarding InpharmD inquiry${idChunk} — pick a manufacturer and submit.`;
-  }, [ctx]);
 
   if (!ctx) {
     return (
@@ -1470,7 +1465,6 @@ export default function ContactManufacturerPage() {
             manufacturers={manufacturers}
             defaultSubject={subject}
             defaultQuestion={question}
-            contextNote={contextNote}
             variant="page"
             title="Contact Manufacturer"
             submitLabel="Create & choose channel"
