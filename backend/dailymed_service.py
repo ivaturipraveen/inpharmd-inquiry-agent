@@ -87,7 +87,10 @@ def _load_cache(
         )
         .all()
     )
-    return {r.ndc: (r.pi_link, r.pi_storage) for r in rows}
+    def _strip(s: Optional[str]) -> Optional[str]:
+        return _STORAGE_HEADING_STRIP.sub("", s).strip() if s else s
+
+    return {r.ndc: (r.pi_link, _strip(r.pi_storage)) for r in rows}
 
 
 def _save_cache(
