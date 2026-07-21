@@ -1364,7 +1364,7 @@ export default function ContactManufacturerPage() {
 
                     <div className="form-grid">
                       <div className="field full">
-                        <label>Subject</label>
+                        <label style={{ fontWeight: 700 }}>Subject</label>
                         <input
                           type="text"
                           value={card.subject}
@@ -1379,7 +1379,7 @@ export default function ContactManufacturerPage() {
                         />
                       </div>
                       <div className="field full">
-                        <label>Question / Details</label>
+                        <label style={{ fontWeight: 700 }}>Question / Details</label>
                         <textarea
                           value={card.question}
                           onChange={(e) => {

@@ -42,7 +42,8 @@ log = logging.getLogger(__name__)
 
 _DAILYMED_API = "https://dailymed.nlm.nih.gov/dailymed/services/v2"
 _DAILYMED_UI  = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm"
-_HOW_SUPPLIED_CODE = "34069-5"   # HL7/LOINC code for HOW SUPPLIED SECTION
+_HOW_SUPPLIED_CODE  = "34069-5"  # HL7/LOINC code for HOW SUPPLIED SECTION
+_STORAGE_CODE       = "44425-7"  # STORAGE AND HANDLING SECTION (nested inside 34069-5)
 _HL7_NS = "urn:hl7-org:v3"
 _CACHE_TTL_DAYS = 30
 _MAX_CONCURRENT = 5
@@ -120,15 +121,19 @@ def _save_cache(
 # ──────────────────────── XML parsing ────────────────────────────
 
 def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
-    """Extract the full text content of section 34069-5 (HOW SUPPLIED SECTION)
-    from an HL7 SPL XML document.
+    """Extract storage conditions text from an HL7 SPL XML document.
 
-    Returns None if the section is absent or the XML cannot be parsed.
-    Uses only stdlib xml.etree.ElementTree — no third-party parser required.
+    Strategy (first match wins):
+      1. Section 44425-7 (STORAGE AND HANDLING SECTION) — always nested inside
+         34069-5 in current DailyMed SPLs. Contains only the storage conditions
+         text, with packaging/NDC tables excluded.
+      2. Section 34069-5 (HOW SUPPLIED SECTION) full text — fallback for older
+         SPLs that don't use the separate 44425-7 subsection.
+
+    Uses only stdlib xml.etree.ElementTree.
     """
     try:
-        # The SPL XML contains a <?xml-stylesheet …?> processing instruction
-        # that ElementTree rejects. Strip it before parsing.
+        # Strip the <?xml-stylesheet …?> PI that ElementTree rejects.
         cleaned = re.sub(rb"<\?xml-stylesheet[^?]*\?>", b"", xml_bytes)
         root = ET.fromstring(cleaned)
     except ET.ParseError as exc:
@@ -148,23 +153,38 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
                 parts.append(child.tail)
         return parts
 
-    for sec in root.findall(".//h:section", ns):
-        code_el = sec.find("h:code", ns)
-        if code_el is None or code_el.get("code") != _HOW_SUPPLIED_CODE:
-            continue
-        text_el = sec.find("h:text", ns)
+    def _text_from_section(sec_el) -> Optional[str]:
+        text_el = sec_el.find("h:text", ns)
         if text_el is None:
             return None
         raw_parts = [p.strip() for p in _all_text(text_el) if p.strip()]
         raw = " ".join(raw_parts)
-        # Collapse runs of whitespace introduced by nested tags
         storage = re.sub(r"\s{2,}", " ", raw).strip()
         if len(storage) > 2000:
-            # Truncate at a word boundary so the text remains readable
             storage = storage[:2000].rsplit(" ", 1)[0] + "…"
         return storage or None
 
-    return None   # section 34069-5 not found in this SPL
+    # Pass 1: prefer the dedicated STORAGE AND HANDLING SECTION (44425-7).
+    # It lives as a nested component inside 34069-5 — findall searches all
+    # descendants so it is found regardless of nesting depth.
+    for sec in root.findall(".//h:section", ns):
+        code_el = sec.find("h:code", ns)
+        if code_el is not None and code_el.get("code") == _STORAGE_CODE:
+            result = _text_from_section(sec)
+            if result:
+                log.debug("dailymed: extracted storage from section %s", _STORAGE_CODE)
+                return result
+
+    # Pass 2: fall back to the full HOW SUPPLIED SECTION text (34069-5).
+    for sec in root.findall(".//h:section", ns):
+        code_el = sec.find("h:code", ns)
+        if code_el is not None and code_el.get("code") == _HOW_SUPPLIED_CODE:
+            result = _text_from_section(sec)
+            if result:
+                log.debug("dailymed: extracted storage from fallback section %s", _HOW_SUPPLIED_CODE)
+                return result
+
+    return None
 
 
 # ─────────────────────── DailyMed API calls ──────────────────────
