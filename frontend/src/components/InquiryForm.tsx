@@ -17,10 +17,6 @@ interface Props {
   defaultManufacturerId?: number;
   defaultSubject?: string;
   defaultQuestion?: string;
-  // Optional banner shown at the top of the form — used when this form is
-  // launched from a context like "Contact manufacturer about InpharmD #1234"
-  // so the user has a clear visual cue about what they're forwarding.
-  contextNote?: string;
   // "modal" = floating dialog over a backdrop (default, used by Outreach tab).
   // "page"  = inline full-page form (used by Contact Manufacturer page).
   variant?: "modal" | "page";
@@ -49,7 +45,6 @@ const InquiryForm: FC<Props> = ({
   defaultManufacturerId,
   defaultSubject,
   defaultQuestion,
-  contextNote,
   variant = "modal",
   title = "New Inquiry",
   submitLabel,
