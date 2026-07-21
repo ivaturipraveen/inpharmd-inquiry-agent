@@ -233,7 +233,6 @@ export default function ExternalInquiriesPage() {
         <StatTile label="With attachments" value={stats.withDocs} tone="info" icon="paperclip" />
         <StatTile label="Attachments" value={stats.totalAttachments} tone="neutral" icon="paperclip" />
         <StatTile label="Submitters" value={stats.submitters} tone="info" icon="dot" />
-        <StatTile label="Inquiry types" value={allTypes.length} tone="neutral" icon="list" />
       </div>
 
       {/* By-type chip filters */}
@@ -348,7 +347,7 @@ export default function ExternalInquiriesPage() {
                   <th>Title</th>
                   <th>Submitter</th>
                   <th>Type</th>
-                  <th className="th-center" title="Attachments">📎</th>
+                  <th className="th-center">Attachment(s)</th>
                   <th className="th-center" aria-label="Actions"></th>
                 </tr>
               </thead>
