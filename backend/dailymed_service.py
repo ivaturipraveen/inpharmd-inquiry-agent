@@ -120,20 +120,30 @@ def _save_cache(
 
 # ──────────────────────── XML parsing ────────────────────────────
 
+_STORAGE_HEADING_RE = re.compile(r"^\s*storage(\s+conditions?)?\s*$", re.IGNORECASE)
+
+
 def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
     """Extract storage conditions text from an HL7 SPL XML document.
 
     Strategy (first match wins):
-      1. Section 44425-7 (STORAGE AND HANDLING SECTION) — always nested inside
-         34069-5 in current DailyMed SPLs. Contains only the storage conditions
-         text, with packaging/NDC tables excluded.
-      2. Section 34069-5 (HOW SUPPLIED SECTION) full text — fallback for older
-         SPLs that don't use the separate 44425-7 subsection.
+
+    1. Section 44425-7 (STORAGE AND HANDLING SECTION) — nested inside 34069-5
+       in modern SPLs. Contains only storage text, no packaging tables.
+       Example: Doxorubicin HCl.
+
+    2. Inline paragraph scan within 34069-5 — for SPLs where subheadings
+       ("Storage", "Storage Conditions") are <content styleCode="underline|bold">
+       elements inside a <paragraph>, with the storage text in the same paragraph
+       and any continuation paragraphs before the next heading.
+       Example: Bendamustine (BENDEKA).
+
+    3. Returns None if neither strategy finds storage text — no polluted
+       fallback to the full section 16 text.
 
     Uses only stdlib xml.etree.ElementTree.
     """
     try:
-        # Strip the <?xml-stylesheet …?> PI that ElementTree rejects.
         cleaned = re.sub(rb"<\?xml-stylesheet[^?]*\?>", b"", xml_bytes)
         root = ET.fromstring(cleaned)
     except ET.ParseError as exc:
@@ -143,7 +153,6 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
     ns = {"h": _HL7_NS}
 
     def _all_text(el) -> list[str]:
-        """Recursive text extraction including mixed-content children."""
         parts: list[str] = []
         if el.text:
             parts.append(el.text)
@@ -153,36 +162,72 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
                 parts.append(child.tail)
         return parts
 
-    def _text_from_section(sec_el) -> Optional[str]:
-        text_el = sec_el.find("h:text", ns)
-        if text_el is None:
-            return None
-        raw_parts = [p.strip() for p in _all_text(text_el) if p.strip()]
-        raw = " ".join(raw_parts)
-        storage = re.sub(r"\s{2,}", " ", raw).strip()
-        if len(storage) > 2000:
-            storage = storage[:2000].rsplit(" ", 1)[0] + "…"
-        return storage or None
+    def _clean(parts: list[str]) -> str:
+        raw = " ".join(p.strip() for p in parts if p.strip())
+        text = re.sub(r"\s{2,}", " ", raw).strip()
+        if len(text) > 2000:
+            text = text[:2000].rsplit(" ", 1)[0] + "…"
+        return text
 
-    # Pass 1: prefer the dedicated STORAGE AND HANDLING SECTION (44425-7).
-    # It lives as a nested component inside 34069-5 — findall searches all
-    # descendants so it is found regardless of nesting depth.
+    def _paragraph_heading(para_el) -> Optional[str]:
+        """Return heading text if paragraph starts with an underlined/bold
+        <content> label, else None."""
+        for child in para_el:
+            tag = child.tag.split("}")[-1]
+            if tag == "content":
+                style = child.get("styleCode", "").lower()
+                if "underline" in style or "bold" in style:
+                    return (child.text or "").strip()
+            break  # only check the very first child element
+        return None
+
+    # ── Pass 1: dedicated 44425-7 subsection ─────────────────────────
     for sec in root.findall(".//h:section", ns):
         code_el = sec.find("h:code", ns)
         if code_el is not None and code_el.get("code") == _STORAGE_CODE:
-            result = _text_from_section(sec)
-            if result:
-                log.debug("dailymed: extracted storage from section %s", _STORAGE_CODE)
-                return result
+            text_el = sec.find("h:text", ns)
+            if text_el is not None:
+                result = _clean(_all_text(text_el))
+                if result:
+                    log.debug("dailymed: storage from 44425-7")
+                    return result
 
-    # Pass 2: fall back to the full HOW SUPPLIED SECTION text (34069-5).
+    # ── Pass 2: inline paragraph scan inside 34069-5 ─────────────────
+    # Some SPLs embed "Storage" / "Storage Conditions" as an underlined
+    # <content> heading inside a <paragraph> within the flat 34069-5 text,
+    # rather than using a separate 44425-7 subsection.
     for sec in root.findall(".//h:section", ns):
         code_el = sec.find("h:code", ns)
-        if code_el is not None and code_el.get("code") == _HOW_SUPPLIED_CODE:
-            result = _text_from_section(sec)
-            if result:
-                log.debug("dailymed: extracted storage from fallback section %s", _HOW_SUPPLIED_CODE)
-                return result
+        if code_el is None or code_el.get("code") != _HOW_SUPPLIED_CODE:
+            continue
+        text_el = sec.find("h:text", ns)
+        if text_el is None:
+            continue
+
+        storage_parts: list[str] = []
+        in_storage = False
+
+        for child in text_el:
+            tag = child.tag.split("}")[-1]
+            if tag != "paragraph":
+                # Skip tables, lists, br — they contain NDC/packaging data.
+                continue
+
+            heading = _paragraph_heading(child)
+            if heading:
+                if _STORAGE_HEADING_RE.match(heading):
+                    in_storage = True
+                    storage_parts.append(_clean(_all_text(child)))
+                elif in_storage:
+                    break  # hit a new non-storage heading — stop
+            elif in_storage:
+                part = _clean(_all_text(child))
+                if part:
+                    storage_parts.append(part)
+
+        if storage_parts:
+            log.debug("dailymed: storage from inline paragraph scan in 34069-5")
+            return " ".join(storage_parts)
 
     return None
 
