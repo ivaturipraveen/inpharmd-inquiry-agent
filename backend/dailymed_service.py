@@ -120,7 +120,8 @@ def _save_cache(
 
 # ──────────────────────── XML parsing ────────────────────────────
 
-_STORAGE_HEADING_RE = re.compile(r"^\s*storage(\s+conditions?)?\s*$", re.IGNORECASE)
+_STORAGE_HEADING_RE    = re.compile(r"^\s*storage(\s+conditions?)?\s*$", re.IGNORECASE)
+_STORAGE_HEADING_STRIP = re.compile(r"^storage(\s+conditions?)?\s*", re.IGNORECASE)
 
 
 def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
@@ -187,7 +188,7 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
         if code_el is not None and code_el.get("code") == _STORAGE_CODE:
             text_el = sec.find("h:text", ns)
             if text_el is not None:
-                result = _clean(_all_text(text_el))
+                result = _STORAGE_HEADING_STRIP.sub("", _clean(_all_text(text_el))).strip()
                 if result:
                     log.debug("dailymed: storage from 44425-7")
                     return result
@@ -227,7 +228,8 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
 
         if storage_parts:
             log.debug("dailymed: storage from inline paragraph scan in 34069-5")
-            return " ".join(storage_parts)
+            combined = " ".join(storage_parts)
+            return _STORAGE_HEADING_STRIP.sub("", combined).strip()
 
     return None
 
