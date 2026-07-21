@@ -309,12 +309,6 @@ const InquiryForm: FC<Props> = ({
       </div>
 
       <div className={variant === "page" ? "page-form-body" : "modal-body"}>
-            {contextNote && (
-              <div className="context-banner">
-                <span className="context-banner-icon" aria-hidden>↪</span>
-                <span>{contextNote}</span>
-              </div>
-            )}
             {error && <div className="error-banner">{error}</div>}
 
             <div className="form-grid">
