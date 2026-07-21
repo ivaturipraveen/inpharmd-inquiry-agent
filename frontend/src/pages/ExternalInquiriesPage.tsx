@@ -387,7 +387,7 @@ export default function ExternalInquiriesPage() {
                             {types.length > 1 && ` +${types.length - 1}`}
                           </span>
                         ) : (
-                          <span className="cell-muted">—</span>
+                          <span className="ext-chip ext-chip-static">DI</span>
                         )}
                       </td>
                       <td className="ext-docs-cell">
