@@ -12,6 +12,11 @@ interface Props {
 const fmtDate = (s?: string | null) =>
   s ? new Date(s).toLocaleString() : null;
 
+const renderBold = (text: string) =>
+  text.split(/\*\*(.+?)\*\*/g).map((part, i) =>
+    i % 2 === 1 ? <strong key={i}>{part}</strong> : part
+  );
+
 const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [busy, setBusy] = useState(false);
   const [emailReply, setEmailReply] = useState("");
@@ -128,7 +133,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 Final Answer
               </div>
               {inquiry.final_answer && (
-                <div className="detail-prose">{inquiry.final_answer}</div>
+                <div className="detail-prose">{renderBold(inquiry.final_answer)}</div>
               )}
 
               {/* Render attachments grouped by reply when email_replies is available;
@@ -153,7 +158,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                             </span>
                           )}
                         </div>
-                        <div className="detail-prose">{att.summary}</div>
+                        <div className="detail-prose">{renderBold(att.summary)}</div>
                       </div>
                     )}
                     {att.url && (
