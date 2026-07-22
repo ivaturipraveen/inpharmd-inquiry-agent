@@ -486,7 +486,6 @@ def business_hours_check(
     obj = _get_or_404(db, inquiry_id, current_user)
     if not obj.manufacturer:
         return {"known": False, "reason": "no manufacturer"}
-    hours_text = obj.manufacturer.mi_phone_hours if hasattr(obj.manufacturer, "mi_phone_hours") else None
     # ManufacturerSummary may not include hours; fetch fully
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
     hours_text = mfr.mi_phone_hours if mfr else None

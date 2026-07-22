@@ -467,7 +467,7 @@ export default function InquiriesPage() {
                       >
                         <td className="cell-muted">#{i.id}</td>
                         <td>
-                          <div className="cell-primary">{i.subject}</div>
+                          <div className="cell-primary" title={i.subject}>{i.subject}</div>
                         </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
                         <td><StatusBadge status={i.status} /></td>
