@@ -471,9 +471,8 @@ export default function InquiriesPage() {
                   const drafts = row.children.filter((c) =>
                     DRAFT_STATUSES.includes(c.status),
                   ).length;
-                  const groupCreated = row.children
-                    .map((c) => c.created_at ?? "")
-                    .sort()[0];
+                  // children are already sorted newest-first; use [0] to match sort order
+                  const groupCreated = row.children[0]?.created_at ?? "";
                   return (
                     <Fragment key={`g-${row.uuid}`}>
                       <tr
