@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { Inquiry } from "../types";
+import { renderBold } from "../utils/renderBold";
 
 /* ----------------------------- helpers ----------------------------- */
 
 const READ_KEY = "inpharmd_email_read"; // localStorage map of inquiryId -> true
+
 const readReadSet = (): Set<number> => {
   try {
     const raw = localStorage.getItem(READ_KEY);
@@ -565,7 +567,7 @@ function Message(p: MessageProps) {
         </div>
         <div className="gm-msg-time">{p.timestamp}</div>
       </header>
-      <div className="gm-msg-body">{p.body}</div>
+      <div className="gm-msg-body">{renderBold(p.body)}</div>
 
       {(() => {
         const atts = p.inboundAttachments?.length
@@ -580,7 +582,7 @@ function Message(p: MessageProps) {
                 <div className="gm-msg-section-label">
                   {atts.length > 1 && att.filename ? `Attachment Summary — ${att.filename}` : "Attachment Summary"}
                 </div>
-                <div className="gm-msg-section-body">{att.summary}</div>
+                <div className="gm-msg-section-body">{renderBold(att.summary)}</div>
               </div>
             )}
             {att.url && (

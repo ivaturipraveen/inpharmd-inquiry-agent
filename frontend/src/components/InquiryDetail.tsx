@@ -1,6 +1,7 @@
 import { FC, useEffect, useState } from "react";
 import StatusBadge from "./StatusBadge";
 import type { Inquiry } from "../types";
+import { renderBold } from "../utils/renderBold";
 
 interface Props {
   inquiry: Inquiry;
@@ -12,10 +13,6 @@ interface Props {
 const fmtDate = (s?: string | null) =>
   s ? new Date(s).toLocaleString() : null;
 
-const renderBold = (text: string) =>
-  text.split(/\*\*(.+?)\*\*/g).map((part, i) =>
-    i % 2 === 1 ? <strong key={i}>{part}</strong> : part
-  );
 
 const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [busy, setBusy] = useState(false);
@@ -261,7 +258,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                       {fmtDate(inquiry.email_response_at)}
                     </div>
                     {inquiry.email_response && (
-                      <div className="timeline-body">{inquiry.email_response}</div>
+                      <div className="timeline-body">{renderBold(inquiry.email_response)}</div>
                     )}
                   </div>
                 </li>
