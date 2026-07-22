@@ -172,9 +172,8 @@ export default function InquiriesPage() {
       if (existing) existing.push(i);
       else groups.set(uuid, [i]);
     }
+
     const out: Row[] = [];
-    // Groups with more than one child first (sorted by newest first child).
-    const groupRows: Row[] = [];
     for (const [uuid, children] of groups) {
       if (children.length === 1) {
         singles.push(children[0]);
@@ -183,22 +182,18 @@ export default function InquiriesPage() {
         children.sort((a, b) =>
           (b.created_at ?? "").localeCompare(a.created_at ?? ""),
         );
-        groupRows.push({ kind: "group", uuid, children });
+        out.push({ kind: "group", uuid, children });
       }
     }
-    groupRows.sort((a, b) => {
-      if (a.kind !== "group" || b.kind !== "group") return 0;
-      const ax = a.children[0]?.created_at ?? "";
-      const bx = b.children[0]?.created_at ?? "";
+    for (const s of singles) out.push({ kind: "single", inquiry: s });
+
+    // Sort everything together by newest created_at — groups use their
+    // newest child's date, singles use their own. Matches InpharmD Inquiries order.
+    out.sort((a, b) => {
+      const ax = a.kind === "group" ? (a.children[0]?.created_at ?? "") : a.inquiry.created_at ?? "";
+      const bx = b.kind === "group" ? (b.children[0]?.created_at ?? "") : b.inquiry.created_at ?? "";
       return bx.localeCompare(ax);
     });
-    out.push(...groupRows);
-
-    // Singles, newest first.
-    singles.sort((a, b) =>
-      (b.created_at ?? "").localeCompare(a.created_at ?? ""),
-    );
-    for (const s of singles) out.push({ kind: "single", inquiry: s });
     return out;
   }, [filtered]);
 
