@@ -206,19 +206,6 @@ export default function InquiriesPage() {
       return next;
     });
   };
-  // Auto-expand groups by default the first time they appear.
-  useEffect(() => {
-    const newSet = new Set(expandedGroups);
-    let changed = false;
-    for (const r of rows) {
-      if (r.kind === "group" && !newSet.has(r.uuid)) {
-        newSet.add(r.uuid);
-        changed = true;
-      }
-    }
-    if (changed) setExpandedGroups(newSet);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length]);
 
   const stats = useMemo(() => {
     let drafts = 0;
@@ -461,8 +448,8 @@ export default function InquiriesPage() {
                         }}
                       >
                         <td className="cell-muted">#{i.id}</td>
-                        <td>
-                          <div className="cell-primary" title={i.subject}>{i.subject}</div>
+                        <td className="cell-wrap">
+                          <div className="cell-primary">{i.subject}</div>
                         </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
                         <td><StatusBadge status={i.status} /></td>
@@ -499,7 +486,7 @@ export default function InquiriesPage() {
                           </span>
                           <span className="mue-badge">MUE</span>
                         </td>
-                        <td className="mue-subject-cell">
+                        <td className="mue-subject-cell cell-wrap">
                           <div className="mue-subject-line">
                             <span className="cell-primary">{sample.subject}</span>
                             <span className="mue-mfr-pill">
