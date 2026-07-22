@@ -707,7 +707,7 @@ def close_inquiry(
 
 
 @router.post("/{inquiry_id}/reprocess-pdf", response_model=InquiryOut)
-def reprocess_pdf(
+async def reprocess_pdf(
     inquiry_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -718,6 +718,7 @@ def reprocess_pdf(
 
     If no attachments can be uploaded (e.g. S3 outage), the operation is fully
     rolled back — original attachment rows and scalar fields are preserved."""
+    import asyncio
     import os
     import httpx
     import graph_service
@@ -730,13 +731,13 @@ def reprocess_pdf(
         raise HTTPException(status_code=503, detail="Graph API not configured")
 
     mailbox = os.getenv("GRAPH_MAILBOX") or os.getenv("EMAIL_FROM", "druginfo@inpharmd.com")
-    token = graph_service._get_token()
+    token = await asyncio.to_thread(graph_service._get_token)
     headers = {"Authorization": f"Bearer {token}"}
     tag = f"[InpharmD #{inquiry_id}]"
 
     search_url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages"
-    with httpx.Client(timeout=20) as client:
-        r = client.get(
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(
             search_url,
             headers={**headers, "ConsistencyLevel": "eventual"},
             params={
@@ -759,7 +760,9 @@ def reprocess_pdf(
             detail=f"No message with attachments found for {tag}",
         )
 
-    docs = graph_service._fetch_all_document_attachments(token, mailbox, target["id"])
+    docs = await asyncio.to_thread(
+        graph_service._fetch_all_document_attachments, token, mailbox, target["id"]
+    )
     if not docs:
         raise HTTPException(
             status_code=404,
@@ -782,7 +785,8 @@ def reprocess_pdf(
 
     uploaded_count = 0
     for order, doc in enumerate(docs):
-        url = s3_service.upload_bytes(
+        url = await asyncio.to_thread(
+            s3_service.upload_bytes,
             doc["bytes"],
             original_name=doc["name"],
             inquiry_id=inquiry_id,
@@ -797,10 +801,13 @@ def reprocess_pdf(
         uploaded_count += 1
         att_summary = None
         if summary_service.is_configured():
-            text = summary_service.extract_document_text(doc["name"], doc["bytes"])
+            text = await asyncio.to_thread(
+                summary_service.extract_document_text, doc["name"], doc["bytes"]
+            )
             if text:
                 try:
-                    att_summary = summary_service.summarize_pdf(
+                    att_summary = await asyncio.to_thread(
+                        summary_service.summarize_pdf,
                         question=obj.question,
                         manufacturer=mfr_name,
                         pdf_text=text,
