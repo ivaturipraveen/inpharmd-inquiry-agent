@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 import cache_service
 import dailymed_service
 import excel_service
+import excel_writeback_service
 import inpharmd_service
 import s3_service
 from database import get_db
@@ -260,6 +261,26 @@ async def extract_manufacturers(
         )
     except Exception as e:
         log.warning("external.extract S3 upload failed (will fall back to InpharmD url): %s", e)
+
+    # Write PI link + storage data back into the workbook for DailyMed-enriched
+    # rows, re-upload to S3 under mue-pi-enriched/, and POST to staging so the
+    # platform sees the enriched sheet immediately. If this succeeds, use the
+    # enriched URL as source_excel_url so future response writeback builds on
+    # the PI-enriched copy rather than the pristine original.
+    if s3_url and payload.inquiry_uuid and any(
+        getattr(m, "pi_link", None) or getattr(m, "pi_storage", None) for m in matches
+    ):
+        try:
+            enriched_url = excel_writeback_service.writeback_pi_enrichment(
+                xlsx,
+                matches,
+                inquiry_uuid=payload.inquiry_uuid,
+                access_token=current.staging_token,
+            )
+            if enriched_url:
+                s3_url = enriched_url
+        except Exception as e:
+            log.warning("external.extract PI writeback failed (non-fatal): %s", e)
 
     out_rows = [
         ExtractedManufacturerRow(

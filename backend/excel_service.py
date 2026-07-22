@@ -99,6 +99,11 @@ RESPONSE_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
     ({"response"}, ("reply",)),
 )
 
+PI_LINK_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
+    ({"pi", "link"}, ("pilink", "pilinkurl", "pilinkaddress")),
+    ({"prescribing", "information", "link"}, ("prescribinginformationlink", "prescribinginformationurl")),
+)
+
 _DOWNLOAD_TIMEOUT_SECONDS = 30
 
 
@@ -587,6 +592,106 @@ def write_response(
         else:
             ws = wb[sheet_name or loc.sheet_name]
             ws.cell(row=row_index, column=loc.col, value=response_text)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+    finally:
+        wb.close()
+
+
+def _write_pi_data_csv(
+    csv_bytes: bytes,
+    rows: list[tuple[int, Optional[str], Optional[str]]],
+) -> bytes:
+    """CSV equivalent of write_pi_data."""
+    text = _decode_csv(csv_bytes)
+    reader = csv.reader(io.StringIO(text))
+    all_rows = list(reader)
+    if not all_rows:
+        raise ValueError("CSV is empty; nothing to write into.")
+    headers = list(all_rows[0])
+    all_rows[0] = headers
+
+    def _find_or_add(tiers: tuple, canonical: str) -> int:
+        for required_tokens, exact_norms in tiers:
+            for idx, h in enumerate(headers):
+                if _normalize(h) in exact_norms:
+                    return idx
+            for idx, h in enumerate(headers):
+                if required_tokens.issubset(_tokenize(h)):
+                    return idx
+        col = len(headers)
+        headers.append(canonical)
+        for r in all_rows[1:]:
+            while len(r) < len(headers):
+                r.append("")
+        return col
+
+    link_col = _find_or_add(PI_LINK_HEADER_TIERS, "PI Link")
+    storage_col = _find_or_add(PI_STORAGE_HEADER_TIERS, "PI Storage Data")
+
+    for row_index, pi_link, pi_storage in rows:
+        target = row_index - 1  # 1-based → 0-based
+        if target < 1 or target >= len(all_rows):
+            log.warning("write_pi_data: row_index %s out of range (%s rows); skipping", row_index, len(all_rows))
+            continue
+        while len(all_rows[target]) <= max(link_col, storage_col):
+            all_rows[target].append("")
+        if pi_link:
+            all_rows[target][link_col] = pi_link
+        if pi_storage:
+            all_rows[target][storage_col] = pi_storage
+
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\r\n")
+    writer.writerows(all_rows)
+    return buf.getvalue().encode("utf-8")
+
+
+def write_pi_data(
+    xlsx_bytes: bytes,
+    rows: list[tuple[int, Optional[str], Optional[str]]],
+    *,
+    sheet_name: Optional[str] = None,
+) -> bytes:
+    """Write PI link and PI storage data into the workbook for each row.
+
+    `rows` is a list of (row_index, pi_link, pi_storage) tuples (1-based row
+    index). Only non-empty values are written. Finds existing columns by header
+    tier matching; appends new 'PI Link' / 'PI Storage Data' columns if absent.
+    Handles both xlsx and csv formats. Pure in-memory."""
+    if not rows:
+        return xlsx_bytes
+    if _detect_format(xlsx_bytes) == "csv":
+        return _write_pi_data_csv(xlsx_bytes, rows)
+
+    wb = load_workbook(filename=io.BytesIO(xlsx_bytes), data_only=False)
+    try:
+        anchor = _find_column(wb, MANUFACTURER_HEADER_TIERS)
+        ws_name = sheet_name or (anchor.sheet_name if anchor else wb.sheetnames[0])
+        ws = wb[ws_name]
+        header_row = anchor.header_row if anchor else 1
+
+        link_loc = _find_column(wb, PI_LINK_HEADER_TIERS)
+        if link_loc:
+            link_col = link_loc.col
+        else:
+            link_col = (ws.max_column or 1) + 1
+            ws.cell(row=header_row, column=link_col, value="PI Link")
+
+        storage_loc = _find_column(wb, PI_STORAGE_HEADER_TIERS)
+        if storage_loc:
+            storage_col = storage_loc.col
+        else:
+            storage_col = (ws.max_column or 1) + 1
+            ws.cell(row=header_row, column=storage_col, value="PI Storage Data")
+
+        for row_index, pi_link, pi_storage in rows:
+            if pi_link:
+                ws.cell(row=row_index, column=link_col, value=pi_link)
+            if pi_storage:
+                ws.cell(row=row_index, column=storage_col, value=pi_storage)
+
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()

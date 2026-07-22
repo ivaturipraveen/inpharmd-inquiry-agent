@@ -143,6 +143,75 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
         return False
 
 
+def writeback_pi_enrichment(
+    xlsx_bytes: bytes,
+    matches: list,
+    *,
+    inquiry_uuid: str,
+    access_token: str,
+) -> Optional[str]:
+    """Write DailyMed PI link + storage data into the workbook for enriched rows,
+    upload to S3 under mue-pi-enriched/, and POST to staging. Returns the new
+    S3 URL on success, or None if there was nothing to write or a step failed.
+
+    Called once per extract-manufacturers request, right after enrich_rows.
+    Does NOT touch any Inquiry DB rows — operates purely on bytes + uuid."""
+    pi_rows = [
+        (m.row_index, getattr(m, "pi_link", None) or None, getattr(m, "pi_storage", None) or None)
+        for m in matches
+        if (getattr(m, "pi_link", None) or getattr(m, "pi_storage", None))
+    ]
+    if not pi_rows:
+        log.info("pi_writeback: no enriched rows for uuid=%s — skipping", (inquiry_uuid or "")[:8])
+        return None
+
+    short = (inquiry_uuid or "").strip()[:8]
+    log.info("pi_writeback: writing PI data for %d rows uuid=%s", len(pi_rows), short)
+
+    try:
+        updated_bytes = excel_service.write_pi_data(xlsx_bytes, pi_rows)
+    except Exception as e:
+        log.error("pi_writeback: write failed uuid=%s: %s", short, e)
+        return None
+
+    fmt = "xlsx" if updated_bytes[:4] == b"PK\x03\x04" else "csv"
+    ext = fmt
+    ct = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if fmt == "xlsx"
+        else "text/csv"
+    )
+    file_name = f"inquiry-{short}.{ext}"
+    key = f"mue-pi-enriched/{file_name}"
+    log.info("pi_writeback: uploading uuid=%s key=%s", short, key)
+    new_url = s3_service.upload_bytes(
+        updated_bytes,
+        original_name=file_name,
+        inquiry_id=0,
+        content_type=ct,
+        key_override=key,
+    )
+    if not new_url:
+        log.error("pi_writeback: S3 upload failed for uuid=%s", short)
+        return None
+    log.info("pi_writeback: uploaded uuid=%s url=%s", short, new_url[:200])
+
+    posted = _post_v2_sheet(
+        inquiry_uuid=inquiry_uuid,
+        excel_url=new_url,
+        access_token=access_token,
+    )
+    if posted:
+        log.info("pi_writeback: v2 POST ok uuid=%s", short)
+    else:
+        log.warning(
+            "pi_writeback: v2 POST failed uuid=%s — workbook uploaded to %s but staging rejected it",
+            short, new_url[:200],
+        )
+
+    return new_url
+
+
 def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     """Idempotent writeback. Returns True if we updated the Excel + posted."""
     log.info(
