@@ -502,17 +502,23 @@ export default function InquiriesPage() {
                           )}
                         </td>
                         <td>
-                          <div className="mue-progress">
-                            <div
-                              className="mue-progress-bar"
-                              style={{
-                                width: `${total ? (responded / total) * 100 : 0}%`,
-                              }}
-                            />
-                          </div>
-                          <div className="mue-progress-text">
-                            {responded} / {total} responses
-                          </div>
+                          {row.children.every((c) => c.status === "closed") ? (
+                            <StatusBadge status="closed" />
+                          ) : (
+                            <>
+                              <div className="mue-progress">
+                                <div
+                                  className="mue-progress-bar"
+                                  style={{
+                                    width: `${total ? (responded / total) * 100 : 0}%`,
+                                  }}
+                                />
+                              </div>
+                              <div className="mue-progress-text">
+                                {responded} / {total} responses
+                              </div>
+                            </>
+                          )}
                         </td>
                         <td className="cell-muted">{fmtDate(groupCreated)}</td>
                         <td className="cell-muted">{sample.fallback_after_hours}h</td>
