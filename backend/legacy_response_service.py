@@ -59,6 +59,8 @@ def post_response(
     inquiry_uuid: str,
     mfr_email_response: str,
     mfr_s3_url: Optional[str] = None,
+    manufacturer_name: Optional[str] = None,
+    medication_name: Optional[str] = None,
 ) -> bool:
     """POST the response back to legacy as multipart/form-data.
 
@@ -90,11 +92,17 @@ def post_response(
     }
     if mfr_s3_url:
         data["mfr_s3_url"] = mfr_s3_url
+    if manufacturer_name:
+        data["manufacturer_name"] = manufacturer_name
+    if medication_name:
+        data["medication_name"] = medication_name
     log.info(
-        "pipeline: legacy POST sending uuid=%s response_chars=%d has_s3_url=%s",
+        "pipeline: legacy POST sending uuid=%s response_chars=%d has_s3_url=%s manufacturer=%s medication=%s",
         inquiry_uuid,
         len(mfr_email_response or ""),
         bool(mfr_s3_url),
+        manufacturer_name or "(none)",
+        medication_name or "(none)",
     )
 
     # Empty `files` dict forces httpx to use multipart encoding even without
@@ -212,11 +220,16 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
         return False
 
     s3_url = getattr(inquiry, "pdf_url", None) or None
+    mfr = getattr(inquiry, "manufacturer", None)
+    mfr_name = (mfr.manufacturer if mfr else None) or None
+    med_name = (getattr(inquiry, "medication_name", None) or "").strip() or None
 
     ok = post_response(
         inquiry_uuid=uuid,
         mfr_email_response=response_text,
         mfr_s3_url=s3_url,
+        manufacturer_name=mfr_name,
+        medication_name=med_name,
     )
     if ok:
         inquiry.legacy_response_posted_at = datetime.now(timezone.utc)
