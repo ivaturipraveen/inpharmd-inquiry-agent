@@ -1448,19 +1448,18 @@ pre.raw-json {
   font-weight: 600;
   color: var(--ink);
 }
-.mue-mfr-pill {
-  display: inline-flex;
-  align-items: center;
-  background: #fff;
-  border: 1px solid var(--brand-orange);
-  color: var(--brand-orange-strong);
-  padding: 2px 9px;
-  border-radius: 12px;
-  font-size: 11.5px;
-  font-weight: 500;
-  white-space: nowrap;
+.mue-mfr-count {
+  font-size: 13px;
+  color: var(--ink);
 }
-.mue-mfr-pill strong { margin-right: 4px; }
+
+.mue-mfr-name-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--ink);
+}
 
 .mue-uuid-row {
   display: flex;

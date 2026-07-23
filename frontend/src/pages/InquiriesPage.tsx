@@ -486,29 +486,20 @@ export default function InquiriesPage() {
                           <span className="mue-badge">MUE</span>
                         </td>
                         <td className="mue-subject-cell cell-wrap">
-                          <div className="mue-subject-line">
-                            <span className="cell-primary">{sample.subject}</span>
-                            <span className="mue-mfr-pill">
-                              <strong>{total}</strong> manufacturers
-                            </span>
-                          </div>
+                          <span className="cell-primary">{sample.subject}</span>
                         </td>
                         <td className="mue-stats-cell">
-                          <div className="mue-stat-pills">
-                            <span className="mue-pill mue-pill-good">
-                              <strong>{responded}</strong> responded
+                          {open ? (
+                            <div className="mue-mfr-name-list">
+                              {row.children.map((c) => (
+                                <div key={c.id}>{c.manufacturer?.manufacturer ?? "—"}</div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="mue-mfr-count">
+                              {total} manufacturers
                             </span>
-                            {sent > 0 && (
-                              <span className="mue-pill mue-pill-info">
-                                <strong>{sent}</strong> awaiting
-                              </span>
-                            )}
-                            {drafts > 0 && (
-                              <span className="mue-pill mue-pill-muted">
-                                <strong>{drafts}</strong> draft
-                              </span>
-                            )}
-                          </div>
+                          )}
                         </td>
                         <td>
                           <div className="mue-progress">
