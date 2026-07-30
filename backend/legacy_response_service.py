@@ -7,7 +7,7 @@ the legacy platform can attach it to its own record.
 Endpoint (Rails on Heroku):
     POST {INPHARMD_API_BASE_URL}/api/legacy/manufacturing_response
     Header: X-Api-Key: {LEGACY_RESPONSE_API_KEY}
-    Content-Type: multipart/form-data
+    Content-Type: application/x-www-form-urlencoded
     Form fields:
         inquiry_uuid       str      (required)
         mfr_email_response str      (required)
@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -87,19 +88,23 @@ def post_response(
 
     urls = [u for u in (mfr_s3_urls or []) if u]
 
-    # Build as a list of (name, value) tuples so httpx sends multiple
-    # mfr_s3_url[] fields — Rails parses these as params[:mfr_s3_url] array.
-    # Rails endpoint requires multipart even when there's no file part.
-    data_fields = [
+    # Build as a list of (name, value) tuples so urllib.parse.urlencode can
+    # emit repeated mfr_s3_url[] fields — Rails parses these as an array.
+    # We encode manually and pass as raw `content` so httpx doesn't touch
+    # the field names (httpx's dict/files encoding doesn't support repeated
+    # keys with [] suffix reliably across versions).
+    params = [
         ("inquiry_uuid", inquiry_uuid),
         ("mfr_email_response", mfr_email_response or ""),
     ]
     if manufacturer_name:
-        data_fields.append(("manufacturer_name", manufacturer_name))
+        params.append(("manufacturer_name", manufacturer_name))
     if medication_name:
-        data_fields.append(("medication_name", medication_name))
+        params.append(("medication_name", medication_name))
     for s3_url in urls:
-        data_fields.append(("mfr_s3_url[]", s3_url))
+        params.append(("mfr_s3_url[]", s3_url))
+
+    encoded_body = urllib.parse.urlencode(params).encode("utf-8")
 
     log.info(
         "pipeline: legacy POST sending uuid=%s response_chars=%d s3_urls=%d manufacturer=%s medication=%s",
@@ -110,10 +115,11 @@ def post_response(
         medication_name or "(none)",
     )
 
-    # Empty `files` dict forces httpx to use multipart encoding even without
-    # an actual file part — keeps the wire format identical regardless of
-    # whether an attachment URL is present.
-    headers = {"X-Api-Key": key, "Accept": "application/json"}
+    headers = {
+        "X-Api-Key": key,
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
 
     last_status = None
     last_body = ""
@@ -121,7 +127,7 @@ def post_response(
         started = time.monotonic()
         try:
             with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
-                res = client.post(url, headers=headers, data=data_fields, files={})
+                res = client.post(url, headers=headers, content=encoded_body)
         except httpx.TimeoutException as e:
             elapsed = (time.monotonic() - started) * 1000
             log.warning(
