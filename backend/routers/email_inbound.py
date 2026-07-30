@@ -257,7 +257,10 @@ async def sendgrid_inbound(request: Request) -> Response:
         )
 
         # If this inquiry was forwarded from InpharmD, POST the reply back.
-        legacy_response_service.maybe_post_for_inquiry(db, obj)
+        try:
+            legacy_response_service.maybe_post_for_inquiry(db, obj)
+        except Exception:
+            log.exception("Legacy POST failed for inquiry %s (reply was stored)", inquiry_id)
 
         # Slack — same as the Graph poll path.
         try:

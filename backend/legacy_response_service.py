@@ -246,6 +246,25 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
         scalar = getattr(inquiry, "pdf_url", None) or None
         s3_urls = [scalar] if scalar else []
 
+    # Allow re-posting when new attachments have arrived since the last POST.
+    # Old code sent at most 1 URL; legacy_attachment_url_count defaults to 0
+    # for those rows, so any non-empty attachment list triggers a re-post.
+    already_posted = getattr(inquiry, "legacy_response_posted_at", None) is not None
+    stored_count = getattr(inquiry, "legacy_attachment_url_count", 0) or 0
+    if already_posted and len(s3_urls) <= stored_count:
+        log.info(
+            "pipeline: legacy POST skipped for inquiry %s: already posted at %s "
+            "with %d URL(s), still have %d — no change",
+            inquiry.id, inquiry.legacy_response_posted_at, stored_count, len(s3_urls),
+        )
+        return False
+    if already_posted:
+        log.info(
+            "pipeline: re-posting legacy response for inquiry %s: "
+            "previously sent %d URL(s), now have %d",
+            inquiry.id, stored_count, len(s3_urls),
+        )
+
     mfr = getattr(inquiry, "manufacturer", None)
     mfr_name = (mfr.manufacturer if mfr else None) or None
     med_name = (getattr(inquiry, "medication_name", None) or "").strip() or None
@@ -259,6 +278,7 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
     )
     if ok:
         inquiry.legacy_response_posted_at = datetime.now(timezone.utc)
+        inquiry.legacy_attachment_url_count = len(s3_urls)
         try:
             db.commit()
         except Exception:

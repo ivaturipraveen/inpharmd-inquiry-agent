@@ -96,12 +96,19 @@ def process_attachments(
             )
             continue
 
-        url: Optional[str] = s3_service.upload_bytes(
-            data,
-            original_name=name,
-            inquiry_id=inquiry_id,
-            content_type=content_type,
-        )
+        try:
+            url: Optional[str] = s3_service.upload_bytes(
+                data,
+                original_name=name,
+                inquiry_id=inquiry_id,
+                content_type=content_type,
+            )
+        except Exception as exc:
+            log.warning(
+                "S3 upload raised for inquiry %s attachment %d '%s': %s; skipping",
+                inquiry_id, order, name, exc,
+            )
+            continue
         if url is None:
             log.warning(
                 "S3 upload returned None for inquiry %s attachment %d '%s'; skipping",

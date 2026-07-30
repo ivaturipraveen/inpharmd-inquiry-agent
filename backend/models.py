@@ -123,6 +123,7 @@ class Inquiry(Base):
     # response back to the legacy /api/legacy/manufacturing_response endpoint.
     source_inquiry_uuid = Column(String(128), index=True)
     legacy_response_posted_at = Column(DateTime(timezone=True))
+    legacy_attachment_url_count = Column(Integer, nullable=False, default=0)
 
     # When the InpharmD inquiry was a Medication-Use Evaluation with an Excel
     # attachment, we store the doc URL + the row this inquiry's manufacturer

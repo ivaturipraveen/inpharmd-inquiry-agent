@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # regardless of whether it arrived via Graph, IMAP, or SendGrid webhook.
         "ALTER TABLE email_replies ADD COLUMN IF NOT EXISTS smtp_message_id VARCHAR(512)",
         "CREATE UNIQUE INDEX IF NOT EXISTS uix_email_replies_inquiry_smtp_msg ON email_replies (inquiry_id, smtp_message_id) WHERE smtp_message_id IS NOT NULL",
+        # Tracks how many attachment URLs were sent in the most recent legacy POST,
+        # so maybe_post_for_inquiry can re-POST when new attachments have arrived.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_attachment_url_count INTEGER NOT NULL DEFAULT 0",
     ]
     with engine.begin() as conn:
         for sql in statements:
