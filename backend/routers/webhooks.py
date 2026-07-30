@@ -137,7 +137,10 @@ async def elevenlabs_post_call(
     db.commit()
 
     # Forward to legacy if this inquiry came from InpharmD.
-    legacy_response_service.maybe_post_for_inquiry(db, obj)
+    try:
+        legacy_response_service.maybe_post_for_inquiry(db, obj)
+    except Exception:
+        log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
 
     # Post to Slack when the call produced a real answer (mirror of the email path).
     # Denylist the outcomes that are NOT a real manufacturer response; everything

@@ -182,7 +182,7 @@ async def sendgrid_inbound(request: Request) -> Response:
 
         # Coarse dedup for emails with no Message-ID header (shouldn't happen in
         # practice, but protects against duplicate webhook deliveries).
-        if not smtp_message_id and obj.email_response:
+        if smtp_message_id is None and obj.email_response is not None:
             log.info(
                 "pipeline: inbound skip inquiry=%s duplicate (email_response already set, no smtp_mid)",
                 inquiry_id,

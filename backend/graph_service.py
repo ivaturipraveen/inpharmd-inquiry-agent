@@ -251,6 +251,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     has_attachment = bool(raw_atts)
     if not reply and not has_attachment:
         log.info("Inquiry %s reply had no extractable body and no PDF; skipping", inquiry_id)
+        _mark_read(token, mailbox, msg["id"])
         return None
 
     # Create the EmailReply row with the plain-text body. Flush to get reply_id

@@ -205,17 +205,17 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
             inquiry.id,
         )
         return False
-    if getattr(inquiry, "legacy_response_posted_at", None) is not None:
-        log.info(
-            "pipeline: legacy POST skipped for inquiry %s: already posted at %s (writeback will still run if not yet posted)",
-            inquiry.id,
-            inquiry.legacy_response_posted_at,
-        )
-        # NB: original behavior was to return False here without writeback.
-        # We preserve that for safety — writeback re-runs are gated by its
-        # own excel_response_posted_at check, but we don't want to introduce
-        # a behavior change in this logging-only PR.
+
+    # Re-load the inquiry with a row-level lock so concurrent callers
+    # (Graph poll + SendGrid webhook arriving simultaneously) cannot both
+    # pass the already_posted check and double-POST to the legacy API.
+    from models import Inquiry as InquiryModel
+    locked = db.query(InquiryModel).with_for_update().filter(
+        InquiryModel.id == inquiry.id
+    ).first()
+    if locked is None:
         return False
+    inquiry = locked
 
     response_text = (
         getattr(inquiry, "final_answer", None)

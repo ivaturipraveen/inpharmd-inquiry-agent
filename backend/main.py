@@ -118,12 +118,15 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # so maybe_post_for_inquiry can re-POST when new attachments have arrived.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_attachment_url_count INTEGER NOT NULL DEFAULT 0",
     ]
-    with engine.begin() as conn:
-        for sql in statements:
-            try:
+    # Each statement runs in its own transaction so a Postgres error on one
+    # statement does not abort the rest (a single engine.begin() block puts
+    # all subsequent conn.execute() calls in aborted state after any failure).
+    for sql in statements:
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(sql))
-            except Exception as e:
-                logging.getLogger("startup").warning("Migration step failed (%s): %s", sql, e)
+        except Exception as e:
+            logging.getLogger("startup").warning("Migration step failed (%s): %s", sql, e)
 
 
 @app.on_event("startup")
