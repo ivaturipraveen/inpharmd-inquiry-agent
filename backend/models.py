@@ -176,6 +176,7 @@ class EmailReply(Base):
     body = Column(Text)
     sent_at = Column(DateTime(timezone=True), nullable=False)
     graph_message_id = Column(String(512))  # dedup key; unique per inquiry
+    smtp_message_id = Column(String(512))   # RFC 2822 Message-ID; cross-path dedup key
 
     inquiry = relationship("Inquiry", back_populates="email_replies")
     attachments = relationship(

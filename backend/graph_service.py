@@ -26,11 +26,11 @@ from typing import Optional
 
 import httpx
 
+import inbound_attachment_service
 import legacy_response_service
-import s3_service
 import summary_service
 from database import SessionLocal
-from models import EmailReply, Inquiry, InquiryAttachment
+from models import EmailReply, Inquiry
 
 log = logging.getLogger("inquiry.graph")
 
@@ -215,6 +215,20 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         _mark_read(token, mailbox, msg["id"])
         return None
 
+    # Cross-path dedup: if SendGrid or IMAP already stored a reply for the same
+    # SMTP Message-ID, skip rather than creating a duplicate record.
+    smtp_message_id: Optional[str] = (msg.get("internetMessageId") or "").strip() or None
+    if smtp_message_id and db.query(EmailReply).filter(
+        EmailReply.inquiry_id == inquiry_id,
+        EmailReply.smtp_message_id == smtp_message_id,
+    ).first():
+        log.info(
+            "pipeline: graph skip inquiry=%s — smtp_message_id already processed by another path",
+            inquiry_id,
+        )
+        _mark_read(token, mailbox, msg["id"])
+        return None
+
     body = _get_body(msg)
     reply = clean_reply_body(body)
 
@@ -226,85 +240,52 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     )
 
     # ---- Document attachments (one or more) ----
-    uploaded_atts: list[dict] = []
-
+    raw_atts: list[dict] = []
     if msg.get("hasAttachments"):
         att_metadata = _list_document_attachment_metadata(token, mailbox, msg["id"])
-        for order, meta in enumerate(att_metadata):
+        for meta in att_metadata:
             doc = _download_attachment(token, mailbox, msg["id"], meta["id"], meta["name"])
-            if not doc:
-                continue
-            url = s3_service.upload_bytes(
-                doc["bytes"],
-                original_name=doc["name"],
-                inquiry_id=inquiry_id,
-                content_type=doc["content_type"],
-            )
-            if url is None:
-                log.warning(
-                    "S3 upload returned None for inquiry %s attachment %d '%s'; skipping",
-                    inquiry_id, order, doc["name"],
-                )
-                continue
-            att_summary = None
-            if summary_service.is_configured():
-                doc_text = summary_service.extract_document_text(doc["name"], doc["bytes"])
-                if doc_text:
-                    try:
-                        att_summary = summary_service.summarize_pdf(
-                            question=obj.question,
-                            manufacturer=mfr_name,
-                            pdf_text=doc_text,
-                        )
-                    except Exception as e:
-                        log.warning(
-                            "Attachment summary unavailable for inquiry %s attachment %d: %s",
-                            inquiry_id, order, e,
-                        )
-            uploaded_atts.append({
-                "url": url,
-                "filename": doc["name"],
-                "content_type": doc["content_type"],
-                "summary": att_summary,
-                "display_order": order,
-            })
-            log.info(
-                "Inquiry %s attachment %d '%s' (%d bytes) uploaded",
-                inquiry_id, order, doc["name"], len(doc["bytes"]),
-            )
+            if doc:
+                raw_atts.append(doc)
+
+    has_attachment = bool(raw_atts)
+    if not reply and not has_attachment:
+        log.info("Inquiry %s reply had no extractable body and no PDF; skipping", inquiry_id)
+        return None
+
+    # Create the EmailReply row with the plain-text body. Flush to get reply_id
+    # before process_attachments links InquiryAttachment rows to it.
+    # We update body below once we have the attachment summary as a fallback.
+    email_reply = EmailReply(
+        inquiry_id=inquiry_id,
+        direction="inbound",
+        sender_email=sender,
+        body=reply or "",
+        sent_at=datetime.now(timezone.utc),
+        graph_message_id=msg["id"],
+        smtp_message_id=smtp_message_id,
+    )
+    db.add(email_reply)
+    db.flush()
+
+    uploaded_atts = inbound_attachment_service.process_attachments(
+        db=db,
+        inquiry_id=inquiry_id,
+        reply_id=email_reply.id,
+        raw_attachments=raw_atts,
+        question=obj.question,
+        manufacturer_name=mfr_name,
+    )
 
     first_att = uploaded_atts[0] if uploaded_atts else {}
     pdf_url: Optional[str] = first_att.get("url")
     pdf_filename: Optional[str] = first_att.get("filename")
     pdf_summary: Optional[str] = first_att.get("summary")
 
+    # Use attachment summary as reply body fallback when there was no plain text.
     reply_text = reply or pdf_summary or ""
-    if not reply_text and not pdf_url:
-        log.info("Inquiry %s reply had no extractable body and no PDF; skipping", inquiry_id)
-        return None
-
-    # Create the EmailReply row; flush to get its id before linking attachments.
-    email_reply = EmailReply(
-        inquiry_id=inquiry_id,
-        direction="inbound",
-        sender_email=sender,
-        body=reply_text,
-        sent_at=datetime.now(timezone.utc),
-        graph_message_id=msg["id"],
-    )
-    db.add(email_reply)
-    db.flush()
-
-    for att in uploaded_atts:
-        db.add(InquiryAttachment(
-            inquiry_id=inquiry_id,
-            reply_id=email_reply.id,
-            url=att["url"],
-            filename=att["filename"],
-            content_type=att["content_type"],
-            summary=att["summary"],
-            display_order=att["display_order"],
-        ))
+    if not email_reply.body and reply_text:
+        email_reply.body = reply_text
 
     # Only update inquiry scalar fields on the first reply.
     is_first_reply = not obj.email_response
@@ -515,7 +496,7 @@ def poll_once() -> int:
     url = (
         f"{_GRAPH_BASE}/users/{mailbox}/messages"
         f"?$filter=isRead eq false"
-        f"&$select=id,subject,from,body,hasAttachments"
+        f"&$select=id,subject,from,body,hasAttachments,internetMessageId"
         f"&$top=25"
     )
 

@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
     fetched_at TIMESTAMPTZ NOT NULL
 )
 """,
+        # Cross-path dedup: same physical email identified by SMTP Message-ID header
+        # regardless of whether it arrived via Graph, IMAP, or SendGrid webhook.
+        "ALTER TABLE email_replies ADD COLUMN IF NOT EXISTS smtp_message_id VARCHAR(512)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uix_email_replies_inquiry_smtp_msg ON email_replies (inquiry_id, smtp_message_id) WHERE smtp_message_id IS NOT NULL",
     ]
     with engine.begin() as conn:
         for sql in statements:
