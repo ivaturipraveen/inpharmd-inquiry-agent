@@ -9,11 +9,11 @@ Endpoint (Rails on Heroku):
     Header: X-Api-Key: {LEGACY_RESPONSE_API_KEY}
     Content-Type: multipart/form-data
     Form fields:
-        inquiry_uuid       str   (required)
-        mfr_email_response str   (required)
-        mfr_s3_url         str   (optional — direct S3 URL of the attachment;
-                                  legacy fetches from S3 itself, so we don't
-                                  have to download + re-upload)
+        inquiry_uuid       str      (required)
+        mfr_email_response str      (required)
+        mfr_s3_url[]       str[]    (optional — one field per attachment URL;
+                                     Rails receives params[:mfr_s3_url] as an
+                                     array; legacy fetches from S3 itself)
 
 The base URL is the SAME as the rest of the InpharmD APIs — we reuse
 `INPHARMD_API_BASE_URL` (defined in inpharmd_service) so there's a single
@@ -58,15 +58,16 @@ def post_response(
     *,
     inquiry_uuid: str,
     mfr_email_response: str,
-    mfr_s3_url: Optional[str] = None,
+    mfr_s3_urls: Optional[list] = None,
     manufacturer_name: Optional[str] = None,
     medication_name: Optional[str] = None,
 ) -> bool:
     """POST the response back to legacy as multipart/form-data.
 
-    `mfr_s3_url` is the direct S3 URL of the PDF attachment — legacy fetches
-    from S3 itself, so we don't have to download and re-upload it. Pass None
-    when there's no attachment.
+    `mfr_s3_urls` is a list of direct S3 URLs for all attachments — legacy
+    fetches from S3 itself. Each URL is sent as a separate `mfr_s3_url[]`
+    field so Rails receives them as an array. Pass None or [] when there are
+    no attachments.
 
     Returns True on 2xx, False otherwise. Never raises — failures are
     logged and the inquiry flow continues.
@@ -84,23 +85,27 @@ def post_response(
         )
         return False
 
-    # Multipart form fields — Rails endpoint requires multipart even when
-    # there's no file part (it rejects pure JSON with 500).
-    data = {
-        "inquiry_uuid": inquiry_uuid,
-        "mfr_email_response": mfr_email_response or "",
-    }
-    if mfr_s3_url:
-        data["mfr_s3_url"] = mfr_s3_url
+    urls = [u for u in (mfr_s3_urls or []) if u]
+
+    # Build as a list of (name, value) tuples so httpx sends multiple
+    # mfr_s3_url[] fields — Rails parses these as params[:mfr_s3_url] array.
+    # Rails endpoint requires multipart even when there's no file part.
+    data_fields = [
+        ("inquiry_uuid", inquiry_uuid),
+        ("mfr_email_response", mfr_email_response or ""),
+    ]
     if manufacturer_name:
-        data["manufacturer_name"] = manufacturer_name
+        data_fields.append(("manufacturer_name", manufacturer_name))
     if medication_name:
-        data["medication_name"] = medication_name
+        data_fields.append(("medication_name", medication_name))
+    for s3_url in urls:
+        data_fields.append(("mfr_s3_url[]", s3_url))
+
     log.info(
-        "pipeline: legacy POST sending uuid=%s response_chars=%d has_s3_url=%s manufacturer=%s medication=%s",
+        "pipeline: legacy POST sending uuid=%s response_chars=%d s3_urls=%d manufacturer=%s medication=%s",
         inquiry_uuid,
         len(mfr_email_response or ""),
-        bool(mfr_s3_url),
+        len(urls),
         manufacturer_name or "(none)",
         medication_name or "(none)",
     )
@@ -116,7 +121,7 @@ def post_response(
         started = time.monotonic()
         try:
             with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
-                res = client.post(url, headers=headers, data=data, files={})
+                res = client.post(url, headers=headers, data=data_fields, files={})
         except httpx.TimeoutException as e:
             elapsed = (time.monotonic() - started) * 1000
             log.warning(
@@ -219,7 +224,22 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
         )
         return False
 
-    s3_url = getattr(inquiry, "pdf_url", None) or None
+    # Collect all InquiryAttachment URLs for this inquiry, ordered by
+    # display_order.  Falls back to the scalar pdf_url for inquiries that
+    # pre-date the InquiryAttachment table.
+    from models import InquiryAttachment
+    s3_urls = [
+        att.url
+        for att in db.query(InquiryAttachment)
+            .filter(InquiryAttachment.inquiry_id == inquiry.id)
+            .order_by(InquiryAttachment.display_order)
+            .all()
+        if att.url
+    ]
+    if not s3_urls:
+        scalar = getattr(inquiry, "pdf_url", None) or None
+        s3_urls = [scalar] if scalar else []
+
     mfr = getattr(inquiry, "manufacturer", None)
     mfr_name = (mfr.manufacturer if mfr else None) or None
     med_name = (getattr(inquiry, "medication_name", None) or "").strip() or None
@@ -227,7 +247,7 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
     ok = post_response(
         inquiry_uuid=uuid,
         mfr_email_response=response_text,
-        mfr_s3_url=s3_url,
+        mfr_s3_urls=s3_urls,
         manufacturer_name=mfr_name,
         medication_name=med_name,
     )
