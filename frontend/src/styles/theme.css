@@ -325,6 +325,15 @@ a:hover {
   border-color: var(--brand-orange);
   color: var(--brand-orange);
 }
+.btn-ghost-danger {
+  background: var(--surface);
+  color: var(--red);
+  border-color: var(--line);
+}
+.btn-ghost-danger:hover {
+  border-color: var(--red);
+  background: var(--red-soft, #fff1f1);
+}
 .btn-link {
   background: none;
   border: none;

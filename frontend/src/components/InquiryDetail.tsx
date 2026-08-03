@@ -419,7 +419,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     Edit Content
                   </button>
                   <button
-                    className="btn btn-link btn-link-danger"
+                    className="btn btn-ghost-danger"
                     type="button"
                     disabled={busy}
                     onClick={() => {
