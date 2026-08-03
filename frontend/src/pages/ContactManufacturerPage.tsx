@@ -813,6 +813,45 @@ export default function ContactManufacturerPage() {
       {extractError && <div className="error-banner">{extractError}</div>}
       {error && <div className="error-banner">{error}</div>}
 
+      {/* Already Contacted — shown when there are no attachment extractions to render the section inline */}
+      {!attachmentExtractions.some((s) => s.result) && contactedMfrMap.size > 0 && !bulkResult && (
+        <div className="page-form">
+          <div className="page-form-body">
+            <div className="contacted-section">
+              <div className="contacted-section-header">
+                Already contacted ({existingInquiries.length})
+              </div>
+              {existingInquiries.map((inq) => {
+                const mfr = mfrById[inq.manufacturer_id];
+                return (
+                  <div key={inq.id} className="contacted-row">
+                    <div className="contacted-row-main">
+                      <span className="contacted-row-name">
+                        {mfr?.manufacturer ?? `Manufacturer #${inq.manufacturer_id}`}
+                      </span>
+                      {(inq.medication_name || inq.pi_storage_data) && (
+                        <div className="bulk-row-product-info" style={{ marginTop: 2 }}>
+                          {inq.medication_name && (
+                            <span className="bulk-row-product-pill">💊 {inq.medication_name}</span>
+                          )}
+                          {inq.pi_storage_data && (
+                            <span className="bulk-row-product-pill">🌡 {inq.pi_storage_data}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="contacted-row-status">
+                      <StatusBadge status={inq.status} />
+                      <span className="contacted-row-id">#{inq.id}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MULTI mode: manufacturer lists grouped by file */}
       {mode === "multi" && anyExtracted && !bulkResult && !emailReview && (() => {
         const searchTokens = search.trim().toLowerCase();
