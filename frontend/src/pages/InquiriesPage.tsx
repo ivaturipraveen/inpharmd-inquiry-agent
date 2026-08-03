@@ -9,6 +9,7 @@ import type { Inquiry, InquiryInput, ManufacturerContact } from "../types";
 const STATUS_FILTERS = [
   { value: "", label: "All statuses" },
   { value: "draft", label: "Draft" },
+  { value: "email_pending", label: "Scheduled" },
   { value: "email_sent", label: "Email Sent" },
   { value: "email_responded", label: "Email Responded" },
   { value: "call_pending", label: "Call Pending" },
@@ -23,7 +24,7 @@ const STATUS_FILTERS = [
 // + call_completed, group counted those plus `closed`, so a closed
 // inquiry made the two readouts disagree by one.
 const RESPONDED_STATUSES = ["email_responded", "call_completed", "closed"];
-const AWAITING_STATUSES = ["email_sent", "call_pending"];
+const AWAITING_STATUSES = ["email_pending", "email_sent", "call_pending"];
 const DRAFT_STATUSES = ["draft"];
 
 // Bucket filter values used by the stat-tile click handlers. The
@@ -122,7 +123,7 @@ export default function InquiriesPage() {
   const hasInFlight = useMemo(
     () =>
       inquiries.some((i) =>
-        ["call_pending", "email_sent"].includes(i.status)
+        ["email_pending", "call_pending", "email_sent"].includes(i.status)
       ),
     [inquiries]
   );
@@ -234,7 +235,19 @@ export default function InquiriesPage() {
       switch (action) {
         case "sendEmail":
           updated = await api.inquiries.sendEmail(selected.id);
-          setSuccess("Email marked as sent.");
+          setSuccess("Email scheduled — will send in ~30 min.");
+          break;
+        case "cancelScheduledEmail":
+          updated = await api.inquiries.cancelScheduledEmail(selected.id);
+          setSuccess("Scheduled email cancelled. Inquiry returned to draft.");
+          break;
+        case "editScheduledEmail":
+          updated = await api.inquiries.editScheduledEmailContent(selected.id, payload.subject, payload.question);
+          setSuccess("Email content updated.");
+          break;
+        case "sendNow":
+          updated = await api.inquiries.sendEmailNow(selected.id);
+          setSuccess("Email sent immediately.");
           break;
         case "recordEmailResponse":
           updated = await api.inquiries.recordEmailResponse(selected.id, payload);
@@ -452,7 +465,16 @@ export default function InquiriesPage() {
                           <div className="cell-primary">{i.subject}</div>
                         </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
-                        <td><StatusBadge status={i.status} /></td>
+                        <td>
+                          <StatusBadge status={i.status} />
+                          {i.status === "email_pending" && i.email_scheduled_for && (
+                            <div className="cell-muted" style={{ fontSize: "0.75rem", marginTop: 2 }}>
+                              {new Date(i.email_scheduled_for) > new Date()
+                                ? `Sends at ${new Date(i.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                : "Sending soon…"}
+                            </div>
+                          )}
+                        </td>
                         <td className="cell-muted">{fmtDate(i.created_at)}</td>
                         <td className="cell-muted">{i.fallback_after_hours}h</td>
                       </tr>
@@ -551,6 +573,8 @@ export default function InquiriesPage() {
                                     (c.email_response.length > 120 ? "…" : "")
                                   : c.status === "draft"
                                   ? "Not sent yet"
+                                  : c.status === "email_pending"
+                                  ? `Scheduled — sends at ${c.email_scheduled_for ? new Date(c.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "..."}`
                                   : "Waiting for reply"}
                               </div>
                             </td>
@@ -592,7 +616,7 @@ export default function InquiriesPage() {
           onClose={() => setPendingChoice(null)}
           onSendEmail={async () => {
             const updated = await api.inquiries.sendEmail(pendingChoice.id);
-            setSuccess(`Email queued for ${updated.manufacturer?.manufacturer ?? ""}.`);
+            setSuccess(`Email scheduled to send to ${updated.manufacturer?.manufacturer ?? ""} in ~30 min.`);
             setPendingChoice(null);
             await load();
             setSelected(updated);

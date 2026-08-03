@@ -117,6 +117,10 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # Tracks how many attachment URLs were sent in the most recent legacy POST,
         # so maybe_post_for_inquiry can re-POST when new attachments have arrived.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_attachment_url_count INTEGER NOT NULL DEFAULT 0",
+        # Scheduled email delivery: inquiry stays in email_pending until this time.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS email_scheduled_for TIMESTAMPTZ",
+        # Partial index: only indexes pending rows so it stays small and fast.
+        "CREATE INDEX IF NOT EXISTS ix_inquiries_email_pending ON inquiries (status, email_scheduled_for) WHERE status = 'email_pending'",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

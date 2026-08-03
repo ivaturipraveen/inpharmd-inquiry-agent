@@ -46,6 +46,7 @@ class ManufacturerContactOut(ManufacturerContactBase):
 # ---------- Inquiry ----------
 InquiryStatus = Literal[
     "draft",
+    "email_pending",
     "email_sent",
     "email_responded",
     "call_pending",
@@ -171,6 +172,11 @@ class InquiryUpdate(BaseModel):
     final_answer: Optional[str] = None
 
 
+class ScheduledEmailContentUpdate(BaseModel):
+    subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
+    question: str
+
+
 class EmailResponsePayload(BaseModel):
     response: str
 
@@ -185,6 +191,7 @@ class InquiryOut(InquiryBase):
     user_id: Optional[int] = None
     created_by: Optional[str] = None   # display_name or email of the creating user
     status: InquiryStatus
+    email_scheduled_for: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
     email_message_id: Optional[str] = None
     email_response_at: Optional[datetime] = None

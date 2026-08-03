@@ -193,6 +193,15 @@ export const api = {
       }),
     close: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/close`, { method: "POST" }),
+    cancelScheduledEmail: (id: number) =>
+      request<Inquiry>(`/api/inquiries/${id}/cancel-scheduled-email`, { method: "POST" }),
+    editScheduledEmailContent: (id: number, subject: string, question: string) =>
+      request<Inquiry>(`/api/inquiries/${id}/scheduled-email-content`, {
+        method: "PATCH",
+        body: JSON.stringify({ subject, question }),
+      }),
+    sendEmailNow: (id: number) =>
+      request<Inquiry>(`/api/inquiries/${id}/send-now`, { method: "POST" }),
     extractAnswer: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
     bulkCreate: (data: {

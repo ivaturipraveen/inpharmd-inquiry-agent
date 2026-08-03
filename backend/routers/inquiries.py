@@ -14,6 +14,7 @@ import summary_service
 from database import get_db
 from models import EmailReply, Inquiry, InquiryAttachment, ManufacturerContact, User
 from routers.auth import get_current_user
+from scheduler import EMAIL_SCHEDULE_DELAY_MINUTES
 from schemas import (
     BulkInquiryCreate,
     BulkInquiryResult,
@@ -22,6 +23,7 @@ from schemas import (
     InquiryCreate,
     InquiryOut,
     InquiryUpdate,
+    ScheduledEmailContentUpdate,
 )
 
 
@@ -216,14 +218,14 @@ async def bulk_create_inquiries(
         # recipient. Multiple Excel rows can resolve to the same manufacturer
         # (e.g. 25 MUE rows all directed at Fresenius Kabi) — without this
         # dedup we'd fire 25 identical emails. Every sibling inquiry in a
-        # group still gets email_sent_at stamped so the response-writeback
-        # path (which fans out over source_inquiry_uuid siblings) updates
-        # every Excel row when the reply lands.
+        # group still gets email_scheduled_for stamped so the scheduler sends
+        # one email and stamps all siblings email_sent together.
         groups: dict[str, list[Inquiry]] = {}
+        scheduled_for = _now() + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES)
         for obj in list(created_objs):
             # Idempotency: if this inquiry was already dispatched (e.g. client
             # retry after a network blip), skip it.
-            if obj.email_sent_at is not None:
+            if obj.email_sent_at is not None or obj.status == "email_pending":
                 continue
             mfr = db.get(ManufacturerContact, obj.manufacturer_id)
             if not mfr:
@@ -238,39 +240,11 @@ async def bulk_create_inquiries(
                 continue
             groups.setdefault(to_email.strip().lower(), []).append(obj)
 
-        for to_email_key, siblings in groups.items():
-            primary = siblings[0]
-            mfr = db.get(ManufacturerContact, primary.manufacturer_id)
-            # Use the un-lowercased address from the manufacturer record for the
-            # actual send (SMTP is case-insensitive but users may care).
-            to_email = mfr.official_mi_email or mfr.team_verified_email
-            try:
-                message_id = email_service.send_inquiry_email(
-                    inquiry_id=primary.id,
-                    manufacturer_name=mfr.manufacturer,
-                    to_email=to_email,
-                    subject=primary.subject,
-                    question=primary.question,
-                    requester_name=primary.requester_name,
-                    requester_email=primary.requester_email,
-                    medication_name=primary.medication_name,
-                    pi_storage_data=primary.pi_storage_data,
-                    pi_link=primary.pi_link,
-                )
-            except Exception as e:
-                for sib in siblings:
-                    failed.append({
-                        "manufacturer_id": sib.manufacturer_id,
-                        "error": f"Email send failed: {e}",
-                    })
-                continue
-            now = _now()
+        for _to_email_key, siblings in groups.items():
             for sib in siblings:
-                sib.status = "email_sent"
-                sib.email_sent_at = now
-                sib.email_message_id = message_id
-                sib.call_scheduled_for = now + timedelta(hours=sib.fallback_after_hours)
-            dispatched += 1  # unique emails sent, not inquiries stamped
+                sib.status = "email_pending"
+                sib.email_scheduled_for = scheduled_for
+            dispatched += 1  # unique email groups scheduled, not inquiries stamped
         db.commit()
 
     elif channel == "call":
@@ -411,14 +385,16 @@ def send_email(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Send the inquiry via SendGrid to the manufacturer's MI email and schedule
-    the fallback call window. Replies come back to our mailbox and are captured
-    automatically by the IMAP poller."""
+    """Schedule the inquiry email for delivery after EMAIL_SCHEDULE_DELAY_MINUTES.
+
+    The inquiry moves to `email_pending`. The background scheduler sends it
+    and transitions to `email_sent`. Use POST /send-now to send immediately,
+    or POST /cancel-scheduled-email to revert to draft."""
     obj = _get_or_404(db, inquiry_id, current_user)
-    if obj.status not in ("draft", "email_sent", "failed"):
+    if obj.status not in ("draft", "failed"):
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot send email from status '{obj.status}'",
+            detail=f"Cannot schedule email from status '{obj.status}'",
         )
 
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
@@ -431,17 +407,98 @@ def send_email(
             detail=f"{mfr.manufacturer} has no email address on file",
         )
 
+    obj.status = "email_pending"
+    obj.email_scheduled_for = _now() + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES)
+    db.commit()
+    return _get_or_404(db, inquiry_id, current_user)
+
+
+@router.post("/{inquiry_id}/cancel-scheduled-email", response_model=InquiryOut)
+def cancel_scheduled_email(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cancel a scheduled email and revert the inquiry to draft."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    if obj.status != "email_pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel: inquiry is in status '{obj.status}', not 'email_pending'",
+        )
+    obj.status = "draft"
+    obj.email_scheduled_for = None
+    db.commit()
+    return _get_or_404(db, inquiry_id, current_user)
+
+
+@router.patch("/{inquiry_id}/scheduled-email-content", response_model=InquiryOut)
+def edit_scheduled_email_content(
+    inquiry_id: int,
+    payload: ScheduledEmailContentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update subject and question while the email is in the scheduling window."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    if obj.status != "email_pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot edit: inquiry is in status '{obj.status}', not 'email_pending'",
+        )
+    obj.subject = payload.subject
+    obj.question = payload.question
+    db.commit()
+    return _get_or_404(db, inquiry_id, current_user)
+
+
+@router.post("/{inquiry_id}/send-now", response_model=InquiryOut)
+def send_now(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Send the scheduled email immediately, bypassing the delay window.
+
+    Uses SELECT FOR UPDATE so a concurrent scheduler tick (which uses
+    SKIP LOCKED) will skip this row, guaranteeing exactly-once delivery."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+
+    # Re-fetch with row lock to serialize against the scheduler tick.
+    locked = (
+        db.query(Inquiry)
+        .with_for_update()
+        .filter(Inquiry.id == inquiry_id, Inquiry.status == "email_pending")
+        .first()
+    )
+    if locked is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Email is no longer scheduled (it may have already been sent).",
+        )
+
+    mfr = db.get(ManufacturerContact, locked.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+    to_email = mfr.official_mi_email or mfr.team_verified_email
+    if not to_email:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{mfr.manufacturer} has no email address on file",
+        )
+
     try:
         message_id = email_service.send_inquiry_email(
-            inquiry_id=obj.id,
+            inquiry_id=locked.id,
             manufacturer_name=mfr.manufacturer,
             to_email=to_email,
-            subject=obj.subject,
-            question=obj.question,
-            requester_name=obj.requester_name,
-            requester_email=obj.requester_email,
-            medication_name=obj.medication_name,
-            pi_storage_data=obj.pi_storage_data,
+            subject=locked.subject,
+            question=locked.question,
+            requester_name=locked.requester_name,
+            requester_email=locked.requester_email,
+            medication_name=locked.medication_name,
+            pi_storage_data=locked.pi_storage_data,
+            pi_link=locked.pi_link,
         )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -449,10 +506,11 @@ def send_email(
         raise HTTPException(status_code=502, detail=f"Email send failed: {e}")
 
     now = _now()
-    obj.status = "email_sent"
-    obj.email_sent_at = now
-    obj.email_message_id = message_id
-    obj.call_scheduled_for = now + timedelta(hours=obj.fallback_after_hours)
+    locked.status = "email_sent"
+    locked.email_sent_at = now
+    locked.email_message_id = message_id
+    locked.email_scheduled_for = None
+    locked.call_scheduled_for = now + timedelta(hours=locked.fallback_after_hours)
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

@@ -19,6 +19,9 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [emailReply, setEmailReply] = useState("");
   const [callSummary, setCallSummary] = useState("");
   const [callTranscript, setCallTranscript] = useState("");
+  const [editingScheduled, setEditingScheduled] = useState(false);
+  const [editSubject, setEditSubject] = useState("");
+  const [editQuestion, setEditQuestion] = useState("");
 
   // When opened via a Slack "View transcript" deep-link (#inquiries?id=N&focus=transcript)
   // scroll the transcript into view after the modal renders.
@@ -46,6 +49,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
 
   const callInFlight = inquiry.status === "call_pending";
   const canSendEmail = ["draft", "failed"].includes(inquiry.status);
+  const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
   // Allow manual call from any not-yet-answered state. Retries reuse this same trigger.
   // While a call is in flight we still render the button (disabled) so the user
@@ -232,6 +236,18 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 </div>
               </li>
 
+              {inquiry.email_scheduled_for && !inquiry.email_sent_at && (
+                <li className="timeline-item pending">
+                  <div className="timeline-dot" />
+                  <div>
+                    <div className="timeline-title">Email scheduled</div>
+                    <div className="timeline-meta">
+                      Sends at {fmtDate(inquiry.email_scheduled_for)}
+                    </div>
+                  </div>
+                </li>
+              )}
+
               <li
                 className={`timeline-item ${
                   inquiry.email_sent_at ? "done" : "pending"
@@ -325,6 +341,97 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               <strong>Not responded after {retryCount} attempt
               {retryCount === 1 ? "" : "s"}.</strong> Decide what to do next —
               retry manually, send the inquiry by email, or close it.
+            </div>
+          )}
+
+          {/* Scheduled email actions */}
+          {isScheduled && (
+            <div className="detail-section action-panel">
+              <div className="detail-label">
+                Scheduled email
+                {inquiry.email_scheduled_for && (
+                  <span className="timeline-meta" style={{ marginLeft: 8 }}>
+                    · sends at {new Date(inquiry.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{" "}
+                    ({new Date(inquiry.email_scheduled_for).toLocaleDateString()})
+                  </span>
+                )}
+              </div>
+
+              {editingScheduled ? (
+                <>
+                  <label className="detail-label" style={{ marginTop: 8 }}>Subject</label>
+                  <input
+                    type="text"
+                    value={editSubject}
+                    onChange={(e) => setEditSubject(e.target.value)}
+                    maxLength={1000}
+                  />
+                  <label className="detail-label" style={{ marginTop: 8 }}>Question</label>
+                  <textarea
+                    value={editQuestion}
+                    onChange={(e) => setEditQuestion(e.target.value)}
+                    rows={4}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      disabled={busy || !editSubject.trim() || !editQuestion.trim()}
+                      onClick={() =>
+                        run(async () => {
+                          await onAction("editScheduledEmail", { subject: editSubject, question: editQuestion });
+                          setEditingScheduled(false);
+                        })
+                      }
+                    >
+                      Save Changes
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setEditingScheduled(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => run(() => onAction("sendNow"))}
+                  >
+                    Send Now
+                  </button>
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setEditSubject(inquiry.subject);
+                      setEditQuestion(inquiry.question);
+                      setEditingScheduled(true);
+                    }}
+                  >
+                    Edit Content
+                  </button>
+                  <button
+                    className="btn btn-link btn-link-danger"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      if (confirm("Cancel the scheduled email and revert to draft?")) {
+                        run(() => onAction("cancelScheduledEmail"));
+                      }
+                    }}
+                  >
+                    Cancel Send
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

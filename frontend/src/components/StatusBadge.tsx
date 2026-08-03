@@ -3,6 +3,7 @@ import type { InquiryStatus } from "../types";
 
 const LABEL: Record<InquiryStatus, string> = {
   draft: "Draft",
+  email_pending: "Scheduled",
   email_sent: "Email Sent",
   email_responded: "Email Responded",
   call_pending: "Call Pending",
@@ -14,6 +15,7 @@ const LABEL: Record<InquiryStatus, string> = {
 
 const TONE: Record<InquiryStatus, string> = {
   draft: "tone-neutral",
+  email_pending: "tone-amber",
   email_sent: "tone-blue",
   email_responded: "tone-green",
   call_pending: "tone-amber",

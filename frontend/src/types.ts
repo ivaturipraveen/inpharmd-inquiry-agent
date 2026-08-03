@@ -30,6 +30,7 @@ export type ManufacturerContactInput = Omit<
 
 export type InquiryStatus =
   | "draft"
+  | "email_pending"
   | "email_sent"
   | "email_responded"
   | "call_pending"
@@ -76,6 +77,7 @@ export interface Inquiry {
   requester_email?: string | null;
   fallback_after_hours: number;
   status: InquiryStatus;
+  email_scheduled_for?: string | null;
   email_sent_at?: string | null;
   email_response_at?: string | null;
   email_response?: string | null;

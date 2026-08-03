@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -26,6 +26,10 @@ log = logging.getLogger("inquiry.scheduler")
 
 # How often to scan for due retries (seconds)
 _TICK_SECONDS = int(os.getenv("INQUIRY_RETRY_TICK_SECONDS", "60"))
+
+# Delay between "send email" button click and actual dispatch (minutes).
+# Exposed here so routers can import it rather than reading the env var themselves.
+EMAIL_SCHEDULE_DELAY_MINUTES = int(os.getenv("EMAIL_SCHEDULE_DELAY_MINUTES", "30"))
 
 _scheduler: Optional[BackgroundScheduler] = None
 
@@ -92,6 +96,119 @@ def _place_retry(db, obj: Inquiry) -> None:
         obj.id,
         obj.call_conversation_id,
     )
+
+
+def _scan_and_send_pending_emails() -> None:
+    """Scheduler tick: send emails whose scheduled delivery time has elapsed.
+
+    Strategy:
+    1. Read all due email_pending rows (no lock) to build group keys.
+    2. For each group, re-fetch with SELECT FOR UPDATE SKIP LOCKED so
+       concurrent instances / the send-now endpoint can't double-send.
+    3. Each group is committed independently so a SendGrid failure on one
+       group doesn't roll back the others.
+    """
+    import email_service
+
+    db = SessionLocal()
+    try:
+        now = _now()
+        pending = (
+            db.query(Inquiry)
+            .options(joinedload(Inquiry.manufacturer))
+            .filter(
+                Inquiry.status == "email_pending",
+                Inquiry.email_scheduled_for.isnot(None),
+                Inquiry.email_scheduled_for <= now,
+            )
+            .order_by(Inquiry.email_scheduled_for.asc())
+            .all()
+        )
+    except Exception:
+        log.exception("Scheduled email scan query failed")
+        db.close()
+        return
+    finally:
+        db.close()
+
+    if not pending:
+        return
+
+    log.info("Scheduled email scan: %s due", len(pending))
+
+    # Group by (to_email, source_inquiry_uuid_or_id) — mirrors the bulk-dispatch
+    # grouping so siblings from the same MUE batch receive one email, while two
+    # separate batches to the same manufacturer address stay independent.
+    groups: dict[str, list[int]] = {}
+    for obj in pending:
+        mfr = obj.manufacturer
+        if not mfr:
+            log.warning("Inquiry %s has no manufacturer; skipping scheduled send", obj.id)
+            continue
+        to_email = (mfr.official_mi_email or mfr.team_verified_email or "").strip().lower()
+        if not to_email:
+            log.warning("Inquiry %s manufacturer '%s' has no email; skipping", obj.id, mfr.manufacturer)
+            continue
+        uuid_key = (obj.source_inquiry_uuid or "").strip() or str(obj.id)
+        groups.setdefault(f"{to_email}|{uuid_key}", []).append(obj.id)
+
+    for group_key, ids in groups.items():
+        db2 = SessionLocal()
+        try:
+            locked = (
+                db2.query(Inquiry)
+                .options(joinedload(Inquiry.manufacturer))
+                .filter(Inquiry.id.in_(ids), Inquiry.status == "email_pending")
+                .with_for_update(skip_locked=True)
+                .all()
+            )
+            if not locked:
+                db2.close()
+                continue
+
+            primary = min(locked, key=lambda x: x.id)
+            mfr = primary.manufacturer
+            to_email_send = (mfr.official_mi_email or mfr.team_verified_email or "").strip()
+
+            try:
+                message_id = email_service.send_inquiry_email(
+                    inquiry_id=primary.id,
+                    manufacturer_name=mfr.manufacturer,
+                    to_email=to_email_send,
+                    subject=primary.subject,
+                    question=primary.question,
+                    requester_name=primary.requester_name,
+                    requester_email=primary.requester_email,
+                    medication_name=primary.medication_name,
+                    pi_storage_data=primary.pi_storage_data,
+                    pi_link=primary.pi_link,
+                )
+            except Exception:
+                log.exception(
+                    "Scheduled email send failed for group %s (inquiry %s); will retry on next tick",
+                    group_key, primary.id,
+                )
+                db2.rollback()
+                db2.close()
+                continue
+
+            sent_at = _now()
+            for sib in locked:
+                sib.status = "email_sent"
+                sib.email_sent_at = sent_at
+                sib.email_message_id = message_id
+                sib.email_scheduled_for = None
+                sib.call_scheduled_for = sent_at + timedelta(hours=sib.fallback_after_hours)
+            db2.commit()
+            log.info(
+                "Scheduled email sent for group %s (primary inquiry %s, %s sibling(s))",
+                group_key, primary.id, len(locked),
+            )
+        except Exception:
+            log.exception("Unexpected error processing scheduled email group %s; rolling back", group_key)
+            db2.rollback()
+        finally:
+            db2.close()
 
 
 def _poll_email_replies() -> None:
@@ -166,11 +283,21 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _email_send_seconds = int(os.getenv("EMAIL_SEND_TICK_SECONDS", "60"))
+    _scheduler.add_job(
+        _scan_and_send_pending_emails,
+        "interval",
+        seconds=_email_send_seconds,
+        id="scheduled_email_send",
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
     log.info(
-        "Schedulers started (retry every %ss, email poll every %ss)",
+        "Schedulers started (retry every %ss, email poll every %ss, scheduled send every %ss)",
         _TICK_SECONDS,
         _poll_seconds,
+        _email_send_seconds,
     )
 
 

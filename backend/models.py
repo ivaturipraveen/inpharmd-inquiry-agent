@@ -51,6 +51,7 @@ class ManufacturerContact(Base):
 #   failed          -> manual mark of unrecoverable failure
 INQUIRY_STATUSES = (
     "draft",
+    "email_pending",   # scheduled; scheduler will send at email_scheduled_for
     "email_sent",
     "email_responded",
     "call_pending",
@@ -92,6 +93,7 @@ class Inquiry(Base):
 
     status = Column(String(32), nullable=False, default="draft", index=True)
 
+    email_scheduled_for = Column(DateTime(timezone=True))
     email_sent_at = Column(DateTime(timezone=True))
     email_message_id = Column(String(255))
     email_response_at = Column(DateTime(timezone=True))
