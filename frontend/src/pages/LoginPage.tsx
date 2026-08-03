@@ -79,8 +79,8 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
       const res = await api.auth.verifyOtp(otpState.emailToken, otp.trim());
       session.set(res.session_token);
       onLogin({ id: res.user.id, email: res.user.email, display_name: res.user.display_name });
-    } catch (err: any) {
-      setError(parseApiError(err));
+    } catch {
+      setError("Invalid verification code. Please try again.");
     } finally {
       setSubmitting(false);
     }

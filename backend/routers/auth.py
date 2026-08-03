@@ -182,8 +182,8 @@ def verify_otp(payload: VerifyOtpIn, db: Session = Depends(get_db)):
     except inpharmd_service.InpharmdAPIError as e:
         log.warning("auth.verify-otp rejected status=%s body=%s", e.status_code, e.body)
         raise HTTPException(
-            status_code=401 if e.status_code in (401, 422) else 502,
-            detail="Invalid or expired verification code." if e.status_code in (401, 422) else "OTP verification failed.",
+            status_code=401 if e.status_code in (400, 401, 422) else 502,
+            detail="Invalid verification code. Please try again.",
         )
 
     # Email lives in data.attributes.email in the JSON:API response.
