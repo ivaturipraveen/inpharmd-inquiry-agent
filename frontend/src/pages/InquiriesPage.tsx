@@ -466,14 +466,16 @@ export default function InquiriesPage() {
                         </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
                         <td>
-                          <StatusBadge status={i.status} />
-                          {i.status === "email_pending" && i.email_scheduled_for && (
-                            <div className="cell-muted" style={{ fontSize: "0.75rem", marginTop: 2 }}>
-                              {new Date(i.email_scheduled_for) > new Date()
-                                ? `Sends at ${new Date(i.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                                : "Sending soon…"}
-                            </div>
-                          )}
+                          <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                            <StatusBadge status={i.status} />
+                            {i.status === "email_pending" && i.email_scheduled_for && (
+                              <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: 2 }}>
+                                {new Date(i.email_scheduled_for) > new Date()
+                                  ? `Sends at ${new Date(i.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                  : "Sending soon…"}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="cell-muted">{fmtDate(i.created_at)}</td>
                         <td className="cell-muted">{i.fallback_after_hours}h</td>
