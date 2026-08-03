@@ -163,6 +163,36 @@ def login(email: str, password: str, channel_id: Optional[str] = None) -> Dict[s
     return _call("POST", "/api/v2/login", data=payload)
 
 
+_2FA_HEADERS = {"Accept": "application/vnd.api+json"}
+
+
+def login_2fa(email: str, password: str, channel_id: Optional[str] = None) -> Dict[str, Any]:
+    """Initiate 2FA login. Returns either a normal session response or
+    {"code": "otp_required", "email_token": "...", "message": "...", "email": "..."}."""
+    payload: Dict[str, Any] = {"email": email, "password": password}
+    if channel_id:
+        payload["channel_id"] = channel_id
+    return _call("POST", "/api/v2/login/2fa_login", data=payload, headers=_2FA_HEADERS)
+
+
+def verify_otp(email_token: str, otp: str, channel_id: Optional[str] = None) -> Dict[str, Any]:
+    """Submit the OTP code. Returns the full JSON:API session response on success
+    (same shape as a normal login: data.attributes.access-token, user-id, email, …)."""
+    payload: Dict[str, Any] = {"email_token": email_token, "otp": otp}
+    if channel_id:
+        payload["channel_id"] = channel_id
+    return _call("POST", "/api/v2/login/verify_otp", data=payload, headers=_2FA_HEADERS)
+
+
+def resend_otp(email_token: str) -> Dict[str, Any]:
+    """Request a new OTP code. Returns {"code":"sent", "email_token": <new>, "message": …, "email": …}."""
+    return _call(
+        "POST", "/api/v2/login/resend_otp",
+        data={"email_token": email_token},
+        headers=_2FA_HEADERS,
+    )
+
+
 def list_inquiries(access_token: str, **extra_params: Any) -> Any:
     params = {"access_token": access_token, **{k: v for k, v in extra_params.items() if v is not None}}
     # Open Medication Use Evaluation (MUE) inquiries with submitter attachments.

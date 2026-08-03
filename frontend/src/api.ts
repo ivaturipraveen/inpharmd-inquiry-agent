@@ -243,19 +243,26 @@ export const api = {
   },
   auth: {
     login: (email: string, password: string, channel_id?: string) =>
-      request<{
-        session_token: string;
-        user: {
-          id: number;
-          email: string;
-          display_name?: string | null;
-          staging_user_id?: string | null;
-          last_login_at?: string | null;
-        };
-      }>(`/api/auth/login`, {
+      request<
+        | { session_token: string; user: { id: number; email: string; display_name?: string | null; staging_user_id?: string | null; last_login_at?: string | null } }
+        | { code: "otp_required"; message: string; email_token: string; email: string }
+      >(`/api/auth/login`, {
         method: "POST",
         body: JSON.stringify({ email, password, channel_id }),
       }),
+    verifyOtp: (email_token: string, otp: string) =>
+      request<{
+        session_token: string;
+        user: { id: number; email: string; display_name?: string | null; staging_user_id?: string | null; last_login_at?: string | null };
+      }>(`/api/auth/verify-otp`, {
+        method: "POST",
+        body: JSON.stringify({ email_token, otp }),
+      }),
+    resendOtp: (email_token: string) =>
+      request<{ code: string; message: string; email_token: string; email: string }>(
+        `/api/auth/resend-otp`,
+        { method: "POST", body: JSON.stringify({ email_token }) },
+      ),
     me: () =>
       request<{
         user: {
