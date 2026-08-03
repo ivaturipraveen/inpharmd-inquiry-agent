@@ -135,12 +135,21 @@ def _scan_and_send_pending_emails() -> None:
 
     log.info("Scheduled email scan: %s due", len(pending))
 
+    # Build a map of inquiry_id → manufacturer from the initial unlocked read.
+    # This avoids re-joining in the FOR UPDATE query below — PostgreSQL rejects
+    # SELECT FOR UPDATE on the nullable side of an outer join (which joinedload
+    # produces), so the per-group locked query must not use joinedload.
+    mfr_by_inquiry: dict[int, ManufacturerContact] = {}
+    for obj in pending:
+        if obj.manufacturer:
+            mfr_by_inquiry[obj.id] = obj.manufacturer
+
     # Group by (to_email, source_inquiry_uuid_or_id) — mirrors the bulk-dispatch
     # grouping so siblings from the same MUE batch receive one email, while two
     # separate batches to the same manufacturer address stay independent.
     groups: dict[str, list[int]] = {}
     for obj in pending:
-        mfr = obj.manufacturer
+        mfr = mfr_by_inquiry.get(obj.id)
         if not mfr:
             log.warning("Inquiry %s has no manufacturer; skipping scheduled send", obj.id)
             continue
@@ -154,9 +163,10 @@ def _scan_and_send_pending_emails() -> None:
     for group_key, ids in groups.items():
         db2 = SessionLocal()
         try:
+            # No joinedload here — FOR UPDATE + outer join is rejected by PostgreSQL.
+            # Manufacturer data comes from mfr_by_inquiry built above.
             locked = (
                 db2.query(Inquiry)
-                .options(joinedload(Inquiry.manufacturer))
                 .filter(Inquiry.id.in_(ids), Inquiry.status == "email_pending")
                 .with_for_update(skip_locked=True)
                 .all()
@@ -166,7 +176,11 @@ def _scan_and_send_pending_emails() -> None:
                 continue
 
             primary = min(locked, key=lambda x: x.id)
-            mfr = primary.manufacturer
+            mfr = mfr_by_inquiry.get(primary.id)
+            if not mfr:
+                log.warning("No manufacturer cached for inquiry %s; skipping group %s", primary.id, group_key)
+                db2.close()
+                continue
             to_email_send = (mfr.official_mi_email or mfr.team_verified_email or "").strip()
 
             try:
