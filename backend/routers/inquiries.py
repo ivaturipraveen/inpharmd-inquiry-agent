@@ -419,15 +419,25 @@ def cancel_scheduled_email(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Cancel a scheduled email and revert the inquiry to draft."""
-    obj = _get_or_404(db, inquiry_id, current_user)
-    if obj.status != "email_pending":
+    """Cancel a scheduled email and revert the inquiry to draft.
+
+    Uses SELECT FOR UPDATE so a concurrent scheduler tick (SKIP LOCKED) will
+    skip this row; if the scheduler already committed email_sent we re-check
+    and return 409 rather than silently downgrading the status."""
+    _get_or_404(db, inquiry_id, current_user)  # ownership check
+    locked = (
+        db.query(Inquiry)
+        .with_for_update()
+        .filter(Inquiry.id == inquiry_id, Inquiry.status == "email_pending")
+        .first()
+    )
+    if locked is None:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot cancel: inquiry is in status '{obj.status}', not 'email_pending'",
+            detail="Cannot cancel: inquiry is no longer in the scheduling window (it may have already been sent).",
         )
-    obj.status = "draft"
-    obj.email_scheduled_for = None
+    locked.status = "draft"
+    locked.email_scheduled_for = None
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -439,15 +449,24 @@ def edit_scheduled_email_content(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Update subject and question while the email is in the scheduling window."""
-    obj = _get_or_404(db, inquiry_id, current_user)
-    if obj.status != "email_pending":
+    """Update subject and question while the email is in the scheduling window.
+
+    Uses SELECT FOR UPDATE for the same reason as cancel: prevents a race where
+    the scheduler commits email_sent between the status check and the UPDATE."""
+    _get_or_404(db, inquiry_id, current_user)  # ownership check
+    locked = (
+        db.query(Inquiry)
+        .with_for_update()
+        .filter(Inquiry.id == inquiry_id, Inquiry.status == "email_pending")
+        .first()
+    )
+    if locked is None:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot edit: inquiry is in status '{obj.status}', not 'email_pending'",
+            detail="Cannot edit: inquiry is no longer in the scheduling window (it may have already been sent).",
         )
-    obj.subject = payload.subject
-    obj.question = payload.question
+    locked.subject = payload.subject
+    locked.question = payload.question
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -511,6 +530,27 @@ def send_now(
     locked.email_message_id = message_id
     locked.email_scheduled_for = None
     locked.call_scheduled_for = now + timedelta(hours=locked.fallback_after_hours)
+
+    # Stamp same-group siblings (same MUE batch, same manufacturer) so the
+    # scheduler doesn't send a duplicate email for them on the next tick.
+    if locked.source_inquiry_uuid:
+        siblings = (
+            db.query(Inquiry)
+            .filter(
+                Inquiry.source_inquiry_uuid == locked.source_inquiry_uuid,
+                Inquiry.manufacturer_id == locked.manufacturer_id,
+                Inquiry.id != locked.id,
+                Inquiry.status == "email_pending",
+            )
+            .all()
+        )
+        for sib in siblings:
+            sib.status = "email_sent"
+            sib.email_sent_at = now
+            sib.email_message_id = message_id
+            sib.email_scheduled_for = None
+            sib.call_scheduled_for = now + timedelta(hours=sib.fallback_after_hours)
+
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -567,10 +607,11 @@ async def trigger_call(
     inquiry's context. Updates the inquiry's status, scheduled time, and
     stores the ElevenLabs `conversation_id` for the post-call webhook."""
     obj = _get_or_404(db, inquiry_id, current_user)
-    if obj.status in ("email_responded", "closed"):
+    if obj.status in ("email_responded", "closed", "email_pending"):
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot trigger call from status '{obj.status}'",
+            detail=f"Cannot trigger call from status '{obj.status}'"
+            + (" — cancel the scheduled email first." if obj.status == "email_pending" else ""),
         )
     if obj.status == "call_pending":
         raise HTTPException(
@@ -760,6 +801,7 @@ def close_inquiry(
 ):
     obj = _get_or_404(db, inquiry_id, current_user)
     obj.status = "closed"
+    obj.email_scheduled_for = None  # cancel any pending schedule
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

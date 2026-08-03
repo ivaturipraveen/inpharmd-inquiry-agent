@@ -126,7 +126,6 @@ def _scan_and_send_pending_emails() -> None:
         )
     except Exception:
         log.exception("Scheduled email scan query failed")
-        db.close()
         return
     finally:
         db.close()

@@ -1489,9 +1489,9 @@ export default function ContactManufacturerPage() {
               {bulkResult.dispatch_channel === "email" && (
                 <div className="bulk-result-stat">
                   <div className="bulk-result-num">
-                    {bulkResult.created.filter((c) => c.status === "email_sent").length}
+                    {bulkResult.created.filter((c) => c.status === "email_pending" || c.status === "email_sent").length}
                   </div>
-                  <div className="bulk-result-label">Emails sent</div>
+                  <div className="bulk-result-label">Emails scheduled</div>
                 </div>
               )}
               {bulkResult.dispatch_channel === "call" && (
