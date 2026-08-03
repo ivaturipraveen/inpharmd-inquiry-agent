@@ -466,10 +466,10 @@ export default function InquiriesPage() {
                         </td>
                         <td>{i.manufacturer?.manufacturer ?? "—"}</td>
                         <td>
-                          <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                          <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                             <StatusBadge status={i.status} />
                             {i.status === "email_pending" && i.email_scheduled_for && (
-                              <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: 2 }}>
+                              <span className="cell-muted" style={{ fontSize: "0.75rem" }}>
                                 {new Date(i.email_scheduled_for) > new Date()
                                   ? `Sends at ${new Date(i.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
                                   : "Sending soon…"}
