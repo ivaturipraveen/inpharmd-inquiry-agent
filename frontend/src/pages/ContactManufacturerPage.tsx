@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
 import ManufacturerForm from "../components/ManufacturerForm";
@@ -131,24 +131,6 @@ const confidenceTone = (c: DetectedRow["confidence"]): string => {
 type Mode = "single" | "multi";
 type BulkChannel = "email" | "call" | "test_call";
 
-interface ReviewCard {
-  rowIndex: number;
-  manufacturerId: number;
-  manufacturerName: string;
-  toEmail: string;
-  subject: string;
-  question: string;
-  medicationName: string | null;
-  piStorageData: string | null;
-  piLink: string | null;
-  sentInquiryId: number | null;
-  scheduledFor: string | null;
-  sending: boolean;
-  error: string | null;
-  // Which source file this row belongs to — needed for per-file writeback.
-  excelS3Url: string | null;
-  excelSheetName: string | null;
-}
 
 const COUNTRY_CODES: { code: string; label: string }[] = [
   { code: "+1", label: "+1 US / CA" },
@@ -189,41 +171,7 @@ export default function ContactManufacturerPage() {
   const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
   const [testCountryCode, setTestCountryCode] = useState("+1");
   const [testLocal, setTestLocal] = useState("");
-  const [bulkResult, setBulkResult] = useState<{
-    created: Inquiry[];
-    failed: { manufacturer_id: number; error: string }[];
-    dispatch_channel?: string;
-    dispatched?: number;
-    test_call_inquiry_id?: number | null;
-    test_call_to?: string | null;
-  } | null>(null);
-  const [sendingAll, setSendingAll] = useState(false);
 
-  // emailReview is persisted to sessionStorage so the green "sent" status
-  // survives a page refresh. Keyed by inquiry UUID so it doesn't bleed
-  // across different inquiries.
-  const emailReviewKey = ctx?.uuid ? `inpharmd:email-review:${ctx.uuid}` : null;
-  const [emailReview, setEmailReview] = useState<ReviewCard[] | null>(() => {
-    if (!ctx?.uuid) return null;
-    try {
-      const raw = sessionStorage.getItem(`inpharmd:email-review:${ctx.uuid}`);
-      if (raw) {
-        const parsed = JSON.parse(raw) as ReviewCard[];
-        // A refresh means no HTTP requests are in flight — clear sending flag.
-        return parsed.map((c) => ({ ...c, sending: false }));
-      }
-    } catch { /* ignore */ }
-    return null;
-  });
-
-  useEffect(() => {
-    if (!emailReviewKey) return;
-    if (emailReview === null) {
-      sessionStorage.removeItem(emailReviewKey);
-    } else {
-      sessionStorage.setItem(emailReviewKey, JSON.stringify(emailReview));
-    }
-  }, [emailReview, emailReviewKey]);
 
   const reloadManufacturers = useCallback(() => {
     api.manufacturers
@@ -273,15 +221,36 @@ export default function ContactManufacturerPage() {
     return m;
   }, [manufacturers]);
 
-  // Fetch any inquiries already sent for this source platform inquiry so we
-  // can mark those manufacturers as "already contacted" in the picker.
-  useEffect(() => {
+  const loadExistingInquiries = useCallback(() => {
     if (!ctx?.uuid) return;
     api.inquiries
       .list({ source_inquiry_uuid: ctx.uuid })
       .then(setExistingInquiries)
       .catch(() => {});
   }, [ctx?.uuid]);
+
+  useEffect(() => {
+    loadExistingInquiries();
+  }, [loadExistingInquiries]);
+
+  useEffect(() => {
+    let lastRefreshAt = 0;
+    const refresh = () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < 500) return;
+      lastRefreshAt = now;
+      loadExistingInquiries();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [loadExistingInquiries]);
 
   // Map manufacturer_id → inquiry for the first (most-recent) contact per mfr.
   const contactedMfrMap = useMemo(() => {
@@ -387,67 +356,11 @@ export default function ContactManufacturerPage() {
       anyExtracting ||
       anyDone ||
       extractError ||
-      manualOverride ||
-      emailReview !== null  // already in email-review — don't re-run
+      manualOverride
     ) return;
     runExtractions();
-  }, [extractableAttachments, attachmentExtractions, extractError, manualOverride, emailReview, runExtractions]);
+  }, [extractableAttachments, attachmentExtractions, extractError, manualOverride, runExtractions]);
 
-  // Keep a ref so the focus-refresh closure always reads the latest emailReview
-  // without needing to re-register the event listeners on every render.
-  const emailReviewRef = useRef(emailReview);
-  useEffect(() => { emailReviewRef.current = emailReview; }, [emailReview]);
-
-  useEffect(() => {
-    // Tracks the last refresh timestamp to deduplicate when visibilitychange
-    // and window.focus both fire together (e.g. switching back from another app).
-    let lastRefreshAt = 0;
-
-    const refresh = async () => {
-      const now = Date.now();
-      if (now - lastRefreshAt < 500) return; // debounce: ignore if fired within 500ms
-      lastRefreshAt = now;
-
-      const current = emailReviewRef.current;
-      if (!current) return;
-
-      // Only re-fetch cards that are dispatched and still showing Scheduled.
-      const toRefresh = current.filter(
-        (c) => c.sentInquiryId !== null && c.scheduledFor !== null,
-      );
-      if (toRefresh.length === 0) return;
-
-      const results = await Promise.allSettled(
-        toRefresh.map((c) => api.inquiries.get(c.sentInquiryId!)),
-      );
-
-      setEmailReview((prev) => {
-        if (!prev) return prev;
-        return prev.map((card) => {
-          if (card.sentInquiryId === null || card.scheduledFor === null) return card;
-          const idx = toRefresh.findIndex((d) => d.sentInquiryId === card.sentInquiryId);
-          if (idx === -1) return card;
-          const result = results[idx];
-          // Only flip to Sent on exactly email_sent — leave email_pending unchanged.
-          if (result.status === "fulfilled" && result.value.status === "email_sent") {
-            return { ...card, scheduledFor: null };
-          }
-          return card;
-        });
-      });
-    };
-
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-
-    document.addEventListener("visibilitychange", handleVisibility);
-    window.addEventListener("focus", refresh);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibility);
-      window.removeEventListener("focus", refresh);
-    };
-  }, []); // register once on mount; emailReviewRef keeps the closure fresh
 
   const toggleRow = (key: string) => {
     setSelectedKeys((prev) => {
@@ -492,124 +405,6 @@ export default function ContactManufacturerPage() {
     return count;
   }, [attachmentExtractions, contactedMfrMap]);
 
-  const sendOne = async (card: ReviewCard, cardIndex: number) => {
-    if (!ctx) return;
-    setEmailReview((prev) =>
-      prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: true, error: null } : c) : prev,
-    );
-    try {
-      const result = await api.inquiries.bulkCreate({
-        targets: [{
-          manufacturer_id: card.manufacturerId,
-          source_excel_row: card.rowIndex,
-          // medication/PI already embedded in card.question — don't pass separately
-          // or the backend's _build_body() would duplicate the product details section.
-          medication_name: null,
-          pi_storage_data: null,
-          pi_link: card.piLink,
-        }],
-        subject: card.subject,
-        question: card.question,
-        fallback_after_hours: fallbackHours,
-        source_inquiry_uuid: ctx.uuid,
-        source_excel_url: card.excelS3Url,
-        source_excel_sheet: card.excelSheetName,
-        dispatch_channel: "none",
-      });
-      const inquiry = result.created[0];
-      if (!inquiry) throw new Error(result.failed[0]?.error ?? "Failed to create inquiry");
-      const scheduled = await api.inquiries.sendEmail(inquiry.id);
-      setEmailReview((prev) =>
-        prev ? prev.map((c, i) => i === cardIndex ? {
-          ...c,
-          sentInquiryId: inquiry.id,
-          scheduledFor: scheduled.email_scheduled_for ?? null,
-          sending: false,
-        } : c) : prev,
-      );
-    } catch (e: any) {
-      setEmailReview((prev) =>
-        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sending: false, error: e?.message ?? "Send failed" } : c) : prev,
-      );
-    }
-  };
-
-  const handleEnterEmailReview = () => {
-    if (attachmentExtractions.length === 0 || !ctx) return;
-    if (selectedKeys.size === 0) {
-      setExtractError("Pick at least one manufacturer.");
-      return;
-    }
-    if (!subject.trim() || !question.trim()) {
-      setExtractError("Subject and question are required.");
-      return;
-    }
-    if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
-      setExtractError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
-      return;
-    }
-    const cards: ReviewCard[] = [];
-    attachmentExtractions.forEach((s, attIdx) => {
-      if (!s.result) return;
-      s.result.rows
-        .filter((r) => {
-          if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
-          const m = mfrById[r.matched_id];
-          if (m) return !!(m.official_mi_email || m.team_verified_email);
-          return true;
-        })
-        .forEach((r) => {
-          const mfr = mfrById[r.matched_id as number];
-          // Build the full per-card question mirroring what _build_body() does on the
-          // backend, so the user sees (and can edit) the complete email content.
-          const medName = r.medication_name || null;
-          const piStorage = r.pi_storage || null;
-          const piLink = r.pi_link || null;
-          let fullQuestion = question.trim();
-          if (medName || piStorage || piLink) {
-            fullQuestion += "\n\nPRODUCT DETAILS:";
-            if (medName) fullQuestion += `\nMedication/Vaccine: ${medName}`;
-            if (piStorage) fullQuestion += `\nPI Storage Information: ${piStorage}`;
-            if (piLink) fullQuestion += `\nPrescribing Information: ${piLink}`;
-          }
-          cards.push({
-            rowIndex: r.row_index,
-            manufacturerId: r.matched_id as number,
-            manufacturerName: r.matched_name ?? "",
-            toEmail: mfr?.official_mi_email || mfr?.team_verified_email || "",
-            subject: subject.trim(),
-            question: fullQuestion,
-            medicationName: medName,
-            piStorageData: piStorage,
-            piLink,
-            sentInquiryId: null,
-            scheduledFor: null,
-            sending: false,
-            error: null,
-            excelS3Url: s.result!.excel_s3_url ?? s.att.doc_url,
-            excelSheetName: s.result!.sheet_name,
-          });
-        });
-    });
-    if (cards.length === 0) {
-      setExtractError("None of the selected manufacturers have an email address on file.");
-      return;
-    }
-    setExtractError(null);
-    setEmailReview(cards);
-  };
-
-  const handleSendAll = async () => {
-    if (!emailReview) return;
-    setSendingAll(true);
-    const unsent = emailReview
-      .map((c, i) => ({ c, i }))
-      .filter(({ c }) => c.sentInquiryId === null && !c.sending);
-    for (const { c, i } of unsent) {
-      await sendOne(c, i);
-    }
-    setSendingAll(false);
-  };
 
   const handleBulkSubmit = async (channel: BulkChannel) => {
     if (attachmentExtractions.length === 0 || !ctx) return;
@@ -677,7 +472,7 @@ export default function ContactManufacturerPage() {
       const allCreated: Inquiry[] = [];
       const allFailed: { manufacturer_id: number; error: string }[] = [];
       let totalDispatched = 0;
-      let mergedResult: typeof bulkResult = null;
+      let mergedResult: { created: Inquiry[]; failed: { manufacturer_id: number; error: string }[]; dispatch_channel?: string; dispatched?: number; test_call_inquiry_id?: number | null; test_call_to?: string | null } | null = null;
 
       for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
         const { s, targets } = byFile[fileIdx];
@@ -699,20 +494,12 @@ export default function ContactManufacturerPage() {
         if (fileIdx === 0) mergedResult = result;
       }
 
-      const merged = {
-        created: allCreated,
-        failed: allFailed,
-        dispatch_channel: channel,
-        dispatched: totalDispatched,
-        test_call_inquiry_id: mergedResult?.test_call_inquiry_id ?? null,
-        test_call_to: mergedResult?.test_call_to ?? null,
-      };
-      setBulkResult(merged);
+      const apiTestCallTo = mergedResult?.test_call_to ?? null;
 
       if (channel === "test_call") {
         setBanner(
-          merged.test_call_to
-            ? `Test call dialing ${merged.test_call_to} — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`
+          apiTestCallTo
+            ? `Test call dialing ${apiTestCallTo} — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`
             : `Test call attempted — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`,
         );
       } else if (channel === "call") {
@@ -727,6 +514,8 @@ export default function ContactManufacturerPage() {
             (allFailed.length > 0 ? ` · ${allFailed.length} failed` : ""),
         );
       }
+
+      loadExistingInquiries();
     } catch (e: any) {
       setExtractError(e?.message ?? "Bulk dispatch failed.");
     } finally {
@@ -815,7 +604,7 @@ export default function ContactManufacturerPage() {
       </div>
 
       {/* Per-file detection banners */}
-      {extractableAttachments.length > 0 && !bulkResult && (anyExtracting || anyExtracted) &&
+      {extractableAttachments.length > 0 && (anyExtracting || anyExtracted) &&
         attachmentExtractions.map((s, attIdx) => (
           <div className="dispatch-mode-card" key={s.att.id || attIdx}>
             <div className="dispatch-mode-head">
@@ -877,7 +666,7 @@ export default function ContactManufacturerPage() {
       {error && <div className="error-banner">{error}</div>}
 
       {/* Already Contacted — shown when there are no attachment extractions to render the section inline */}
-      {!attachmentExtractions.some((s) => s.result) && contactedMfrMap.size > 0 && !bulkResult && (
+      {!attachmentExtractions.some((s) => s.result) && contactedMfrMap.size > 0 && (
         <div className="page-form">
           <div className="page-form-body">
             <div className="contacted-section">
@@ -886,6 +675,7 @@ export default function ContactManufacturerPage() {
               </div>
               {existingInquiries.map((inq) => {
                 const mfr = mfrById[inq.manufacturer_id];
+                const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                 return (
                   <div key={inq.id} className="contacted-row">
                     <div className="contacted-row-main">
@@ -904,7 +694,16 @@ export default function ContactManufacturerPage() {
                       )}
                     </div>
                     <div className="contacted-row-status">
-                      <StatusBadge status={inq.status} />
+                      {isScheduled ? (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                          <span className="pill pill-green">Scheduled</span>
+                          <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
+                            {new Date(inq.email_scheduled_for!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </div>
+                      ) : (
+                        <StatusBadge status={inq.status} />
+                      )}
                       <span className="contacted-row-id">#{inq.id}</span>
                     </div>
                   </div>
@@ -916,7 +715,7 @@ export default function ContactManufacturerPage() {
       )}
 
       {/* MULTI mode: manufacturer lists grouped by file */}
-      {mode === "multi" && anyExtracted && !bulkResult && !emailReview && (() => {
+      {mode === "multi" && anyExtracted && (() => {
         const searchTokens = search.trim().toLowerCase();
 
         // Aggregate counts across all files for toolbar.
@@ -1116,6 +915,7 @@ export default function ContactManufacturerPage() {
                                 </div>
                                 {alreadyContactedRows.map((r) => {
                                   const inq = contactedMfrMap.get(r.matched_id!)!;
+                                  const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                                   return (
                                     <div key={r.row_index} className="contacted-row">
                                       <div className="contacted-row-main">
@@ -1134,7 +934,16 @@ export default function ContactManufacturerPage() {
                                         )}
                                       </div>
                                       <div className="contacted-row-status">
-                                        <StatusBadge status={inq.status} />
+                                        {isScheduled ? (
+                                          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                                            <span className="pill pill-green">Scheduled</span>
+                                            <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
+                                              {new Date(inq.email_scheduled_for!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <StatusBadge status={inq.status} />
+                                        )}
                                         <span className="contacted-row-id">#{inq.id}</span>
                                       </div>
                                     </div>
@@ -1257,9 +1066,9 @@ export default function ContactManufacturerPage() {
                           className="btn btn-primary"
                           type="button"
                           disabled={noneSelected || reachableByEmail === 0 || anyBusy}
-                          onClick={handleEnterEmailReview}
+                          onClick={() => handleBulkSubmit("email")}
                         >
-                          {`Review & Send Email (${reachableByEmail || total})`}
+                          {submitting === "email" ? "Sending…" : `Send Email (${reachableByEmail || total})`}
                         </button>
                       </div>
 
@@ -1390,186 +1199,9 @@ export default function ContactManufacturerPage() {
         );
       })()}
 
-      {/* EMAIL REVIEW mode */}
-      {emailReview !== null && !bulkResult && (() => {
-        const scheduledCount = emailReview.filter((c) => c.sentInquiryId !== null && c.scheduledFor !== null).length;
-        const sentCount = emailReview.filter((c) => c.sentInquiryId !== null && c.scheduledFor === null).length;
-        const errCount = emailReview.filter((c) => c.error !== null && c.sentInquiryId === null).length;
-        const pendingCount = emailReview.filter((c) => c.sentInquiryId === null).length;
-        const allDone = pendingCount === 0;
-        return (
-          <div className="page-form">
-            <div className="page-form-header">
-              <h2>Review emails before sending</h2>
-              <div className="mfr-detect-meta">
-                {emailReview.length} email{emailReview.length !== 1 ? "s" : ""}
-                {sentCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {sentCount} sent</span>}
-                {scheduledCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {scheduledCount} scheduled</span>}
-                {errCount > 0 && <span style={{ color: "var(--red)", marginLeft: 6 }}>· {errCount} failed</span>}
-                {pendingCount > 0 && <span className="cell-muted" style={{ marginLeft: 6 }}>· {pendingCount} pending</span>}
-              </div>
-            </div>
-            <div className="page-form-body">
-              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                {emailReview.map((card, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      border: `1px solid ${card.sentInquiryId !== null ? "var(--green)" : card.error ? "#fecaca" : "var(--line)"}`,
-                      borderRadius: "var(--radius)",
-                      padding: "16px",
-                      background: card.sentInquiryId !== null ? "var(--green-soft)" : card.error ? "var(--red-soft)" : "var(--surface)",
-                    }}
-                  >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px", gap: "12px" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <span style={{ fontWeight: 700, fontSize: "14px" }}>{card.manufacturerName}</span>
-                        {card.toEmail && (
-                          <span style={{ color: "var(--muted)", fontSize: "12px", marginLeft: "8px" }}>
-                            → {card.toEmail}
-                          </span>
-                        )}
-                        {(card.medicationName || card.piStorageData || card.piLink) && (
-                          <div style={{ marginTop: "6px", display: "flex", gap: "6px", flexWrap: "wrap" as const }}>
-                            {card.medicationName && (
-                              <span className="bulk-row-product-pill">💊 {card.medicationName}</span>
-                            )}
-                            {card.piStorageData && (
-                              <span className="bulk-row-product-pill">🌡 {card.piStorageData}</span>
-                            )}
-                            {card.piLink && (
-                              <a
-                                href={card.piLink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="bulk-row-product-pill"
-                                style={{ textDecoration: "none" }}
-                              >
-                                📄 PI
-                              </a>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <div style={{ flexShrink: 0 }}>
-                        {card.sentInquiryId !== null && (
-                          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                            <span className="pill pill-green">
-                              {card.scheduledFor ? `✓ Scheduled #${card.sentInquiryId}` : `✓ Sent #${card.sentInquiryId}`}
-                            </span>
-                            {card.scheduledFor && (
-                              <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
-                                Sends at {new Date(card.scheduledFor).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                {" "}({new Date(card.scheduledFor).toLocaleDateString()})
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        {card.sending && (
-                          <span className="cell-muted" style={{ fontSize: "13px" }}>Sending…</span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="form-grid">
-                      <div className="field full">
-                        <label style={{ fontWeight: 700 }}>Subject</label>
-                        <input
-                          type="text"
-                          value={card.subject}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setEmailReview((prev) =>
-                              prev ? prev.map((c, j) => j === i ? { ...c, subject: val } : c) : prev,
-                            );
-                          }}
-                          disabled={card.sending || card.sentInquiryId !== null || sendingAll}
-                          maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
-                        />
-                      </div>
-                      <div className="field full">
-                        <label style={{ fontWeight: 700 }}>Question / Details</label>
-                        <textarea
-                          value={card.question}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setEmailReview((prev) =>
-                              prev ? prev.map((c, j) => j === i ? { ...c, question: val } : c) : prev,
-                            );
-                          }}
-                          rows={4}
-                          disabled={card.sending || card.sentInquiryId !== null || sendingAll}
-                        />
-                      </div>
-                    </div>
-
-                    {card.error && (
-                      <div className="error-banner" style={{ marginTop: "10px", marginBottom: 0, display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span style={{ flex: 1 }}>{card.error}</span>
-                        <button
-                          type="button"
-                          className="btn-link"
-                          onClick={() => sendOne(card, i)}
-                          disabled={sendingAll}
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    )}
-
-                    {card.sentInquiryId === null && !card.error && (
-                      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "12px" }}>
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          disabled={card.sending || sendingAll}
-                          onClick={() => sendOne(card, i)}
-                        >
-                          {card.sending ? "Sending…" : "Send"}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="page-form-footer">
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => setEmailReview(null)}
-                disabled={sendingAll}
-              >
-                ← Edit selection
-              </button>
-              {allDone ? (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => {
-                    if (emailReviewKey) sessionStorage.removeItem(emailReviewKey);
-                    goTo("inquiries");
-                  }}
-                >
-                  View in Manufacturer Outreach →
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={sendingAll}
-                  onClick={handleSendAll}
-                >
-                  {sendingAll ? "Sending…" : `Send All (${pendingCount})`}
-                </button>
-              )}
-            </div>
-          </div>
-        );
-      })()}
 
       {/* SINGLE mode: existing form */}
-      {mode === "single" && !bulkResult && (
+      {mode === "single" && (
         loadingMfrs ? (
           <div className="empty">
             <div className="empty-title">Loading manufacturers…</div>
@@ -1588,96 +1220,6 @@ export default function ContactManufacturerPage() {
         )
       )}
 
-      {/* Bulk result summary */}
-      {bulkResult && (
-        <div className="page-form">
-          <div className="page-form-header">
-            <h2>Dispatch summary</h2>
-          </div>
-          <div className="page-form-body">
-            <div className="bulk-result-grid">
-              <div className="bulk-result-stat bulk-result-good">
-                <div className="bulk-result-num">{bulkResult.created.length}</div>
-                <div className="bulk-result-label">Inquiries created</div>
-              </div>
-              {bulkResult.dispatch_channel === "email" && (
-                <div className="bulk-result-stat">
-                  <div className="bulk-result-num">
-                    {bulkResult.created.filter((c) => c.status === "email_pending" || c.status === "email_sent").length}
-                  </div>
-                  <div className="bulk-result-label">Emails scheduled</div>
-                </div>
-              )}
-              {bulkResult.dispatch_channel === "call" && (
-                <div className="bulk-result-stat">
-                  <div className="bulk-result-num">
-                    {bulkResult.created.filter((c) => c.status === "call_pending").length}
-                  </div>
-                  <div className="bulk-result-label">Calls placed</div>
-                </div>
-              )}
-              {bulkResult.dispatch_channel === "test_call" && (
-                <div className="bulk-result-stat">
-                  <div className="bulk-result-num">{bulkResult.dispatched ?? 0}</div>
-                  <div className="bulk-result-label">
-                    Test call to {bulkResult.test_call_to ?? "your number"}
-                  </div>
-                </div>
-              )}
-              {bulkResult.failed.length > 0 && (
-                <div className="bulk-result-stat bulk-result-bad">
-                  <div className="bulk-result-num">{bulkResult.failed.length}</div>
-                  <div className="bulk-result-label">
-                    {bulkResult.dispatch_channel === "call" ? "Skipped / failed" : "Failed"}
-                  </div>
-                </div>
-              )}
-            </div>
-            {bulkResult.created.length > 0 && (
-              <>
-                <h4>Created inquiries</h4>
-                <ul className="bulk-result-list">
-                  {bulkResult.created.map((c) => (
-                    <li key={c.id}>
-                      <strong>#{c.id}</strong> — {c.manufacturer?.manufacturer ?? `mfr ${c.manufacturer_id}`}
-                      {" · "}
-                      <span className="cell-muted">{c.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-            {bulkResult.failed.length > 0 && (
-              <>
-                <h4>Failed</h4>
-                <ul className="bulk-result-list bulk-result-list-bad">
-                  {bulkResult.failed.map((f, i) => (
-                    <li key={i}>
-                      <strong>mfr {f.manufacturer_id}</strong>: {f.error}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </div>
-          <div className="page-form-footer">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => goTo("platform-inquiries")}
-            >
-              Back to InpharmD Inquiries
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => goTo("inquiries")}
-            >
-              View in Manufacturer Outreach →
-            </button>
-          </div>
-        </div>
-      )}
 
       {pendingChoice && (
         <ChannelChooser
