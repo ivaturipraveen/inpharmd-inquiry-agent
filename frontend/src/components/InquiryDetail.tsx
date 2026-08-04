@@ -582,6 +582,30 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             Delete
           </button>
           <div className="footer-actions">
+            {inquiry.status === "call_completed" && inquiry.call_transcript && !inquiry.final_answer && (
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={busy}
+                onClick={() => run(() => onAction("extractAnswer"))}
+              >
+                Extract Answer
+              </button>
+            )}
+            {inquiry.status === "needs_attention" && (
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  if (confirm("Reset retry count and return this inquiry to draft?")) {
+                    run(() => onAction("resetRetries"));
+                  }
+                }}
+              >
+                Reset Retries
+              </button>
+            )}
             {canTriggerCall && (
               <button
                 className={

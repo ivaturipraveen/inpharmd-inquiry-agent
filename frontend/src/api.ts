@@ -210,6 +210,8 @@ export const api = {
       request<Inquiry>(`/api/inquiries/${id}/send-now`, { method: "POST" }),
     extractAnswer: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
+    resetRetries: (id: number) =>
+      request<Inquiry>(`/api/inquiries/${id}/reset-retries`, { method: "POST" }),
     bulkCreate: (data: {
       targets: {
         manufacturer_id: number;

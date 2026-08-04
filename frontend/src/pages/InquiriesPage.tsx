@@ -279,6 +279,10 @@ export default function InquiriesPage() {
           updated = await api.inquiries.extractAnswer(selected.id);
           setSuccess("Answer extracted from transcript.");
           break;
+        case "resetRetries":
+          updated = await api.inquiries.resetRetries(selected.id);
+          setSuccess("Retries reset. Inquiry returned to draft.");
+          break;
         default:
           return;
       }
@@ -291,10 +295,14 @@ export default function InquiriesPage() {
 
   const handleDelete = async () => {
     if (!selected) return;
-    await api.inquiries.remove(selected.id);
-    setSuccess("Inquiry deleted.");
-    setSelected(null);
-    load();
+    try {
+      await api.inquiries.remove(selected.id);
+      setSuccess("Inquiry deleted.");
+      setSelected(null);
+      load();
+    } catch (err: any) {
+      setError(err?.message ?? "Delete failed.");
+    }
   };
 
   return (

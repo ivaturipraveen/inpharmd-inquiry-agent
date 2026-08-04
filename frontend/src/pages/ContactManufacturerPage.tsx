@@ -1348,7 +1348,7 @@ export default function ContactManufacturerPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
                 {emailReview.map((card, i) => (
                   <div
-                    key={card.rowIndex}
+                    key={i}
                     style={{
                       border: `1px solid ${card.sentInquiryId !== null ? "var(--green)" : card.error ? "#fecaca" : "var(--line)"}`,
                       borderRadius: "var(--radius)",
