@@ -47,7 +47,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
     if (res.status === 401) throw handleUnauthorized(text);
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+    // Extract FastAPI's `detail` string so the user sees a clean message.
+    let message = `${res.status} ${res.statusText}: ${text}`;
+    try {
+      const body = JSON.parse(text);
+      if (typeof body?.detail === "string") message = body.detail;
+    } catch { /* keep original */ }
+    throw new Error(message);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
