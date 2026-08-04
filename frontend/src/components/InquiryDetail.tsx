@@ -20,6 +20,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [callSummary, setCallSummary] = useState("");
   const [callTranscript, setCallTranscript] = useState("");
   const [editingScheduled, setEditingScheduled] = useState(false);
+  const [editingDraft, setEditingDraft] = useState(false);
   const [editSubject, setEditSubject] = useState("");
   const [editQuestion, setEditQuestion] = useState("");
 
@@ -48,7 +49,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const m = inquiry.manufacturer;
 
   const callInFlight = inquiry.status === "call_pending";
-  const canSendEmail = ["draft", "failed"].includes(inquiry.status);
+  const isDraft = inquiry.status === "draft";
   const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
   // Allow manual call from any not-yet-answered state. Retries reuse this same trigger.
@@ -344,6 +345,76 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
+          {/* Draft actions */}
+          {isDraft && (
+            <div className="detail-section action-panel">
+              <div className="detail-label">Draft</div>
+              {editingDraft ? (
+                <>
+                  <label className="detail-label" style={{ marginTop: 8 }}>Subject</label>
+                  <input
+                    type="text"
+                    value={editSubject}
+                    onChange={(e) => setEditSubject(e.target.value)}
+                    maxLength={1000}
+                  />
+                  <label className="detail-label" style={{ marginTop: 8 }}>Question</label>
+                  <textarea
+                    value={editQuestion}
+                    onChange={(e) => setEditQuestion(e.target.value)}
+                    rows={4}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      disabled={busy || !editSubject.trim() || !editQuestion.trim()}
+                      onClick={() =>
+                        run(async () => {
+                          await onAction("editDraft", { subject: editSubject, question: editQuestion });
+                          setEditingDraft(false);
+                        })
+                      }
+                    >
+                      Save Changes
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setEditingDraft(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => run(() => onAction("sendEmail"))}
+                  >
+                    Send Email
+                  </button>
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setEditSubject(inquiry.subject);
+                      setEditQuestion(inquiry.question);
+                      setEditingDraft(true);
+                    }}
+                  >
+                    Edit
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Scheduled email actions */}
           {isScheduled && (
             <div className="detail-section action-panel">
@@ -511,16 +582,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             Delete
           </button>
           <div className="footer-actions">
-            {canSendEmail && (
-              <button
-                className="btn btn-primary"
-                type="button"
-                disabled={busy}
-                onClick={() => run(() => onAction("sendEmail"))}
-              >
-                Mark Email Sent
-              </button>
-            )}
             {canTriggerCall && (
               <button
                 className={

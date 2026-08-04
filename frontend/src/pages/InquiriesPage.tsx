@@ -241,6 +241,10 @@ export default function InquiriesPage() {
           updated = await api.inquiries.cancelScheduledEmail(selected.id);
           setSuccess("Scheduled email cancelled. Inquiry returned to draft.");
           break;
+        case "editDraft":
+          updated = await api.inquiries.update(selected.id, { subject: payload.subject, question: payload.question });
+          setSuccess("Draft updated.");
+          break;
         case "editScheduledEmail":
           updated = await api.inquiries.editScheduledEmailContent(selected.id, payload.subject, payload.question);
           setSuccess("Email content updated.");
