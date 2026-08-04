@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
 import ManufacturerForm from "../components/ManufacturerForm";
@@ -392,6 +392,62 @@ export default function ContactManufacturerPage() {
     ) return;
     runExtractions();
   }, [extractableAttachments, attachmentExtractions, extractError, manualOverride, emailReview, runExtractions]);
+
+  // Keep a ref so the focus-refresh closure always reads the latest emailReview
+  // without needing to re-register the event listeners on every render.
+  const emailReviewRef = useRef(emailReview);
+  useEffect(() => { emailReviewRef.current = emailReview; }, [emailReview]);
+
+  useEffect(() => {
+    // Tracks the last refresh timestamp to deduplicate when visibilitychange
+    // and window.focus both fire together (e.g. switching back from another app).
+    let lastRefreshAt = 0;
+
+    const refresh = async () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < 500) return; // debounce: ignore if fired within 500ms
+      lastRefreshAt = now;
+
+      const current = emailReviewRef.current;
+      if (!current) return;
+
+      // Only re-fetch cards that are dispatched and still showing Scheduled.
+      const toRefresh = current.filter(
+        (c) => c.sentInquiryId !== null && c.scheduledFor !== null,
+      );
+      if (toRefresh.length === 0) return;
+
+      const results = await Promise.allSettled(
+        toRefresh.map((c) => api.inquiries.get(c.sentInquiryId!)),
+      );
+
+      setEmailReview((prev) => {
+        if (!prev) return prev;
+        return prev.map((card) => {
+          if (card.sentInquiryId === null || card.scheduledFor === null) return card;
+          const idx = toRefresh.findIndex((d) => d.sentInquiryId === card.sentInquiryId);
+          if (idx === -1) return card;
+          const result = results[idx];
+          // Only flip to Sent on exactly email_sent — leave email_pending unchanged.
+          if (result.status === "fulfilled" && result.value.status === "email_sent") {
+            return { ...card, scheduledFor: null };
+          }
+          return card;
+        });
+      });
+    };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", refresh);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", refresh);
+    };
+  }, []); // register once on mount; emailReviewRef keeps the closure fresh
 
   const toggleRow = (key: string) => {
     setSelectedKeys((prev) => {
@@ -1336,7 +1392,8 @@ export default function ContactManufacturerPage() {
 
       {/* EMAIL REVIEW mode */}
       {emailReview !== null && !bulkResult && (() => {
-        const scheduledCount = emailReview.filter((c) => c.sentInquiryId !== null).length;
+        const scheduledCount = emailReview.filter((c) => c.sentInquiryId !== null && c.scheduledFor !== null).length;
+        const sentCount = emailReview.filter((c) => c.sentInquiryId !== null && c.scheduledFor === null).length;
         const errCount = emailReview.filter((c) => c.error !== null && c.sentInquiryId === null).length;
         const pendingCount = emailReview.filter((c) => c.sentInquiryId === null).length;
         const allDone = pendingCount === 0;
@@ -1346,6 +1403,7 @@ export default function ContactManufacturerPage() {
               <h2>Review emails before sending</h2>
               <div className="mfr-detect-meta">
                 {emailReview.length} email{emailReview.length !== 1 ? "s" : ""}
+                {sentCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {sentCount} sent</span>}
                 {scheduledCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {scheduledCount} scheduled</span>}
                 {errCount > 0 && <span style={{ color: "var(--red)", marginLeft: 6 }}>· {errCount} failed</span>}
                 {pendingCount > 0 && <span className="cell-muted" style={{ marginLeft: 6 }}>· {pendingCount} pending</span>}
@@ -1396,7 +1454,9 @@ export default function ContactManufacturerPage() {
                       <div style={{ flexShrink: 0 }}>
                         {card.sentInquiryId !== null && (
                           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                            <span className="pill pill-green">✓ Scheduled #{card.sentInquiryId}</span>
+                            <span className="pill pill-green">
+                              {card.scheduledFor ? `✓ Scheduled #${card.sentInquiryId}` : `✓ Sent #${card.sentInquiryId}`}
+                            </span>
                             {card.scheduledFor && (
                               <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
                                 Sends at {new Date(card.scheduledFor).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
