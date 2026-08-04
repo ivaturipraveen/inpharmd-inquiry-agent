@@ -57,6 +57,7 @@ def _build_body(
     medication_name: Optional[str] = None,
     pi_storage_data: Optional[str] = None,
     pi_link: Optional[str] = None,
+    extra_medications: Optional[list] = None,
 ) -> tuple[str, str]:
     """Return (plain_text, html) tuple for the email body."""
     import html as html_lib
@@ -73,21 +74,39 @@ def _build_body(
         requester_line_plain = f"\nRequested by: {requester_name}\n"
         requester_line_html = f"<p>Requested by: {html_lib.escape(requester_name)}</p>"
 
+    # Build unified list of all medications (primary + siblings).
+    all_meds: list[dict] = []
+    if medication_name or pi_storage_data or pi_link:
+        all_meds.append({"medication_name": medication_name, "pi_storage_data": pi_storage_data, "pi_link": pi_link})
+    for m in (extra_medications or []):
+        if m.get("medication_name") or m.get("pi_storage_data") or m.get("pi_link"):
+            all_meds.append(m)
+
     product_section_plain = ""
     product_section_html = ""
-    if medication_name or pi_storage_data or pi_link:
-        lines_plain = ["PRODUCT DETAILS:"]
-        lines_html = ["<p><strong>PRODUCT DETAILS:</strong></p><p>"]
-        if medication_name:
-            lines_plain.append(f"Medication/Vaccine: {medication_name}")
-            lines_html.append(f"<strong>Medication/Vaccine:</strong> {html_lib.escape(medication_name)}<br>")
-        if pi_storage_data:
-            lines_plain.append(f"PI Storage Information: {pi_storage_data}")
-            lines_html.append(f"<strong>PI Storage Information:</strong> {html_lib.escape(pi_storage_data)}<br>")
-        if pi_link:
-            lines_plain.append(f"Prescribing Information: {pi_link}")
-            lines_html.append(f'<strong>Prescribing Information:</strong> <a href="{html_lib.escape(pi_link)}">{html_lib.escape(pi_link)}</a><br>')
-        lines_html.append("</p>")
+    if all_meds:
+        multi = len(all_meds) > 1
+        count_label = f" ({len(all_meds)} medications)" if multi else ""
+        lines_plain = [f"PRODUCT DETAILS{count_label}:"]
+        lines_html = [f"<p><strong>PRODUCT DETAILS{count_label}:</strong></p>"]
+        for i, med in enumerate(all_meds):
+            prefix_plain = f"{i + 1}. " if multi else ""
+            prefix_html = f"<strong>{i + 1}.</strong> " if multi else ""
+            lines_html.append("<p>")
+            if med.get("medication_name"):
+                lines_plain.append(f"{prefix_plain}Medication/Vaccine: {med['medication_name']}")
+                lines_html.append(f"{prefix_html}<strong>Medication/Vaccine:</strong> {html_lib.escape(med['medication_name'])}<br>")
+                prefix_plain = "   " if multi else ""
+                prefix_html = "&nbsp;&nbsp;&nbsp;"
+            if med.get("pi_storage_data"):
+                lines_plain.append(f"{prefix_plain}PI Storage Information: {med['pi_storage_data']}")
+                lines_html.append(f"{prefix_html}<strong>PI Storage Information:</strong> {html_lib.escape(med['pi_storage_data'])}<br>")
+                prefix_plain = "   " if multi else ""
+                prefix_html = "&nbsp;&nbsp;&nbsp;"
+            if med.get("pi_link"):
+                lines_plain.append(f"{prefix_plain}Prescribing Information: {med['pi_link']}")
+                lines_html.append(f'{prefix_html}<strong>Prescribing Information:</strong> <a href="{html_lib.escape(med["pi_link"])}">{html_lib.escape(med["pi_link"])}</a><br>')
+            lines_html.append("</p>")
         product_section_plain = "\n" + "\n".join(lines_plain) + "\n"
         product_section_html = "\n".join(lines_html)
 
@@ -146,6 +165,7 @@ def send_inquiry_email(
     medication_name: Optional[str] = None,
     pi_storage_data: Optional[str] = None,
     pi_link: Optional[str] = None,
+    extra_medications: Optional[list] = None,
 ) -> str:
     """Send the inquiry email via the SendGrid API.
 
@@ -164,6 +184,7 @@ def send_inquiry_email(
         medication_name=medication_name,
         pi_storage_data=pi_storage_data,
         pi_link=pi_link,
+        extra_medications=extra_medications,
     )
 
     payload = {

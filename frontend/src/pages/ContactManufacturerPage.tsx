@@ -626,8 +626,8 @@ export default function ContactManufacturerPage() {
           source_inquiry_uuid: ctx.uuid,
           source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
           source_excel_sheet: s.result!.sheet_name,
-          dispatch_channel: channel,
-          // Only the first file fires the test call — all others become drafts.
+          // Only the first file fires the test call — subsequent files become drafts.
+          dispatch_channel: channel === "test_call" && fileIdx > 0 ? "none" : channel,
           test_call_to_number: fileIdx === 0 ? testCallTo : null,
         });
         allCreated.push(...result.created);

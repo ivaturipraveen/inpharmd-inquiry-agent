@@ -183,6 +183,11 @@ def _scan_and_send_pending_emails() -> None:
                 continue
             to_email_send = (mfr.official_mi_email or mfr.team_verified_email or "").strip()
 
+            siblings_meds = [
+                {"medication_name": sib.medication_name, "pi_storage_data": sib.pi_storage_data, "pi_link": sib.pi_link}
+                for sib in locked if sib.id != primary.id
+            ]
+
             try:
                 message_id = email_service.send_inquiry_email(
                     inquiry_id=primary.id,
@@ -195,6 +200,7 @@ def _scan_and_send_pending_emails() -> None:
                     medication_name=primary.medication_name,
                     pi_storage_data=primary.pi_storage_data,
                     pi_link=primary.pi_link,
+                    extra_medications=siblings_meds or None,
                 )
             except Exception:
                 log.exception(

@@ -61,7 +61,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
     (inquiry.status === "call_completed" &&
       inquiry.call_provider_status !== "answered" &&
       inquiry.call_provider_status !== "follow_up_via_email");
-  const canRecordCall = inquiry.status === "call_pending";
+  const canRecordCall = inquiry.status === "call_pending" || inquiry.status === "needs_attention";
   const canClose = !["closed"].includes(inquiry.status);
 
   const retryCount = inquiry.retry_count ?? 0;

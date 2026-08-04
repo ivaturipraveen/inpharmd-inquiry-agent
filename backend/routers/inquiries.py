@@ -506,6 +506,25 @@ def send_now(
             detail=f"{mfr.manufacturer} has no email address on file",
         )
 
+    # Fetch siblings before sending so their medication data can be included.
+    siblings: list[Inquiry] = []
+    if locked.source_inquiry_uuid:
+        siblings = (
+            db.query(Inquiry)
+            .filter(
+                Inquiry.source_inquiry_uuid == locked.source_inquiry_uuid,
+                Inquiry.manufacturer_id == locked.manufacturer_id,
+                Inquiry.id != locked.id,
+                Inquiry.status == "email_pending",
+            )
+            .all()
+        )
+
+    siblings_meds = [
+        {"medication_name": sib.medication_name, "pi_storage_data": sib.pi_storage_data, "pi_link": sib.pi_link}
+        for sib in siblings
+    ]
+
     try:
         message_id = email_service.send_inquiry_email(
             inquiry_id=locked.id,
@@ -518,6 +537,7 @@ def send_now(
             medication_name=locked.medication_name,
             pi_storage_data=locked.pi_storage_data,
             pi_link=locked.pi_link,
+            extra_medications=siblings_meds or None,
         )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -531,25 +551,13 @@ def send_now(
     locked.email_scheduled_for = None
     locked.call_scheduled_for = now + timedelta(hours=locked.fallback_after_hours)
 
-    # Stamp same-group siblings (same MUE batch, same manufacturer) so the
-    # scheduler doesn't send a duplicate email for them on the next tick.
-    if locked.source_inquiry_uuid:
-        siblings = (
-            db.query(Inquiry)
-            .filter(
-                Inquiry.source_inquiry_uuid == locked.source_inquiry_uuid,
-                Inquiry.manufacturer_id == locked.manufacturer_id,
-                Inquiry.id != locked.id,
-                Inquiry.status == "email_pending",
-            )
-            .all()
-        )
-        for sib in siblings:
-            sib.status = "email_sent"
-            sib.email_sent_at = now
-            sib.email_message_id = message_id
-            sib.email_scheduled_for = None
-            sib.call_scheduled_for = now + timedelta(hours=sib.fallback_after_hours)
+    # Stamp same-group siblings as sent so the scheduler skips them.
+    for sib in siblings:
+        sib.status = "email_sent"
+        sib.email_sent_at = now
+        sib.email_message_id = message_id
+        sib.email_scheduled_for = None
+        sib.call_scheduled_for = now + timedelta(hours=sib.fallback_after_hours)
 
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
@@ -637,14 +645,10 @@ async def trigger_call(
     # Business-hours guard (skippable via ?force=true)
     in_hours = call_service.is_within_business_hours(mfr.mi_phone_hours)
     if in_hours is False and not force:
+        hours_str = f" ({mfr.mi_phone_hours})" if mfr.mi_phone_hours else ""
         raise HTTPException(
             status_code=409,
-            detail={
-                "code": "out_of_hours",
-                "message": f"{mfr.manufacturer} is outside business hours ({mfr.mi_phone_hours}). "
-                           "Retry with ?force=true to call anyway.",
-                "hours": mfr.mi_phone_hours,
-            },
+            detail=f"{mfr.manufacturer} is currently outside business hours{hours_str}. Use the force option to call anyway.",
         )
 
     try:
