@@ -142,6 +142,7 @@ interface ReviewCard {
   piStorageData: string | null;
   piLink: string | null;
   sentInquiryId: number | null;
+  scheduledFor: string | null;
   sending: boolean;
   error: string | null;
   // Which source file this row belongs to — needed for per-file writeback.
@@ -461,9 +462,14 @@ export default function ContactManufacturerPage() {
       });
       const inquiry = result.created[0];
       if (!inquiry) throw new Error(result.failed[0]?.error ?? "Failed to create inquiry");
-      await api.inquiries.sendEmail(inquiry.id);
+      const scheduled = await api.inquiries.sendEmail(inquiry.id);
       setEmailReview((prev) =>
-        prev ? prev.map((c, i) => i === cardIndex ? { ...c, sentInquiryId: inquiry.id, sending: false } : c) : prev,
+        prev ? prev.map((c, i) => i === cardIndex ? {
+          ...c,
+          sentInquiryId: inquiry.id,
+          scheduledFor: scheduled.email_scheduled_for ?? null,
+          sending: false,
+        } : c) : prev,
       );
     } catch (e: any) {
       setEmailReview((prev) =>
@@ -521,6 +527,7 @@ export default function ContactManufacturerPage() {
             piStorageData: piStorage,
             piLink,
             sentInquiryId: null,
+            scheduledFor: null,
             sending: false,
             error: null,
             excelS3Url: s.result!.excel_s3_url ?? s.att.doc_url,
@@ -1329,7 +1336,7 @@ export default function ContactManufacturerPage() {
 
       {/* EMAIL REVIEW mode */}
       {emailReview !== null && !bulkResult && (() => {
-        const sentCount = emailReview.filter((c) => c.sentInquiryId !== null).length;
+        const scheduledCount = emailReview.filter((c) => c.sentInquiryId !== null).length;
         const errCount = emailReview.filter((c) => c.error !== null && c.sentInquiryId === null).length;
         const pendingCount = emailReview.filter((c) => c.sentInquiryId === null).length;
         const allDone = pendingCount === 0;
@@ -1339,7 +1346,7 @@ export default function ContactManufacturerPage() {
               <h2>Review emails before sending</h2>
               <div className="mfr-detect-meta">
                 {emailReview.length} email{emailReview.length !== 1 ? "s" : ""}
-                {sentCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {sentCount} sent</span>}
+                {scheduledCount > 0 && <span style={{ color: "var(--green)", marginLeft: 6 }}>· {scheduledCount} scheduled</span>}
                 {errCount > 0 && <span style={{ color: "var(--red)", marginLeft: 6 }}>· {errCount} failed</span>}
                 {pendingCount > 0 && <span className="cell-muted" style={{ marginLeft: 6 }}>· {pendingCount} pending</span>}
               </div>
@@ -1388,7 +1395,15 @@ export default function ContactManufacturerPage() {
                       </div>
                       <div style={{ flexShrink: 0 }}>
                         {card.sentInquiryId !== null && (
-                          <span className="pill pill-green">✓ Sent #{card.sentInquiryId}</span>
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                            <span className="pill pill-green">✓ Scheduled #{card.sentInquiryId}</span>
+                            {card.scheduledFor && (
+                              <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
+                                Sends at {new Date(card.scheduledFor).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                {" "}({new Date(card.scheduledFor).toLocaleDateString()})
+                              </span>
+                            )}
+                          </div>
                         )}
                         {card.sending && (
                           <span className="cell-muted" style={{ fontSize: "13px" }}>Sending…</span>
