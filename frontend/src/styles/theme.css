@@ -3220,6 +3220,7 @@ pre.raw-json {
 .gm-thread-tags {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
