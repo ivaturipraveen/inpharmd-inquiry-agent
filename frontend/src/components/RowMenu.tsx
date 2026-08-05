@@ -7,7 +7,9 @@ interface Props {
 
 const RowMenu: FC<Props> = ({ onEdit, onDelete }) => {
   const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -26,10 +28,15 @@ const RowMenu: FC<Props> = ({ onEdit, onDelete }) => {
   return (
     <div className="row-menu" ref={ref}>
       <button
+        ref={triggerRef}
         type="button"
         className={`menu-trigger ${open ? "menu-trigger-open" : ""}`}
         onClick={(e) => {
           e.stopPropagation();
+          if (!open && triggerRef.current) {
+            const rect = triggerRef.current.getBoundingClientRect();
+            setAnchor({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+          }
           setOpen((o) => !o);
         }}
         aria-label="Row actions"
@@ -43,8 +50,12 @@ const RowMenu: FC<Props> = ({ onEdit, onDelete }) => {
         </svg>
       </button>
 
-      {open && (
-        <div className="menu-popover" role="menu">
+      {open && anchor && (
+        <div
+          className="menu-popover menu-popover-fixed"
+          style={{ top: anchor.top, right: anchor.right }}
+          role="menu"
+        >
           <button
             type="button"
             role="menuitem"
