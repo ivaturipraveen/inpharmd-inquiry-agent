@@ -1,10 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
-import InquiryForm from "../components/InquiryForm";
 import InquiryDetail from "../components/InquiryDetail";
-import ChannelChooser from "../components/ChannelChooser";
 import { api } from "../api";
-import type { Inquiry, InquiryInput, ManufacturerContact } from "../types";
+import type { Inquiry } from "../types";
 
 const STATUS_FILTERS = [
   { value: "", label: "All statuses" },
@@ -51,27 +49,22 @@ export default function InquiriesPage() {
   // needing to be re-created every time outreachTab changes.
   const outreachTabRef = useRef<OutreachTab>("mine");
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
-  const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [search, setSearch] = useState("");
-  const [formOpen, setFormOpen] = useState(false);
   const [selected, setSelected] = useState<Inquiry | null>(null);
-  const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
 
   const load = useCallback(async (tab?: OutreachTab) => {
     const activeTab = tab ?? outreachTab;
     setLoading(true);
     setError(null);
     try {
-      const [is, ms] = await Promise.all([
-        api.inquiries.list(activeTab === "all" ? { all_users: true } : undefined),
-        api.manufacturers.list(),
-      ]);
+      const is = await api.inquiries.list(
+        activeTab === "all" ? { all_users: true } : undefined,
+      );
       setInquiries(is);
-      setManufacturers(ms);
     } catch (err: any) {
       setError(err?.message ?? "Failed to load inquiries.");
     } finally {
@@ -219,14 +212,6 @@ export default function InquiriesPage() {
     }
     return { total: inquiries.length, drafts, awaiting, responded };
   }, [inquiries]);
-
-  const handleCreate = async (data: InquiryInput) => {
-    const created = await api.inquiries.create(data);
-    setSuccess("Inquiry created. Choose a channel.");
-    setFormOpen(false);
-    await load();
-    setPendingChoice(created);
-  };
 
   const handleAction = async (action: string, payload?: any) => {
     if (!selected) return;
@@ -404,14 +389,6 @@ export default function InquiriesPage() {
               </option>
             ))}
           </select>
-          <div className="filter-spacer" />
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => setFormOpen(true)}
-          >
-            + New Inquiry
-          </button>
         </div>
         <div className="filter-meta">
           Showing <strong>{filtered.length}</strong> of {inquiries.length} inquiries
@@ -430,7 +407,7 @@ export default function InquiriesPage() {
           <div className="empty">
             <div className="empty-title">No inquiries yet</div>
             <div className="empty-sub">
-              Click + New Inquiry to send your first question.
+              No outreaches match your current filters.
             </div>
           </div>
         ) : (
@@ -626,44 +603,12 @@ export default function InquiriesPage() {
         )}
       </div>
 
-      {formOpen && (
-        <InquiryForm
-          manufacturers={manufacturers}
-          onClose={() => setFormOpen(false)}
-          onSubmit={handleCreate}
-        />
-      )}
-
       {selected && (
         <InquiryDetail
           inquiry={selected}
           onClose={() => setSelected(null)}
           onAction={handleAction}
           onDelete={handleDelete}
-        />
-      )}
-
-      {pendingChoice && (
-        <ChannelChooser
-          inquiry={pendingChoice}
-          onClose={() => setPendingChoice(null)}
-          onSendEmail={async () => {
-            const updated = await api.inquiries.sendEmail(pendingChoice.id);
-            setSuccess(`Email scheduled to send to ${updated.manufacturer?.manufacturer ?? ""} in ~30 min.`);
-            setPendingChoice(null);
-            await load();
-            setSelected(updated);
-          }}
-          onCallTriggered={() => {
-            setSuccess("Call placed. The agent is dialing now.");
-            setPendingChoice(null);
-            load();
-          }}
-          onTestCallTriggered={(phone) => {
-            // Keep the channel chooser OPEN so the user can still send the
-            // real email or place the real call after verifying via test.
-            setSuccess(`Test call dialing ${phone}. Your phone should ring shortly.`);
-          }}
         />
       )}
     </>
