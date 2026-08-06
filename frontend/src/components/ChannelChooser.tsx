@@ -241,13 +241,7 @@ const ChannelChooser: FC<Props> = ({
                 }
                 onClick={handleCall}
               >
-                {callInFlight
-                  ? "Call in progress…"
-                  : outOfHours
-                  ? "Outside business hours"
-                  : busy === "call"
-                  ? "Dialing…"
-                  : "Call Agent Now"}
+                {busy === "call" ? "Dialing…" : "Call Agent Now"}
               </button>
             </div>
 

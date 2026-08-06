@@ -577,14 +577,6 @@ function Message(p: MessageProps) {
           : [];
         return atts.map((att, i) => (
           <div key={att.id > 0 ? att.id : `att-${i}`}>
-            {att.summary && (
-              <div className="gm-msg-section">
-                <div className="gm-msg-section-label">
-                  {atts.length > 1 && att.filename ? `Attachment Summary — ${att.filename}` : "Attachment Summary"}
-                </div>
-                <div className="gm-msg-section-body">{renderBold(att.summary)}</div>
-              </div>
-            )}
             {att.url && (
               <a href={att.url} target="_blank" rel="noreferrer" className="gm-msg-pdf-link">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
