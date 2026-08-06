@@ -23,7 +23,7 @@ const StatsBar: FC<Props> = ({ items }) => {
   }, [items]);
 
   return (
-    <div className="stats-grid">
+    <div className="stats-grid stats-grid-compact">
       <div className="stat-card">
         <div className="stat-label">Total Manufacturers</div>
         <div className="stat-value">{stats.total}</div>

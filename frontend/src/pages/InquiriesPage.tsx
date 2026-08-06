@@ -333,7 +333,7 @@ export default function InquiriesPage() {
         </button>
       </div>
 
-      <div className="stats-grid stats-grid-4">
+      <div className="stats-grid stats-grid-4 stats-grid-compact">
         <button
           type="button"
           className={`stat-card stat-card-btn ${statusFilter === "" ? "stat-card-active" : ""}`}

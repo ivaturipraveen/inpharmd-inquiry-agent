@@ -171,6 +171,29 @@ a:hover {
   letter-spacing: -0.5px;
 }
 
+/* Compact one-line metric cards (Manufacturers page) */
+.stats-grid-compact {
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.stats-grid-compact .stat-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.stats-grid-compact .stat-label {
+  margin-bottom: 0;
+  line-height: 1.2;
+}
+.stats-grid-compact .stat-value {
+  font-size: 18px;
+  letter-spacing: -0.3px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 /* ---------- Filter bar ---------- */
 .outreach-tabs {
   display: flex;
@@ -814,8 +837,8 @@ pre.raw-json {
 .ext-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 20px;
+  gap: 8px;
+  margin-bottom: 14px;
 }
 @media (max-width: 1100px) {
   .ext-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -829,11 +852,13 @@ pre.raw-json {
   background: #fff;
   border: 1px solid var(--line, #e5e7eb);
   border-radius: 12px;
-  padding: 14px 16px;
-  min-height: 96px;
+  padding: 8px 12px;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
   overflow: hidden;
 }
@@ -853,10 +878,12 @@ pre.raw-json {
 }
 .ext-stat-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
   position: relative;
+  min-width: 0;
+  flex: 1;
 }
 .ext-stat-label {
   font-size: 11px;
@@ -864,32 +891,36 @@ pre.raw-json {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted, #64748b);
+  line-height: 1.2;
+  margin-bottom: 0;
 }
 .ext-stat-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--tone-icon-bg, #f1f5f9);
   color: var(--tone-icon-fg, #475569);
   flex-shrink: 0;
+  order: -1;
 }
-.ext-stat-icon svg { width: 16px; height: 16px; }
+.ext-stat-icon svg { width: 12px; height: 12px; }
 .ext-stat-value {
-  font-size: 30px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--tone-fg, var(--ink, #0f172a));
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.3px;
   position: relative;
+  flex-shrink: 0;
 }
 .ext-stat-sub {
   font-size: 11px;
   color: var(--muted, #64748b);
-  margin-top: 6px;
+  margin-top: 0;
   line-height: 1.35;
   position: relative;
 }

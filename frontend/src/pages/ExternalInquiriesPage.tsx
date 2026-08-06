@@ -218,12 +218,6 @@ export default function ExternalInquiriesPage() {
     <>
       <section className="page-head">
         <h1>InpharmD Inquiries</h1>
-        <p>
-          Open Medication Use Evaluation (MUE) inquiries from the InpharmD
-          platform — {stats.total.toLocaleString()} total,{" "}
-          <strong>{stats.withDocs}</strong> with attachments,{" "}
-          <strong>{stats.submitters}</strong> unique submitters.
-        </p>
         <CacheBadge meta={meta} loadedAt={lastLoadedAt} />
       </section>
 
