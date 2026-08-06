@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -110,6 +111,10 @@ class Inquiry(Base):
     retry_count = Column(Integer, nullable=False, default=0)
     max_retries = Column(Integer, nullable=False, default=2)
     next_retry_at = Column(DateTime(timezone=True), index=True)
+
+    # True for inquiries created by the Test Call flow. These must never enter
+    # the production manufacturer workflow: no retries, no Slack, no legacy POST.
+    is_test_call = Column(Boolean, nullable=False, default=False, server_default="false")
 
     final_answer = Column(Text)
 

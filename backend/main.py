@@ -121,6 +121,9 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS email_scheduled_for TIMESTAMPTZ",
         # Partial index: only indexes pending rows so it stays small and fast.
         "CREATE INDEX IF NOT EXISTS ix_inquiries_email_pending ON inquiries (status, email_scheduled_for) WHERE status = 'email_pending'",
+        # Explicit flag for Test Call inquiries — prevents them from entering the
+        # production manufacturer workflow (retries, Slack, legacy POST).
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS is_test_call BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

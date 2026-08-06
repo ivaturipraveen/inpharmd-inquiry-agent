@@ -205,6 +205,7 @@ class InquiryOut(InquiryBase):
     retry_count: int = 0
     max_retries: int = 2
     next_retry_at: Optional[datetime] = None
+    is_test_call: bool = False
     final_answer: Optional[str] = None
     pdf_url: Optional[str] = None
     pdf_filename: Optional[str] = None

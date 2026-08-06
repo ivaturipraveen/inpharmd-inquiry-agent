@@ -90,6 +90,7 @@ export interface Inquiry {
   retry_count?: number;
   max_retries?: number;
   next_retry_at?: string | null;
+  is_test_call?: boolean;
   final_answer?: string | null;
   pdf_url?: string | null;
   pdf_filename?: string | null;

@@ -52,6 +52,8 @@ def _due_inquiries(db):
                 # Only retry call-based failures; not email or closed
                 Inquiry.status == "call_completed",
                 Inquiry.call_provider_status.in_(("voicemail", "no_answer")),
+                # Never auto-retry test calls — they must not dial manufacturer numbers
+                Inquiry.is_test_call.isnot(True),
             )
         )
         .all()
@@ -264,6 +266,11 @@ def schedule_retry_after_failure(db, obj: Inquiry, delay_minutes: int = 2) -> No
     """Called from the call-result handlers when a call ends with a bad outcome.
     Sets next_retry_at if retries remain, otherwise flips to needs_attention."""
     from datetime import timedelta
+
+    # Test calls must never enter the retry/needs_attention workflow.
+    if getattr(obj, "is_test_call", False):
+        log.info("Inquiry %s is a test call; skipping retry scheduling", obj.id)
+        return
 
     if obj.retry_count >= obj.max_retries:
         obj.status = "needs_attention"

@@ -442,6 +442,7 @@ export default function ContactManufacturerPage() {
         targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null }[];
       }> = [];
 
+      let testCallFilled = false;
       attachmentExtractions.forEach((s, attIdx) => {
         if (!s.result) return;
         const targets = s.result.rows
@@ -461,6 +462,14 @@ export default function ContactManufacturerPage() {
             pi_storage_data: r.pi_storage || null,
             pi_link: r.pi_link || null,
           }));
+        // Test call: only one inquiry is created (first matched row), no drafts for others.
+        if (channel === "test_call") {
+          if (!testCallFilled && targets.length > 0) {
+            byFile.push({ s, targets: [targets[0]] });
+            testCallFilled = true;
+          }
+          return;
+        }
         if (targets.length > 0) byFile.push({ s, targets });
       });
 
@@ -499,8 +508,8 @@ export default function ContactManufacturerPage() {
       if (channel === "test_call") {
         setBanner(
           apiTestCallTo
-            ? `Test call dialing ${apiTestCallTo} — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`
-            : `Test call attempted — drafts saved for ${allCreated.length} manufacturer${allCreated.length === 1 ? "" : "s"}.`,
+            ? `Test call dialing ${apiTestCallTo} — transcript will appear in Outreach when the call ends.`
+            : `Test call placed — transcript will appear in Outreach when the call ends.`,
         );
       } else if (channel === "call") {
         setBanner(
@@ -1140,8 +1149,8 @@ export default function ContactManufacturerPage() {
                           Dial <strong>your own number</strong> with the first
                           selected manufacturer's context. Lets you hear the
                           script before contacting any real MI desk —{" "}
-                          <strong>no manufacturer is called</strong>. Drafts are
-                          still saved for all {total} selected.
+                          <strong>no manufacturer is called</strong>. The
+                          transcript is saved in Outreach when the call ends.
                         </div>
                         <div className="phone-input-row">
                           <select

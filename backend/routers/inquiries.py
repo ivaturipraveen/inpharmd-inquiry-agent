@@ -308,9 +308,9 @@ async def bulk_create_inquiries(
         db.commit()
 
     elif channel == "test_call":
-        # Dial the user's own number using ONE inquiry's context. No manufacturer
-        # is contacted; status of every created inquiry stays "draft" so the
-        # user can dispatch them for real later from the Outreach tab.
+        # Dial the user's own number using the single inquiry that was created.
+        # The inquiry transitions to call_pending so the post-call webhook can
+        # write the transcript back and mark it call_completed in Outreach.
         first = created_objs[0] if created_objs else None
         if first is not None:
             mfr = db.get(ManufacturerContact, first.manufacturer_id)
@@ -321,7 +321,7 @@ async def bulk_create_inquiries(
                 })
             else:
                 try:
-                    await call_service.place_inquiry_call(
+                    resp = await call_service.place_inquiry_call(
                         inquiry_id=first.id,
                         to_number=payload.test_call_to_number,
                         manufacturer_name=mfr.manufacturer,
@@ -331,6 +331,12 @@ async def bulk_create_inquiries(
                         requester_email=first.requester_email,
                         is_test=True,
                     )
+                    conv_id = resp.get("conversation_id") or resp.get("conversationId")
+                    first.is_test_call = True
+                    first.status = "call_pending"
+                    if conv_id:
+                        first.call_conversation_id = conv_id
+                    db.commit()
                     test_call_inquiry_id = first.id
                     test_call_to = payload.test_call_to_number
                     dispatched = 1

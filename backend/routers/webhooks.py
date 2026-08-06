@@ -136,11 +136,16 @@ async def elevenlabs_post_call(
 
     db.commit()
 
-    # Forward to legacy if this inquiry came from InpharmD.
-    try:
-        legacy_response_service.maybe_post_for_inquiry(db, obj)
-    except Exception:
-        log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
+    # Test calls must not trigger downstream manufacturer workflows.
+    # Transcript and status are still written above so the call is viewable in Outreach.
+    is_test = getattr(obj, "is_test_call", False)
+
+    # Forward to legacy if this inquiry came from InpharmD (real calls only).
+    if not is_test:
+        try:
+            legacy_response_service.maybe_post_for_inquiry(db, obj)
+        except Exception:
+            log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
 
     # Post to Slack when the call produced a real answer (mirror of the email path).
     # Denylist the outcomes that are NOT a real manufacturer response; everything
@@ -149,7 +154,8 @@ async def elevenlabs_post_call(
     # run, so an allowlist would miss those legitimate answers.
     _NO_ANSWER = ("voicemail", "no_answer", "wrong_number", "call_back_later", "follow_up_via_email", "initiated")
     if (
-        obj.status == "call_completed"
+        not is_test
+        and obj.status == "call_completed"
         and obj.final_answer
         and (obj.call_provider_status or "") not in _NO_ANSWER
     ):
