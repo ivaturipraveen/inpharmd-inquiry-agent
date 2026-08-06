@@ -245,18 +245,30 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     <div className="detail-prose">{renderBold(reply.body)}</div>
                   )}
                   {(reply.attachments?.length ?? 0) > 0 && (
-                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-                      {reply.attachments.map((att) => (
-                        <div key={att.id} className="answer-pdf-link">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                            <path d="M14 2v6h6" />
-                          </svg>
-                          <a href={att.url} target="_blank" rel="noreferrer">
-                            {att.filename || "Open attachment"}
-                          </a>
-                        </div>
-                      ))}
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                      {reply.attachments.map((att) => {
+                        const isImage =
+                          att.content_type?.startsWith("image/") ||
+                          /\.(png|jpe?g)$/i.test(att.filename ?? "");
+                        return (
+                          <div key={att.id}>
+                            <div className="answer-pdf-link">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                <path d="M14 2v6h6" />
+                              </svg>
+                              <a href={att.url} target="_blank" rel="noreferrer">
+                                {att.filename || "Open attachment"}
+                              </a>
+                            </div>
+                            {isImage && (
+                              <div style={{ fontSize: "0.75rem", color: "var(--muted)", marginLeft: 20, marginTop: 2 }}>
+                                Image attachment — not summarized
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

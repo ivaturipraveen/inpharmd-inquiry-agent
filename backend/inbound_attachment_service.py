@@ -31,8 +31,15 @@ _SUPPORTED_EXTENSIONS = {
     ".xls":  "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".csv":  "text/csv",
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
 }
 _SUPPORTED_CONTENT_TYPES = set(_SUPPORTED_EXTENSIONS.values()) | {"application/csv"}
+
+# Image types are stored and displayed like any other attachment but are never
+# summarized — no OCR or GPT vision is attempted.
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 MAX_ATTACHMENTS = 20
 
@@ -117,7 +124,8 @@ def process_attachments(
             continue
 
         att_summary: Optional[str] = None
-        if summary_service.is_configured():
+        file_ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+        if file_ext not in _IMAGE_EXTENSIONS and summary_service.is_configured():
             doc_text = summary_service.extract_document_text(name, data)
             if doc_text:
                 try:
