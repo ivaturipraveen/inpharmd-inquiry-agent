@@ -41,6 +41,7 @@ _SUBJECT_TAG = re.compile(r"\[InpharmD #(\d+)\]", re.IGNORECASE)
 _QUOTE_MARKERS = (
     re.compile(r"^On .+wrote:$", re.IGNORECASE | re.DOTALL),
     re.compile(r"^-{2,}\s*Original Message\s*-{2,}", re.IGNORECASE),
+    re.compile(r"^-{3,}\s*Forwarded message\s*-{3,}", re.IGNORECASE),
     re.compile(r"^_{5,}$"),
     re.compile(r"^From:\s", re.IGNORECASE),
     re.compile(r"^Sent from my ", re.IGNORECASE),
@@ -300,6 +301,48 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         obj.pdf_url = pdf_url
         obj.pdf_filename = pdf_filename
         obj.pdf_summary = pdf_summary
+    else:
+        # Subsequent reply: re-synthesize final_answer from ALL replies in order,
+        # each with its body + attachment summaries, so downstream systems always
+        # receive the most complete answer.
+        all_replies = (
+            db.query(EmailReply)
+            .filter(EmailReply.inquiry_id == obj.id)
+            .order_by(EmailReply.id)
+            .all()
+        )
+        reply_dicts = []
+        for r in all_replies:
+            atts = [
+                {"filename": a.filename, "summary": a.summary}
+                for a in r.attachments
+                if a.summary
+            ]
+            if r.body or atts:
+                reply_dicts.append({"body": r.body or "", "attachments": atts})
+
+        if reply_dicts:
+            mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
+            if summary_service.is_configured():
+                try:
+                    obj.final_answer = summary_service.synthesize_final_answer(
+                        question=obj.question,
+                        manufacturer=mfr_name,
+                        replies=reply_dicts,
+                    )
+                    log.info(
+                        "pipeline: synthesized final_answer for inquiry=%s from %d replies",
+                        inquiry_id, len(reply_dicts),
+                    )
+                except summary_service.SummaryConfigError as exc:
+                    log.warning(
+                        "pipeline: synthesis failed for inquiry=%s (%s); preserving existing final_answer",
+                        inquiry_id, exc,
+                    )
+                    # Leave obj.final_answer unchanged — the previous answer is better than nothing.
+            else:
+                # OpenAI not configured — preserve the existing final_answer unchanged.
+                pass
 
     log.info(
         "Captured Graph email reply for inquiry %s from %s (reply=%d chars, pdf=%s, first=%s)",

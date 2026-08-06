@@ -184,6 +184,76 @@ def strip_signature_with_ai(reply_text: str) -> str:
         return text
 
 
+_SYNTHESIZE_SYSTEM = (
+    "You are synthesizing a complete clinical answer for a pharmacist from one or more email "
+    "replies sent by a pharmaceutical manufacturer's Medical Information desk. Each reply may "
+    "include a message body and summaries of attached documents. Read everything in order and "
+    "produce a single, complete, coherent clinical answer. Be faithful — do not interpret or "
+    "add caveats unless the manufacturer stated them. If later replies add to or correct earlier "
+    "ones, incorporate all relevant information. Include any references cited (case IDs, package "
+    "insert sections, document names). Ignore email signatures, disclaimers, legal boilerplate, "
+    "and forwarded-message headers. If no clinical answer was given across any reply, say so "
+    "plainly in one sentence. Return plain prose — no preamble like 'Sure' or 'Here is'."
+)
+
+
+def synthesize_final_answer(
+    *,
+    question: str,
+    manufacturer: str,
+    replies: list[dict],
+) -> str:
+    """Synthesize a complete final answer from all email replies and their attachment summaries.
+
+    Each entry in `replies` must be a dict with:
+        body        str  — cleaned email body (may be empty)
+        attachments list[dict] — each with "filename" (str|None) and "summary" (str)
+    """
+    client = _get_client()
+
+    parts: list[str] = [
+        f"Question:\n{question.strip()}",
+        f"Manufacturer:\n{manufacturer}",
+    ]
+    for i, r in enumerate(replies, 1):
+        block = [f"Reply {i}"]
+        if r.get("body", "").strip():
+            block.append(f"Body:\n{r['body'].strip()}")
+        atts = [a for a in r.get("attachments", []) if a.get("summary", "").strip()]
+        if atts:
+            att_lines = ["Attachment summaries:"]
+            for a in atts:
+                label = a.get("filename") or "attachment"
+                att_lines.append(f"- {label}:\n  {a['summary'].strip()}")
+            block.append("\n".join(att_lines))
+        parts.append("\n".join(block))
+
+    user = (
+        "\n\n".join(parts)
+        + "\n\n---\n\nGenerate a single comprehensive final answer for the inquiry."
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=_MODEL,
+            messages=[
+                {"role": "system", "content": _SYNTHESIZE_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=600,
+            temperature=0.2,
+        )
+        answer = (resp.choices[0].message.content or "").strip()
+        log.info(
+            "Synthesized final answer from %d replies (%d chars) via %s",
+            len(replies), len(answer), _MODEL,
+        )
+        return answer
+    except Exception as e:
+        log.exception("OpenAI synthesis failed: %s", e)
+        raise SummaryConfigError(f"OpenAI synthesis failed: {e}")
+
+
 def is_configured() -> bool:
     return bool(os.getenv("OPENAI_API_KEY"))
 

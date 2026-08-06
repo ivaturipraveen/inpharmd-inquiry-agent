@@ -215,6 +215,55 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
+          {/* Manufacturer Email Thread — all inbound replies in chronological order.
+              Only rendered when email_replies data is available (new records).
+              The Final Answer box above is untouched. */}
+          {(inquiry.email_replies?.length ?? 0) > 0 && (
+            <div className="detail-section">
+              <div className="detail-label">Manufacturer Email Thread</div>
+              {inquiry.email_replies!.map((reply, idx) => (
+                <div
+                  key={reply.id}
+                  style={{
+                    borderTop: idx > 0 ? "1px solid var(--line)" : undefined,
+                    paddingTop: idx > 0 ? "12px" : "8px",
+                    marginTop: idx > 0 ? "12px" : "4px",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--brand-orange)" }}>
+                      Reply {idx + 1}
+                    </span>
+                    {reply.sender_email && (
+                      <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>{reply.sender_email}</span>
+                    )}
+                    <span style={{ fontSize: "0.8rem", color: "var(--muted)", marginLeft: "auto" }}>
+                      {fmtDate(reply.sent_at)}
+                    </span>
+                  </div>
+                  {reply.body && (
+                    <div className="detail-prose">{renderBold(reply.body)}</div>
+                  )}
+                  {(reply.attachments?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                      {reply.attachments.map((att) => (
+                        <div key={att.id} className="answer-pdf-link">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 2v6h6" />
+                          </svg>
+                          <a href={att.url} target="_blank" rel="noreferrer">
+                            {att.filename || "Open attachment"}
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {(inquiry.requester_name || inquiry.requester_email) && (
             <div className="detail-section detail-meta-row">
               {inquiry.requester_name && (
