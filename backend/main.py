@@ -124,6 +124,10 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # Explicit flag for Test Call inquiries — prevents them from entering the
         # production manufacturer workflow (retries, Slack, legacy POST).
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS is_test_call BOOLEAN NOT NULL DEFAULT FALSE",
+        # Test Call: allow manufacturer_id to be NULL (no match case).
+        "ALTER TABLE inquiries ALTER COLUMN manufacturer_id DROP NOT NULL",
+        # Test Call: store the dialed phone number for display in Outreach.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS test_call_phone VARCHAR(32)",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

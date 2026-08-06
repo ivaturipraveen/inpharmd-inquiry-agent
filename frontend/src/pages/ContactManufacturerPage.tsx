@@ -253,10 +253,12 @@ export default function ContactManufacturerPage() {
   }, [loadExistingInquiries]);
 
   // Map manufacturer_id → inquiry for the first (most-recent) contact per mfr.
+  // Test call inquiries have manufacturer_id = null and are excluded from this map.
   const contactedMfrMap = useMemo(() => {
     const m = new Map<number, Inquiry>();
     for (const inq of existingInquiries) {
-      if (!m.has(inq.manufacturer_id)) m.set(inq.manufacturer_id, inq);
+      if (inq.manufacturer_id != null && !m.has(inq.manufacturer_id))
+        m.set(inq.manufacturer_id, inq);
     }
     return m;
   }, [existingInquiries]);
@@ -408,10 +410,6 @@ export default function ContactManufacturerPage() {
 
   const handleBulkSubmit = async (channel: BulkChannel) => {
     if (attachmentExtractions.length === 0 || !ctx) return;
-    if (selectedKeys.size === 0) {
-      setExtractError("Pick at least one manufacturer.");
-      return;
-    }
     if (!subject.trim() || !question.trim()) {
       setExtractError("Subject and question are required.");
       return;
@@ -421,14 +419,44 @@ export default function ContactManufacturerPage() {
       return;
     }
 
-    let testCallTo: string | null = null;
+    // Test call is entirely separate from the bulk dispatch flow —
+    // no manufacturers are selected, no inquiries are created.
     if (channel === "test_call") {
       const digits = digitsOnly(testLocal);
       if (digits.length < 7) {
         setExtractError("Enter a valid phone number for the test call (at least 7 digits).");
         return;
       }
-      testCallTo = `${testCountryCode}${digits}`;
+      const phoneNumber = `${testCountryCode}${digits}`;
+      // Match the entered number against known manufacturer phones (exact match).
+      const matchedMfr = manufacturers.find(
+        (m) => m.mi_phone && digitsOnly(m.mi_phone) === digits
+      );
+      setSubmitting("test_call");
+      setExtractError(null);
+      try {
+        await api.inquiries.testCallPreview({
+          phone_number: phoneNumber,
+          subject: subject.trim(),
+          question: question.trim(),
+          manufacturer_id: matchedMfr?.id ?? null,
+        });
+        setBanner(
+          matchedMfr
+            ? `Test call dialing ${phoneNumber} with ${matchedMfr.manufacturer} context.`
+            : `Test call dialing ${phoneNumber}.`
+        );
+      } catch (e: any) {
+        setExtractError(e?.message ?? "Test call failed.");
+      } finally {
+        setSubmitting(null);
+      }
+      return;
+    }
+
+    if (selectedKeys.size === 0) {
+      setExtractError("Pick at least one manufacturer.");
+      return;
     }
 
     setSubmitting(channel);
@@ -442,7 +470,6 @@ export default function ContactManufacturerPage() {
         targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null }[];
       }> = [];
 
-      let testCallFilled = false;
       attachmentExtractions.forEach((s, attIdx) => {
         if (!s.result) return;
         const targets = s.result.rows
@@ -462,14 +489,6 @@ export default function ContactManufacturerPage() {
             pi_storage_data: r.pi_storage || null,
             pi_link: r.pi_link || null,
           }));
-        // Test call: only one inquiry is created (first matched row), no drafts for others.
-        if (channel === "test_call") {
-          if (!testCallFilled && targets.length > 0) {
-            byFile.push({ s, targets: [targets[0]] });
-            testCallFilled = true;
-          }
-          return;
-        }
         if (targets.length > 0) byFile.push({ s, targets });
       });
 
@@ -481,7 +500,6 @@ export default function ContactManufacturerPage() {
       const allCreated: Inquiry[] = [];
       const allFailed: { manufacturer_id: number; error: string }[] = [];
       let totalDispatched = 0;
-      let mergedResult: { created: Inquiry[]; failed: { manufacturer_id: number; error: string }[]; dispatch_channel?: string; dispatched?: number; test_call_inquiry_id?: number | null; test_call_to?: string | null } | null = null;
 
       for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
         const { s, targets } = byFile[fileIdx];
@@ -493,25 +511,14 @@ export default function ContactManufacturerPage() {
           source_inquiry_uuid: ctx.uuid,
           source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
           source_excel_sheet: s.result!.sheet_name,
-          // Only the first file fires the test call — subsequent files become drafts.
-          dispatch_channel: channel === "test_call" && fileIdx > 0 ? "none" : channel,
-          test_call_to_number: fileIdx === 0 ? testCallTo : null,
+          dispatch_channel: channel,
         });
         allCreated.push(...result.created);
         allFailed.push(...result.failed);
         totalDispatched += result.dispatched ?? 0;
-        if (fileIdx === 0) mergedResult = result;
       }
 
-      const apiTestCallTo = mergedResult?.test_call_to ?? null;
-
-      if (channel === "test_call") {
-        setBanner(
-          apiTestCallTo
-            ? `Test call dialing ${apiTestCallTo} — transcript will appear in Outreach when the call ends.`
-            : `Test call placed — transcript will appear in Outreach when the call ends.`,
-        );
-      } else if (channel === "call") {
+      if (channel === "call") {
         setBanner(
           `Calling ${totalDispatched} manufacturer${totalDispatched === 1 ? "" : "s"}` +
             (allFailed.length > 0 ? ` · ${allFailed.length} skipped` : ""),
@@ -683,13 +690,13 @@ export default function ContactManufacturerPage() {
                 Already contacted ({existingInquiries.length})
               </div>
               {existingInquiries.map((inq) => {
-                const mfr = mfrById[inq.manufacturer_id];
+                const mfr = inq.manufacturer_id != null ? mfrById[inq.manufacturer_id] : undefined;
                 const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                 return (
                   <div key={inq.id} className="contacted-row">
                     <div className="contacted-row-main">
                       <span className="contacted-row-name">
-                        {mfr?.manufacturer ?? `Manufacturer #${inq.manufacturer_id}`}
+                        {mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? (inq.test_call_phone ? `Test Call — ${inq.test_call_phone}` : `Manufacturer #${inq.manufacturer_id}`)}
                       </span>
                       {(inq.medication_name || inq.pi_storage_data) && (
                         <div className="bulk-row-product-info" style={{ marginTop: 2 }}>

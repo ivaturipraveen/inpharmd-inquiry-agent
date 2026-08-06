@@ -212,6 +212,16 @@ export const api = {
       request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
     resetRetries: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/reset-retries`, { method: "POST" }),
+    testCallPreview: (data: {
+      phone_number: string;
+      subject: string;
+      question: string;
+      manufacturer_id?: number | null;
+    }) =>
+      request<Inquiry>(
+        `/api/inquiries/test-call-preview`,
+        { method: "POST", body: JSON.stringify(data) }
+      ),
     bulkCreate: (data: {
       targets: {
         manufacturer_id: number;
@@ -228,8 +238,7 @@ export const api = {
       source_inquiry_uuid?: string | null;
       source_excel_url?: string | null;
       source_excel_sheet?: string | null;
-      dispatch_channel?: "email" | "call" | "test_call" | "none";
-      test_call_to_number?: string | null;
+      dispatch_channel?: "email" | "call" | "none";
       /** @deprecated use dispatch_channel */
       send_email?: boolean;
     }) =>
@@ -238,8 +247,6 @@ export const api = {
         failed: { manufacturer_id: number; error: string }[];
         dispatch_channel?: string;
         dispatched?: number;
-        test_call_inquiry_id?: number | null;
-        test_call_to?: string | null;
       }>(`/api/inquiries/bulk`, {
         method: "POST",
         body: JSON.stringify(data),

@@ -70,7 +70,7 @@ export interface EmailReply {
 
 export interface Inquiry {
   id: number;
-  manufacturer_id: number;
+  manufacturer_id: number | null;
   subject: string;
   question: string;
   requester_name?: string | null;
@@ -91,6 +91,7 @@ export interface Inquiry {
   max_retries?: number;
   next_retry_at?: string | null;
   is_test_call?: boolean;
+  test_call_phone?: string | null;
   final_answer?: string | null;
   pdf_url?: string | null;
   pdf_filename?: string | null;

@@ -476,7 +476,22 @@ export default function InquiriesPage() {
                         <td className="cell-wrap">
                           <div className="cell-primary">{i.subject}</div>
                         </td>
-                        <td>{i.manufacturer?.manufacturer ?? "—"}</td>
+                        <td>
+                          {i.is_test_call ? (
+                            <div>
+                              <span style={{ fontSize: "0.7rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.5, marginRight: 4 }}>Test</span>
+                              {i.manufacturer?.manufacturer ?? (i.test_call_phone ?? "No manufacturer matched")}
+                              {i.manufacturer && i.test_call_phone && (
+                                <span className="cell-muted" style={{ marginLeft: 4 }}>{i.test_call_phone}</span>
+                              )}
+                              {!i.manufacturer && !i.test_call_phone && (
+                                <span className="cell-muted">No manufacturer matched</span>
+                              )}
+                            </div>
+                          ) : (
+                            i.manufacturer?.manufacturer ?? "—"
+                          )}
+                        </td>
                         <td>
                           <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                             <StatusBadge status={i.status} />
@@ -528,7 +543,11 @@ export default function InquiriesPage() {
                           {open ? (
                             <div className="mue-mfr-name-list">
                               {row.children.map((c) => (
-                                <div key={c.id}>{c.manufacturer?.manufacturer ?? "—"}</div>
+                                <div key={c.id}>
+                                  {c.is_test_call
+                                    ? (c.manufacturer?.manufacturer ?? c.test_call_phone ?? "No manufacturer matched")
+                                    : (c.manufacturer?.manufacturer ?? "—")}
+                                </div>
                               ))}
                             </div>
                           ) : (

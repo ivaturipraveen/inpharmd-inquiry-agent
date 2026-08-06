@@ -90,7 +90,7 @@ class EmailReplyOut(BaseModel):
 
 
 class InquiryBase(BaseModel):
-    manufacturer_id: int
+    manufacturer_id: Optional[int] = None
     subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
     question: str
     requester_name: Optional[str] = None
@@ -136,12 +136,8 @@ class BulkInquiryCreate(BaseModel):
     # Dispatch channel applied to every created inquiry:
     #   "email" — send email to each manufacturer (default)
     #   "call"  — place a voice-agent call to each manufacturer
-    #   "test_call" — DO NOT contact manufacturers; dial `test_call_to_number`
-    #                 once with the first created inquiry's context
     #   "none"  — create as drafts only; user dispatches later from Outreach
     dispatch_channel: str = "email"
-    # Used only when dispatch_channel == "test_call". E.164.
-    test_call_to_number: Optional[str] = None
     # Legacy alias kept so the previous send_email=True payload still works.
     send_email: Optional[bool] = None
 
@@ -153,10 +149,6 @@ class BulkInquiryResult(BaseModel):
     # dispatch_channel != "none".
     dispatch_channel: Optional[str] = None
     dispatched: int = 0
-    # When dispatch_channel == "test_call", which inquiry we used to drive
-    # the test prompt (so the UI can link to it).
-    test_call_inquiry_id: Optional[int] = None
-    test_call_to: Optional[str] = None
 
 
 class InquiryUpdate(BaseModel):
@@ -186,6 +178,13 @@ class CallResultPayload(BaseModel):
     summary: Optional[str] = None
 
 
+class TestCallPreviewPayload(BaseModel):
+    phone_number: str
+    subject: str
+    question: str
+    manufacturer_id: Optional[int] = None
+
+
 class InquiryOut(InquiryBase):
     id: int
     user_id: Optional[int] = None
@@ -206,6 +205,7 @@ class InquiryOut(InquiryBase):
     max_retries: int = 2
     next_retry_at: Optional[datetime] = None
     is_test_call: bool = False
+    test_call_phone: Optional[str] = None
     final_answer: Optional[str] = None
     pdf_url: Optional[str] = None
     pdf_filename: Optional[str] = None

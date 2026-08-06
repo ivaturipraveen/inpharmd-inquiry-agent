@@ -24,6 +24,7 @@ from schemas import (
     InquiryOut,
     InquiryUpdate,
     ScheduledEmailContentUpdate,
+    TestCallPreviewPayload,
 )
 
 
@@ -151,11 +152,9 @@ async def bulk_create_inquiries(
     `source_excel_row` so the response-writeback can find the right row.
 
     Dispatch:
-      - email     → email all created inquiries
-      - call      → trigger ElevenLabs voice agent for all created inquiries
-      - test_call → dial `test_call_to_number` once using the first
-                    created inquiry's context (manufacturers are NOT contacted)
-      - none      → leave as drafts
+      - email → email all created inquiries
+      - call  → trigger ElevenLabs voice agent for all created inquiries
+      - none  → leave as drafts
     """
     if not payload.targets:
         raise HTTPException(status_code=422, detail="At least one target is required")
@@ -164,15 +163,10 @@ async def bulk_create_inquiries(
     channel = (payload.dispatch_channel or "email").strip().lower()
     if payload.send_email is False and channel == "email":
         channel = "none"
-    if channel not in ("email", "call", "test_call", "none"):
+    if channel not in ("email", "call", "none"):
         raise HTTPException(
             status_code=422,
-            detail=f"Unknown dispatch_channel '{channel}'. Use email|call|test_call|none.",
-        )
-    if channel == "test_call" and not (payload.test_call_to_number or "").strip():
-        raise HTTPException(
-            status_code=422,
-            detail="test_call_to_number is required when dispatch_channel='test_call'",
+            detail=f"Unknown dispatch_channel '{channel}'. Use email|call|none.",
         )
 
     requester_name = (payload.requester_name or "").strip() or DEFAULT_REQUESTER_NAME
@@ -210,8 +204,6 @@ async def bulk_create_inquiries(
     db.commit()
 
     dispatched = 0
-    test_call_inquiry_id: Optional[int] = None
-    test_call_to: Optional[str] = None
 
     if channel == "email":
         # Group inquiries by destination email so we send ONE email per unique
@@ -307,53 +299,12 @@ async def bulk_create_inquiries(
             dispatched += 1  # unique calls placed, not inquiries stamped
         db.commit()
 
-    elif channel == "test_call":
-        # Dial the user's own number using the single inquiry that was created.
-        # The inquiry transitions to call_pending so the post-call webhook can
-        # write the transcript back and mark it call_completed in Outreach.
-        first = created_objs[0] if created_objs else None
-        if first is not None:
-            mfr = db.get(ManufacturerContact, first.manufacturer_id)
-            if not mfr:
-                failed.append({
-                    "manufacturer_id": first.manufacturer_id,
-                    "error": "Manufacturer disappeared after create",
-                })
-            else:
-                try:
-                    resp = await call_service.place_inquiry_call(
-                        inquiry_id=first.id,
-                        to_number=payload.test_call_to_number,
-                        manufacturer_name=mfr.manufacturer,
-                        subject=first.subject,
-                        question=first.question,
-                        requester_name=first.requester_name,
-                        requester_email=first.requester_email,
-                        is_test=True,
-                    )
-                    conv_id = resp.get("conversation_id") or resp.get("conversationId")
-                    first.is_test_call = True
-                    first.status = "call_pending"
-                    if conv_id:
-                        first.call_conversation_id = conv_id
-                    db.commit()
-                    test_call_inquiry_id = first.id
-                    test_call_to = payload.test_call_to_number
-                    dispatched = 1
-                except Exception as e:
-                    failed.append({
-                        "manufacturer_id": first.manufacturer_id,
-                        "error": f"Test call failed: {e}",
-                    })
-
     refreshed = [_get_or_404(db, obj.id, current_user) for obj in created_objs]
     return BulkInquiryResult(
         created=refreshed,
         failed=failed,
         dispatch_channel=channel,
         dispatched=dispatched,
-        test_call_inquiry_id=test_call_inquiry_id,
-        test_call_to=test_call_to,
     )
 
 
@@ -686,6 +637,72 @@ async def trigger_call(
     obj.next_retry_at = None  # manual trigger cancels any pending auto-retry
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
+
+
+@router.post("/test-call-preview", response_model=InquiryOut, status_code=201)
+async def test_call_preview(
+    payload: TestCallPreviewPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Place a test call and create a test inquiry to capture the transcript.
+
+    Creates an Inquiry with is_test_call=True and status=call_pending so the
+    post-call webhook can write the transcript back via call_conversation_id.
+    All production workflows (retries, Slack, legacy POST) are blocked by the
+    is_test_call flag. manufacturer_id is set only when the dialed number
+    matches a known manufacturer; otherwise it is NULL and test_call_phone
+    is the sole identifier shown in Outreach.
+    """
+    mfr = None
+    mfr_name = "the manufacturer"
+    if payload.manufacturer_id:
+        mfr = db.get(ManufacturerContact, payload.manufacturer_id)
+        if mfr:
+            mfr_name = mfr.manufacturer
+
+    obj = Inquiry(
+        manufacturer_id=mfr.id if mfr else None,
+        test_call_phone=payload.phone_number,
+        subject=payload.subject,
+        question=payload.question,
+        status="call_pending",
+        is_test_call=True,
+        user_id=current_user.id,
+        fallback_after_hours=0,
+    )
+    db.add(obj)
+    db.flush()
+
+    try:
+        resp = await call_service.place_inquiry_call(
+            inquiry_id=obj.id,
+            to_number=payload.phone_number,
+            manufacturer_name=mfr_name,
+            subject=payload.subject,
+            question=payload.question,
+            is_test=True,
+        )
+    except call_service.CallConfigError as e:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail=f"ElevenLabs rejected the call: {e.response.status_code} {e.response.text}",
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=502, detail=f"Failed to place test call: {e}")
+
+    conv_id = resp.get("conversation_id") or resp.get("conversationId")
+    if conv_id:
+        obj.call_conversation_id = conv_id
+    obj.call_provider_status = resp.get("status") or "initiated"
+    db.commit()
+
+    return _get_or_404(db, obj.id, current_user)
 
 
 @router.post("/{inquiry_id}/test-call", response_model=InquiryOut)

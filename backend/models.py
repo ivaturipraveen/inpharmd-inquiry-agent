@@ -80,7 +80,7 @@ class Inquiry(Base):
     manufacturer_id = Column(
         Integer,
         ForeignKey("manufacturer_contacts.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
@@ -115,6 +115,8 @@ class Inquiry(Base):
     # True for inquiries created by the Test Call flow. These must never enter
     # the production manufacturer workflow: no retries, no Slack, no legacy POST.
     is_test_call = Column(Boolean, nullable=False, default=False, server_default="false")
+    # The phone number that was dialed for a test call (always set when is_test_call=True).
+    test_call_phone = Column(String(32))
 
     final_answer = Column(Text)
 
