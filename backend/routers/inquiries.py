@@ -572,6 +572,11 @@ async def trigger_call(
     inquiry's context. Updates the inquiry's status, scheduled time, and
     stores the ElevenLabs `conversation_id` for the post-call webhook."""
     obj = _get_or_404(db, inquiry_id, current_user)
+    if obj.is_test_call:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot trigger a production call on a test call inquiry.",
+        )
     if obj.status in ("email_responded", "closed", "email_pending"):
         raise HTTPException(
             status_code=409,
@@ -697,8 +702,13 @@ async def test_call_preview(
         raise HTTPException(status_code=502, detail=f"Failed to place test call: {e}")
 
     conv_id = resp.get("conversation_id") or resp.get("conversationId")
-    if conv_id:
-        obj.call_conversation_id = conv_id
+    if not conv_id:
+        db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail="ElevenLabs did not return a conversation_id; the transcript cannot be captured.",
+        )
+    obj.call_conversation_id = conv_id
     obj.call_provider_status = resp.get("status") or "initiated"
     db.commit()
 
@@ -816,7 +826,8 @@ def record_call_result(
         obj.call_summary = payload.summary
         obj.final_answer = payload.summary
     db.commit()
-    legacy_response_service.maybe_post_for_inquiry(db, obj)
+    if not obj.is_test_call:
+        legacy_response_service.maybe_post_for_inquiry(db, obj)
     return _get_or_404(db, inquiry_id, current_user)
 
 

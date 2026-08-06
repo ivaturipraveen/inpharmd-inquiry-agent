@@ -47,20 +47,20 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   };
 
   const m = inquiry.manufacturer;
+  const isTestCall = inquiry.is_test_call ?? false;
 
   const callInFlight = inquiry.status === "call_pending";
   const isDraft = inquiry.status === "draft";
   const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
-  // Allow manual call from any not-yet-answered state. Retries reuse this same trigger.
-  // While a call is in flight we still render the button (disabled) so the user
-  // sees the in-progress state instead of the button disappearing.
+  // Test call inquiries must never trigger a production manufacturer call.
   const canTriggerCall =
-    callInFlight ||
-    ["email_sent", "draft", "needs_attention"].includes(inquiry.status) ||
-    (inquiry.status === "call_completed" &&
-      inquiry.call_provider_status !== "answered" &&
-      inquiry.call_provider_status !== "follow_up_via_email");
+    !isTestCall &&
+    (callInFlight ||
+      ["email_sent", "draft", "needs_attention"].includes(inquiry.status) ||
+      (inquiry.status === "call_completed" &&
+        inquiry.call_provider_status !== "answered" &&
+        inquiry.call_provider_status !== "follow_up_via_email"));
   const canRecordCall = inquiry.status === "call_pending" || inquiry.status === "needs_attention";
   const canClose = !["closed"].includes(inquiry.status);
 
@@ -87,13 +87,24 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
           <div>
             <div className="detail-head-meta">
               <StatusBadge status={inquiry.status} />
+              {isTestCall && (
+                <span style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", padding: "2px 6px", borderRadius: 4, background: "var(--color-warn-bg, #fef3c7)", color: "var(--color-warn-text, #92400e)", marginLeft: 4 }}>
+                  Test Call
+                </span>
+              )}
               <span className="meta-dot">·</span>
               <span className="meta-text">
                 Inquiry #{inquiry.id} · created {fmtDate(inquiry.created_at)}
               </span>
             </div>
             <h2>{inquiry.subject}</h2>
-            {m && (
+            {isTestCall && (
+              <div className="detail-head-sub">
+                <strong>{m?.manufacturer ?? "No manufacturer matched"}</strong>
+                {inquiry.test_call_phone && <> · {inquiry.test_call_phone}</>}
+              </div>
+            )}
+            {!isTestCall && m && (
               <div className="detail-head-sub">
                 To: <strong>{m.manufacturer}</strong>
                 {m.official_mi_email && (
