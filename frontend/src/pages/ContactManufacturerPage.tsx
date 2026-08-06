@@ -150,7 +150,11 @@ export default function ContactManufacturerPage() {
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loadingMfrs, setLoadingMfrs] = useState(true);
   const [existingInquiries, setExistingInquiries] = useState<Inquiry[]>([]);
-  const [pendingChoice, setPendingChoice] = useState<Inquiry | null>(null);
+  const [pendingInquiryInput, setPendingInquiryInput] = useState<InquiryInput | null>(null);
+  // Tracks the inquiry id created during the deferred-create flow. Prevents a
+  // duplicate inquiry if the second step (sendEmail / triggerCall) fails and
+  // the user retries — subsequent attempts reuse this id instead of creating again.
+  const [pendingCreatedId, setPendingCreatedId] = useState<number | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -289,12 +293,19 @@ export default function ContactManufacturerPage() {
       const payload: InquiryInput = ctx?.uuid
         ? { ...data, source_inquiry_uuid: ctx.uuid }
         : data;
-      const created = await api.inquiries.create(payload);
-      setBanner(`Inquiry #${created.id} created — choose how to reach the manufacturer.`);
-      setPendingChoice(created);
+      setPendingInquiryInput(payload);
     },
     [ctx],
   );
+
+  // Stable reference — used as onClose in ChannelChooser and as cleanup after
+  // every successful action. Also referenced in the Escape useEffect dep array,
+  // so a new function reference on every render would tear down and re-add the
+  // listener on each parent re-render while the modal is open.
+  const closePending = useCallback(() => {
+    setPendingInquiryInput(null);
+    setPendingCreatedId(null);
+  }, []);
 
   const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
     await api.manufacturers.create(data);
@@ -1237,35 +1248,63 @@ export default function ContactManufacturerPage() {
       )}
 
 
-      {pendingChoice && (
-        <ChannelChooser
-          inquiry={pendingChoice}
-          onClose={() => {
-            setPendingChoice(null);
-            goTo("inquiries");
-          }}
-          onSendEmail={async () => {
-            try {
-              await api.inquiries.sendEmail(pendingChoice.id);
+      {pendingInquiryInput && (() => {
+        const mfr = pendingInquiryInput.manufacturer_id != null
+          ? mfrById[pendingInquiryInput.manufacturer_id]
+          : undefined;
+
+        // Idempotent create: if a previous attempt already created the inquiry
+        // (pendingCreatedId is set) reuse that id instead of creating again.
+        // This prevents duplicate drafts when sendEmail / triggerCall fails and
+        // the user retries from within the same modal session.
+        const getOrCreateId = async (): Promise<number> => {
+          if (pendingCreatedId != null) return pendingCreatedId;
+          const created = await api.inquiries.create(pendingInquiryInput);
+          setPendingCreatedId(created.id);
+          return created.id;
+        };
+
+        return (
+          <ChannelChooser
+            manufacturer={mfr}
+            fallbackHours={pendingInquiryInput.fallback_after_hours}
+            onClose={closePending}
+            onSendEmail={async () => {
+              const id = await getOrCreateId();
+              await api.inquiries.sendEmail(id);
+              setBanner(`Email queued for ${mfr?.manufacturer ?? "manufacturer"}.`);
+              closePending();
+              goTo("inquiries");
+            }}
+            onCallAgent={async () => {
+              const id = await getOrCreateId();
+              await api.inquiries.triggerCall(id, false);
+              setBanner("Call placed — the agent is dialing now.");
+              closePending();
+              goTo("inquiries");
+            }}
+            onTestCall={async (phone) => {
+              await api.inquiries.testCallPreview({
+                phone_number: phone,
+                subject: pendingInquiryInput.subject,
+                question: pendingInquiryInput.question,
+                manufacturer_id: pendingInquiryInput.manufacturer_id,
+              });
               setBanner(
-                `Email queued for ${pendingChoice.manufacturer?.manufacturer ?? "manufacturer"}.`,
+                mfr
+                  ? `Test call dialing ${phone} with ${mfr.manufacturer} context.`
+                  : `Test call dialing ${phone}.`,
               );
-            } catch (e: any) {
-              setBanner(`Failed to send email: ${e?.message ?? "unknown"}`);
-            }
-            setPendingChoice(null);
-            goTo("inquiries");
-          }}
-          onCallTriggered={() => {
-            setBanner("Call placed — the agent is dialing now.");
-            setPendingChoice(null);
-            goTo("inquiries");
-          }}
-          onTestCallTriggered={(phone) => {
-            setBanner(`Test call dialing ${phone}.`);
-          }}
-        />
-      )}
+            }}
+            onSaveDraft={async () => {
+              await api.inquiries.create(pendingInquiryInput);
+              setBanner("Inquiry saved as draft.");
+              closePending();
+              goTo("inquiries");
+            }}
+          />
+        );
+      })()}
 
       {banner && (
         <div className="success-banner toast-banner" role="status">
