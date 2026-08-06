@@ -46,22 +46,7 @@ _QUOTE_MARKERS = (
 )
 
 
-_IMAP_SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"}
-_IMAP_CONTENT_TYPE_FOR_EXT = {
-    ".pdf":  "application/pdf",
-    ".doc":  "application/msword",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xls":  "application/vnd.ms-excel",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".csv":  "text/csv",
-}
-# Include application/csv — a non-standard but common alternative MIME type for CSV.
-# Matches graph_service which also accepts it. Without this, CSV files sent with
-# Content-Type: application/csv (and no file extension) would be silently dropped.
-_IMAP_SUPPORTED_CONTENT_TYPES = set(_IMAP_CONTENT_TYPE_FOR_EXT.values()) | {"application/csv"}
-
-# Mirror the same cap used by graph_service so both paths behave identically.
-_MAX_ATTACHMENTS_PER_EMAIL = 20
+_MAX_ATTACHMENTS_PER_EMAIL = inbound_attachment_service.MAX_ATTACHMENTS
 
 
 def is_configured() -> bool:
@@ -168,9 +153,7 @@ def _collect_attachments(msg: email.message.Message) -> list[dict]:
         filename = (part.get_filename() or "").replace("\x00", "").strip()[:512]
         ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         ctype = (part.get_content_type() or "").lower()
-        if ext not in _IMAP_SUPPORTED_EXTENSIONS and not any(
-            ctype.startswith(k) for k in _IMAP_SUPPORTED_CONTENT_TYPES
-        ):
+        if not inbound_attachment_service.is_supported(filename, ctype):
             continue
         try:
             payload = part.get_payload(decode=True)
@@ -178,7 +161,7 @@ def _collect_attachments(msg: email.message.Message) -> list[dict]:
             continue
         if not payload:
             continue
-        content_type = _IMAP_CONTENT_TYPE_FOR_EXT.get(ext, ctype or "application/octet-stream")
+        content_type = inbound_attachment_service.SUPPORTED_EXTENSIONS.get(ext, ctype or "application/octet-stream")
         results.append({"name": filename or "attachment", "bytes": payload, "content_type": content_type})
     return results
 

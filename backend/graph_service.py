@@ -372,30 +372,9 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     }
 
 
-_SUPPORTED_ATTACHMENT_TYPES = {
-    # (content-type fragment, extension) pairs we recognise
-    "application/pdf": ".pdf",
-    "application/msword": ".doc",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-    "application/vnd.ms-excel": ".xls",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-    "text/csv": ".csv",
-    "application/csv": ".csv",
-}
-_SUPPORTED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"}
-
 # Safety cap: never process more than this many attachments from a single email.
 # Prevents runaway S3 + LLM cost from unusual messages and caps peak memory usage.
-_MAX_ATTACHMENTS_PER_EMAIL = 20
-
-_CONTENT_TYPE_FOR_EXT = {
-    ".pdf":  "application/pdf",
-    ".doc":  "application/msword",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xls":  "application/vnd.ms-excel",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".csv":  "text/csv",
-}
+_MAX_ATTACHMENTS_PER_EMAIL = inbound_attachment_service.MAX_ATTACHMENTS
 
 
 def _list_document_attachment_metadata(
@@ -431,13 +410,10 @@ def _list_document_attachment_metadata(
             break
         if a.get("@odata.type") != "#microsoft.graph.fileAttachment":
             continue
-        name = (a.get("name") or "").lower()
+        name = a.get("name") or ""
         ctype = (a.get("contentType") or "").lower()
-        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
-        if ext in _SUPPORTED_EXTENSIONS or any(
-            ctype.startswith(k) for k in _SUPPORTED_ATTACHMENT_TYPES
-        ):
-            results.append({"id": a["id"], "name": a.get("name", ""), "content_type": ctype})
+        if inbound_attachment_service.is_supported(name, ctype):
+            results.append({"id": a["id"], "name": name, "content_type": ctype})
     return results
 
 
@@ -468,7 +444,7 @@ def _download_attachment(
 
     name = (data.get("name") or original_name or "attachment").replace("\x00", "").strip()[:512] or "attachment"
     ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    content_type = _CONTENT_TYPE_FOR_EXT.get(ext, "application/octet-stream")
+    content_type = inbound_attachment_service.SUPPORTED_EXTENSIONS.get(ext, "application/octet-stream")
     return {"name": name, "bytes": raw, "content_type": content_type}
 
 

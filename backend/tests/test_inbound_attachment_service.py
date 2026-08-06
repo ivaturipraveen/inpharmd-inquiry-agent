@@ -203,7 +203,7 @@ class TestProcessAttachments:
         email_reply = _make_email_reply(db, inquiry.id)
         result = inbound_attachment_service.process_attachments(
             db=db, inquiry_id=inquiry.id, reply_id=email_reply.id,
-            raw_attachments=[_make_raw_att("image.png", content_type="image/png")],
+            raw_attachments=[_make_raw_att("archive.zip", content_type="application/zip")],
             question=inquiry.question, manufacturer_name="Acme",
         )
 

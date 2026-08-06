@@ -23,8 +23,10 @@ from models import InquiryAttachment
 
 log = logging.getLogger("inquiry.inbound_attachments")
 
-# Supported document extensions and their canonical MIME types.
-_SUPPORTED_EXTENSIONS = {
+# Single source of truth for accepted attachment types (ext → canonical MIME type).
+# graph_service and imap_service import these directly so there is only one list
+# to update when adding new types.
+SUPPORTED_EXTENSIONS: dict[str, str] = {
     ".pdf":  "application/pdf",
     ".doc":  "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -35,7 +37,7 @@ _SUPPORTED_EXTENSIONS = {
     ".jpg":  "image/jpeg",
     ".jpeg": "image/jpeg",
 }
-_SUPPORTED_CONTENT_TYPES = set(_SUPPORTED_EXTENSIONS.values()) | {"application/csv"}
+SUPPORTED_CONTENT_TYPES: set[str] = set(SUPPORTED_EXTENSIONS.values()) | {"application/csv"}
 
 # Image types are stored and displayed like any other attachment but are never
 # summarized — no OCR or GPT vision is attempted.
@@ -47,10 +49,10 @@ MAX_ATTACHMENTS = 20
 def is_supported(filename: str, content_type: str) -> bool:
     """Return True if the file extension or content-type is in the supported set."""
     ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-    if ext in _SUPPORTED_EXTENSIONS:
+    if ext in SUPPORTED_EXTENSIONS:
         return True
     ct = (content_type or "").lower()
-    return any(ct.startswith(k) for k in _SUPPORTED_CONTENT_TYPES)
+    return any(ct.startswith(k) for k in SUPPORTED_CONTENT_TYPES)
 
 
 def process_attachments(
