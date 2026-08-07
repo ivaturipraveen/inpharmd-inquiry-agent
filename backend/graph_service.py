@@ -241,13 +241,36 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     )
 
     # ---- Document attachments (one or more) ----
+    # Build a lowercased copy of the raw HTML body once so we can do a fast
+    # case-insensitive substring check for each attachment's Content-ID.
+    # Only populated when the message body is HTML; plain-text bodies never
+    # contain cid: references so we leave it empty and skip the check.
+    _body_block = msg.get("body") or {}
+    _html_body_lower = (
+        (_body_block.get("content") or "").lower()
+        if (_body_block.get("contentType") or "").lower() == "html"
+        else ""
+    )
+
     raw_atts: list[dict] = []
     if msg.get("hasAttachments"):
         att_metadata = _list_document_attachment_metadata(token, mailbox, msg["id"])
         for meta in att_metadata:
             doc = _download_attachment(token, mailbox, msg["id"], meta["id"], meta["name"])
-            if doc:
-                raw_atts.append(doc)
+            if not doc:
+                continue
+            # Skip CID-referenced inline images (e.g. email-signature logos).
+            # Strip angle brackets that some clients wrap around the Content-ID
+            # value, then check whether cid:{id} appears in the HTML body.
+            # isInline is intentionally not used — it is unreliable across clients.
+            _cid = (doc.get("content_id") or "").strip("<>").lower()
+            if _cid and _html_body_lower and f"cid:{_cid}" in _html_body_lower:
+                log.info(
+                    "pipeline: graph skipping inline attachment '%s' (cid:%s referenced in HTML body)",
+                    doc.get("name"), _cid,
+                )
+                continue
+            raw_atts.append(doc)
 
     has_attachment = bool(raw_atts)
     if not reply and not has_attachment:
@@ -445,7 +468,11 @@ def _download_attachment(
     name = (data.get("name") or original_name or "attachment").replace("\x00", "").strip()[:512] or "attachment"
     ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     content_type = inbound_attachment_service.SUPPORTED_EXTENSIONS.get(ext, "application/octet-stream")
-    return {"name": name, "bytes": raw, "content_type": content_type}
+    # contentId is the MIME Content-ID for this attachment (e.g. "logo@company.com" or
+    # "<logo@company.com>"). Returned here so callers can detect CID-referenced inline
+    # images without relying on the unreliable isInline flag.
+    content_id = (data.get("contentId") or "").strip()
+    return {"name": name, "bytes": raw, "content_type": content_type, "content_id": content_id}
 
 
 def _fetch_all_document_attachments(
