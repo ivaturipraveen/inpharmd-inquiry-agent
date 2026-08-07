@@ -697,7 +697,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 className="btn btn-ghost"
                 type="button"
                 disabled={busy}
-                onClick={() => run(() => onAction("close"))}
+                onClick={() => run(async () => { if (confirm("Close this inquiry?")) await onAction("close"); })}
               >
                 Close Inquiry
               </button>
