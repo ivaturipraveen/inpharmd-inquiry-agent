@@ -1384,11 +1384,9 @@ pre.raw-json {
 }
 
 .contacted-section-header {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
   margin-bottom: 8px;
 }
 
