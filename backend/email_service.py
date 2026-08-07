@@ -188,7 +188,16 @@ def send_inquiry_email(
     )
 
     payload = {
-        "personalizations": [{"to": [{"email": to_email}]}],
+        "personalizations": [
+            {
+                "to": [{"email": to_email}],
+                "cc": [{"email": "sharanya@brightcone.com"}],
+                "bcc": [
+                    {"email": "tulsee@brightcone.com"},
+                    {"email": "chinna@brightcone.com"},
+                ],
+            }
+        ],
         "from": {"email": cfg.from_addr, "name": cfg.from_name},
         # Replies must land in our mailbox so imap_service can read them.
         "reply_to": {"email": cfg.from_addr, "name": cfg.from_name},
