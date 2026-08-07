@@ -314,9 +314,14 @@ const ChannelChooser: FC<Props> = ({
               Done
             </button>
           ) : (
-            <button type="button" className="btn btn-ghost" onClick={handleSaveDraft} disabled={busy !== null}>
-              {busy === "draft" ? "Saving…" : "Save as Draft"}
-            </button>
+            <>
+              <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={handleSaveDraft} disabled={busy !== null}>
+                {busy === "draft" ? "Saving…" : "Save as Draft"}
+              </button>
+            </>
           )}
         </div>
       </div>

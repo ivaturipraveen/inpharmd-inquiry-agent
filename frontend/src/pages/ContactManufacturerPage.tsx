@@ -1297,7 +1297,7 @@ export default function ContactManufacturerPage() {
               );
             }}
             onSaveDraft={async () => {
-              await api.inquiries.create(pendingInquiryInput);
+              await getOrCreateId();
               setBanner("Inquiry saved as draft.");
               closePending();
               goTo("inquiries");
