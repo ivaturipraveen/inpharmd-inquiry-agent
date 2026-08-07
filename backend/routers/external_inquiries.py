@@ -5,18 +5,20 @@ X-Session-Token header; the backend looks up the user, pulls their
 staging access_token from the DB, and forwards the request upstream.
 
 Cache strategy (in-process, see `cache_service.py`):
-- Cache key: `external:list:<user_id>` and `external:detail:<user_id>:<id>`
-- List TTL: 5 min by default (configurable via INPHARMD_LIST_TTL_SECONDS env)
-- Detail TTL: 10 min (small, cheap, doesn't change often)
-- `?fresh=true` query param busts the cache entry before fetching
-- If staging fails AND we have any stale cache entry, serve stale with
-  `X-Cache: STALE` and the upstream error in `X-Upstream-Error`. The
-  browser keeps working even when Heroku is down.
+- Full list key: `external:full:<user_id>` — entire dataset from staging,
+  fetched once with a large per_page and cached for 5 min (INPHARMD_LIST_TTL_SECONDS).
+  Filtering and pagination are applied in-process against this cached list so
+  that search / type / attachment filters work across the full dataset, not just
+  the current page.
+- Detail key: `external:detail:<user_id>:<id>` — single inquiry, 10 min TTL.
+- `?fresh=true` invalidates the full-list cache and re-fetches from staging.
+- Stale fallback: if staging is unreachable and a stale full-list entry exists,
+  filtering + pagination still work against the stale data.
 
-Every response carries:
+Every list response carries:
 - `X-Cache: HIT | MISS | STALE`
-- `X-Cache-Age: <seconds>` (only on HIT/STALE)
-- `X-Upstream-Error: <reason>` (only on STALE)
+- `X-Cache-Age: <seconds>` (HIT/STALE only)
+- `X-Upstream-Error: <reason>` (STALE only)
 """
 from __future__ import annotations
 
@@ -57,72 +59,139 @@ def _detail_ttl() -> int:
         return 600
 
 
-def _cache_key_list(user_id: int) -> str:
-    return f"external:list:{user_id}"
-
-
 def _cache_key_detail(user_id: int, inquiry_id: str) -> str:
     return f"external:detail:{user_id}:{inquiry_id}"
 
 
-@router.get("")
-def list_external_inquiries(
-    response: Response,
-    status: Optional[str] = Query(None, description="Optional status filter passed through to staging."),
-    page: Optional[int] = Query(None, ge=1),
-    per_page: Optional[int] = Query(None, ge=1, le=200),
-    fresh: bool = Query(False, description="Set true to bypass cache."),
-    current: User = Depends(get_current_user),
-) -> Any:
-    key = _cache_key_list(current.id)
-    # Note: server-side filtering+pagination params would compose into the
-    # cache key, but staging ignores them today, so we cache the whole list.
-    log.info(
-        "external.list user_id=%s email=%s status=%s page=%s per_page=%s fresh=%s",
-        current.id, current.email, status, page, per_page, fresh,
-    )
+def _full_list_cache_key(user_id: int) -> str:
+    return f"external:full:{user_id}"
 
+
+# Fetch the entire staging dataset in one shot. Staging has no apparent cap on
+# per_page and we confirmed values of 500 work fine. 5 000 is a safe ceiling
+# for the foreseeable future; if the dataset ever exceeds it the meta.total_pages
+# check below will log a warning so it's easy to spot.
+_FULL_FETCH_PER_PAGE = 5000
+
+
+def _fetch_full_list(token: str, user_id: int, fresh: bool) -> tuple[list, str, int]:
+    """Return (all_items, cache_status, cache_age_seconds)."""
+    key = _full_list_cache_key(user_id)
     if fresh:
         cache_service.invalidate(key)
 
     cached = cache_service.get(key)
     if cached is not None:
-        value, age = cached
-        log.info("external.list cache HIT key=%s age=%.0fs", key, age)
-        response.headers["X-Cache"] = "HIT"
-        response.headers["X-Cache-Age"] = str(int(age))
-        return value
+        items, age = cached
+        return items, "HIT", int(age)
+
+    data = inpharmd_service.list_inquiries(token, page=1, per_page=_FULL_FETCH_PER_PAGE)
+    if isinstance(data, dict):
+        items = data.get("data") or []
+        meta = data.get("meta") or {}
+        total_pages = meta.get("total_pages", 1)
+        if total_pages > 1:
+            log.warning(
+                "external.full_fetch: staging has %s pages at per_page=%s — "
+                "increase _FULL_FETCH_PER_PAGE to capture all records",
+                total_pages, _FULL_FETCH_PER_PAGE,
+            )
+    else:
+        items = data if isinstance(data, list) else []
+
+    cache_service.set(key, items, ttl_seconds=_list_ttl())
+    return items, "MISS", 0
+
+
+def _matches_search(item: dict, q: str) -> bool:
+    det = item.get("inquiry_submitter_details") or {}
+    parts = [
+        item.get("title") or "",
+        item.get("inquiry_submitter") or "",
+        det.get("email") or "",
+        det.get("first_name") or "",
+        det.get("last_name") or "",
+        item.get("inquiry_uuid") or "",
+    ]
+    for att in (item.get("attachments") or []):
+        parts.append(att.get("file_name") or "")
+    for t in (item.get("project_types") or item.get("inquiry_types") or []):
+        parts.append(t)
+    return q in " ".join(parts).lower()
+
+
+@router.get("")
+def list_external_inquiries(
+    response: Response,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=200),
+    search: Optional[str] = Query(None),
+    inquiry_type: Optional[str] = Query(None),
+    with_attachments: bool = Query(False),
+    fresh: bool = Query(False, description="Set true to bypass cache."),
+    current: User = Depends(get_current_user),
+) -> Any:
+    log.info(
+        "external.list user_id=%s page=%s per_page=%s search=%r inquiry_type=%s "
+        "with_attachments=%s fresh=%s",
+        current.id, page, per_page, search, inquiry_type, with_attachments, fresh,
+    )
+
+    key = _full_list_cache_key(current.id)
 
     try:
-        data = inpharmd_service.list_inquiries(
-            current.staging_token,
-            status=status, page=page, per_page=per_page,
+        all_items, cache_status, cache_age = _fetch_full_list(
+            current.staging_token, current.id, fresh
         )
-        cache_service.set(key, data, ttl_seconds=_list_ttl())
-        response.headers["X-Cache"] = "MISS"
-        return data
     except inpharmd_service.InpharmdAPIError as e:
         log.error("external.list upstream error status=%s body=%s", e.status_code, e.body)
-        # Stale fallback so the user keeps working when Heroku is down.
         stale = cache_service.get_stale_ok(key)
         if stale is not None:
-            value, age = stale
-            log.warning(
-                "external.list serving STALE key=%s age=%.0fs after upstream %s",
-                key, age, e.status_code,
-            )
-            response.headers["X-Cache"] = "STALE"
-            response.headers["X-Cache-Age"] = str(int(age))
+            all_items, stale_age = stale
+            log.warning("external.list serving STALE age=%.0fs after upstream %s", stale_age, e.status_code)
+            cache_status, cache_age = "STALE", int(stale_age)
             response.headers["X-Upstream-Error"] = f"{e.status_code} {e.message}"[:200]
-            return value
-        if e.status_code in (401, 403):
+        elif e.status_code in (401, 403):
             raise HTTPException(status_code=401, detail="Staging access token expired. Please log in again.")
-        # No cache to fall back on — propagate the real reason so the UI
-        # can show it instead of a generic "Bad Gateway".
-        raise HTTPException(
-            status_code=502,
-            detail=f"Staging error {e.status_code}: {e.message}. No cached data available yet.",
-        )
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Staging error {e.status_code}: {e.message}. No cached data available yet.",
+            )
+
+    # Filter in-process against the full cached list.
+    filtered = all_items
+    if search:
+        q = search.strip().lower()
+        if q:
+            filtered = [i for i in filtered if _matches_search(i, q)]
+    if inquiry_type:
+        filtered = [i for i in filtered if inquiry_type in (
+            i.get("project_types") or i.get("inquiry_types") or []
+        )]
+    if with_attachments:
+        filtered = [i for i in filtered if i.get("attachments")]
+
+    # Paginate the filtered result.
+    total_entries = len(filtered)
+    total_pages = max(1, (total_entries + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    page_items = filtered[start: start + per_page]
+
+    response.headers["X-Cache"] = cache_status
+    if cache_age:
+        response.headers["X-Cache-Age"] = str(cache_age)
+
+    return {
+        "data": page_items,
+        "meta": {
+            "page": page,
+            "per_page": per_page,
+            "total_entries": total_entries,
+            "total_pages": total_pages,
+        },
+    }
 
 
 @router.get("/{inquiry_id}")

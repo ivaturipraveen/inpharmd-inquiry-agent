@@ -48,12 +48,25 @@ const submitterDisplay = (i: MueInquiry): string => {
   return i.inquiry_submitter ?? det?.email ?? "—";
 };
 
+const PER_PAGE = 20;
+
+interface StagingMeta {
+  page: number;
+  per_page: number;
+  total_entries: number;
+  total_pages: number;
+}
+
 export default function ExternalInquiriesPage() {
   const [raw, setRaw] = useState<any>(null);
   const [meta, setMeta] = useState<ApiMeta | null>(null);
+  const [stagingMeta, setStagingMeta] = useState<StagingMeta | null>(null);
+  const [page, setPage] = useState(1);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // searchInput drives the visible input; search is the debounced value sent to the API.
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [withAttachmentsOnly, setWithAttachmentsOnly] = useState(false);
@@ -64,25 +77,61 @@ export default function ExternalInquiriesPage() {
   // (overflow-x:auto) which would otherwise clip the dropdown.
   const [menuAnchor, setMenuAnchor] = useState<{ top: number; right: number } | null>(null);
   const menuPopoverRef = useRef<HTMLDivElement | null>(null);
+  // Sequence counter — incremented on every load call so a stale response
+  // from a previous in-flight request is silently discarded.
+  const loadSeqRef = useRef(0);
 
-  const load = useCallback(async (forceFresh = false) => {
+  // Debounce search: commit to API 400 ms after the user stops typing, and
+  // reset to page 1 so the new filter always starts from the beginning.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const handleTypeFilter = (v: string) => { setTypeFilter(v); setPage(1); };
+  const handleWithAttachments = (v: boolean) => { setWithAttachmentsOnly(v); setPage(1); };
+
+  const load = useCallback(async (
+    pageNum: number,
+    searchQ: string,
+    typeQ: string,
+    attachOnly: boolean,
+    forceFresh: boolean,
+  ) => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
+    setStagingMeta(null);
     try {
-      const { data, meta } = await api.externalInquiries.list({ fresh: forceFresh });
+      const { data, meta } = await api.externalInquiries.list({
+        page: pageNum,
+        per_page: PER_PAGE,
+        search: searchQ || undefined,
+        inquiry_type: typeQ || undefined,
+        with_attachments: attachOnly || undefined,
+        fresh: forceFresh,
+      });
+      if (seq !== loadSeqRef.current) return; // superseded by a newer load
       setRaw(data);
       setMeta(meta);
+      if (data?.meta && typeof data.meta.total_pages === "number") {
+        setStagingMeta(data.meta as StagingMeta);
+      }
       setLastLoadedAt(Date.now());
     } catch (err: any) {
+      if (seq !== loadSeqRef.current) return;
       setError(err?.message ?? "Failed to load inquiries from InpharmD.");
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load(false);
-  }, [load]);
+    load(page, search, typeFilter, withAttachmentsOnly, false);
+  }, [load, page, search, typeFilter, withAttachmentsOnly]);
 
   // Close the row menu when clicking outside, on scroll, or on resize.
   useEffect(() => {
@@ -180,29 +229,6 @@ export default function ExternalInquiriesPage() {
     [stats.byType],
   );
 
-  // ----- Filter -----
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return inquiries.filter((i) => {
-      if (typeFilter && !(i.inquiry_types ?? []).includes(typeFilter)) return false;
-      if (withAttachmentsOnly && (i.attachments?.length ?? 0) === 0) return false;
-      if (q) {
-        const hay = [
-          i.title,
-          i.inquiry_submitter ?? "",
-          submitterEmail(i),
-          ...(i.inquiry_types ?? []),
-          ...(i.attachments ?? []).map((a) => a.file_name),
-          i.inquiry_uuid,
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-  }, [inquiries, search, typeFilter, withAttachmentsOnly]);
-
   const startContact = (i: MueInquiry) => {
     setOpenMenuId(null);
     startContactManufacturerFlow({
@@ -223,7 +249,7 @@ export default function ExternalInquiriesPage() {
 
       {/* Headline stats */}
       <div className="ext-stats">
-        <StatTile label="Total inquiries" value={stats.total} tone="neutral" icon="list" />
+        <StatTile label="Total inquiries" value={stagingMeta?.total_entries ?? stats.total} tone="neutral" icon="list" />
         <StatTile label="With attachments" value={stats.withDocs} tone="info" icon="paperclip" />
         <StatTile label="Attachments" value={stats.totalAttachments} tone="neutral" icon="paperclip" />
         <StatTile label="Submitters" value={stats.submitters} tone="info" icon="dot" />
@@ -235,7 +261,7 @@ export default function ExternalInquiriesPage() {
           <div className="ext-section-head">
             <h3>By inquiry type</h3>
             {typeFilter && (
-              <button type="button" className="ext-clear" onClick={() => setTypeFilter("")}>
+              <button type="button" className="ext-clear" onClick={() => handleTypeFilter("")}>
                 Clear filter
               </button>
             )}
@@ -244,9 +270,9 @@ export default function ExternalInquiriesPage() {
             <button
               type="button"
               className={`ext-chip ${!typeFilter ? "ext-chip-active" : ""}`}
-              onClick={() => setTypeFilter("")}
+              onClick={() => handleTypeFilter("")}
             >
-              All <span className="ext-chip-num">{stats.total}</span>
+              All <span className="ext-chip-num">{stagingMeta?.total_entries ?? stats.total}</span>
             </button>
             {allTypes.map(([t, n]) => (
               <button
@@ -255,7 +281,7 @@ export default function ExternalInquiriesPage() {
                 className={`ext-chip ext-chip-info ${
                   typeFilter === t ? "ext-chip-active" : ""
                 }`}
-                onClick={() => setTypeFilter(typeFilter === t ? "" : t)}
+                onClick={() => handleTypeFilter(typeFilter === t ? "" : t)}
               >
                 {t} <span className="ext-chip-num">{n}</span>
               </button>
@@ -283,15 +309,15 @@ export default function ExternalInquiriesPage() {
             <input
               className="search-input"
               placeholder="Search title, submitter, file name, uuid…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
             />
           </div>
           <label className="ext-toggle">
             <input
               type="checkbox"
               checked={withAttachmentsOnly}
-              onChange={(e) => setWithAttachmentsOnly(e.target.checked)}
+              onChange={(e) => handleWithAttachments(e.target.checked)}
             />
             With attachments
           </label>
@@ -299,16 +325,25 @@ export default function ExternalInquiriesPage() {
           <button
             type="button"
             className="btn btn-ghost"
-            onClick={() => load(true)}
+            onClick={() => load(page, search, typeFilter, withAttachmentsOnly, true)}
             title="Force a fresh fetch from staging (bypass cache)"
           >
             Refresh
           </button>
         </div>
         <div className="filter-meta">
-          Showing <strong>{filtered.length.toLocaleString()}</strong> of{" "}
-          {stats.total.toLocaleString()} inquiries
-          {(typeFilter || withAttachmentsOnly || search) && " (filtered)"}
+          {stagingMeta ? (
+            <>
+              Page <strong>{page}</strong> of <strong>{stagingMeta.total_pages}</strong>
+              {" · "}
+              <strong>{stagingMeta.total_entries.toLocaleString()}</strong> result{stagingMeta.total_entries !== 1 ? "s" : ""}
+              {(search || typeFilter || withAttachmentsOnly) && " matching filters"}
+            </>
+          ) : (
+            <>
+              Showing <strong>{inquiries.length.toLocaleString()}</strong> inquiries
+            </>
+          )}
         </div>
       </div>
 
@@ -319,7 +354,7 @@ export default function ExternalInquiriesPage() {
           <div className="empty">
             <div className="empty-title">Loading from InpharmD…</div>
           </div>
-        ) : filtered.length === 0 ? (
+        ) : inquiries.length === 0 ? (
           <div className="empty">
             <div className="empty-title">No inquiries match</div>
             <div className="empty-sub">Try clearing your filters above.</div>
@@ -346,7 +381,7 @@ export default function ExternalInquiriesPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((i) => {
+                {inquiries.map((i: MueInquiry) => {
                   const docCount = i.attachments?.length ?? 0;
                   const types = i.inquiry_types ?? [];
                   return (
@@ -439,6 +474,56 @@ export default function ExternalInquiriesPage() {
         )}
       </div>
 
+      {/* Pagination controls */}
+      {stagingMeta && stagingMeta.total_pages > 1 && (
+        <div className="pagination">
+          <button
+            type="button"
+            className="pagination-btn"
+            disabled={page <= 1 || loading}
+            onClick={() => setPage(1)}
+            aria-label="First page"
+          >
+            «
+          </button>
+          <button
+            type="button"
+            className="pagination-btn"
+            disabled={page <= 1 || loading}
+            onClick={() => setPage((p) => p - 1)}
+            aria-label="Previous page"
+          >
+            ‹ Prev
+          </button>
+
+          <PageNumbers
+            current={page}
+            total={stagingMeta.total_pages}
+            onSelect={setPage}
+            loading={loading}
+          />
+
+          <button
+            type="button"
+            className="pagination-btn"
+            disabled={page >= stagingMeta.total_pages || loading}
+            onClick={() => setPage((p) => p + 1)}
+            aria-label="Next page"
+          >
+            Next ›
+          </button>
+          <button
+            type="button"
+            className="pagination-btn"
+            disabled={page >= stagingMeta.total_pages || loading}
+            onClick={() => setPage(stagingMeta.total_pages)}
+            aria-label="Last page"
+          >
+            »
+          </button>
+        </div>
+      )}
+
       {/* Single fixed popover for the row actions menu. Renders outside the
           scrollable table so overflow:auto doesn't clip it. */}
       {openMenuId && menuAnchor && (() => {
@@ -492,6 +577,56 @@ export default function ExternalInquiriesPage() {
     </>
   );
 }
+
+// ─────────────────────── Page numbers ────────────────────────────
+
+const PageNumbers = ({
+  current,
+  total,
+  onSelect,
+  loading,
+}: {
+  current: number;
+  total: number;
+  onSelect: (p: number) => void;
+  loading: boolean;
+}) => {
+  const pages: (number | "…")[] = [];
+
+  if (total <= 7) {
+    for (let i = 1; i <= total; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (current > 4) pages.push("…");
+    const lo = Math.max(2, current - 2);
+    const hi = Math.min(total - 1, current + 2);
+    for (let i = lo; i <= hi; i++) pages.push(i);
+    if (current < total - 3) pages.push("…");
+    pages.push(total);
+  }
+
+  return (
+    <span className="pagination-pages">
+      {pages.map((p, idx) =>
+        p === "…" ? (
+          <span key={`ellipsis-${idx}`} className="pagination-ellipsis">…</span>
+        ) : (
+          <button
+            key={p}
+            type="button"
+            className={`pagination-btn ${p === current ? "pagination-btn-active" : ""}`}
+            disabled={p === current || loading}
+            onClick={() => onSelect(p)}
+            aria-label={`Page ${p}`}
+            aria-current={p === current ? "page" : undefined}
+          >
+            {p}
+          </button>
+        )
+      )}
+    </span>
+  );
+};
 
 // ───────────────────────── Detail modal ─────────────────────────
 
