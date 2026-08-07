@@ -3,7 +3,7 @@ import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import type { ManufacturerContact } from "../types";
 
 interface Props {
-  manufacturer: ManufacturerContact | undefined;
+  manufacturers: ManufacturerContact[];
   fallbackHours: number;
   /** Shown in the modal header when the inquiry already exists (e.g. "Inquiry #5 created").
    *  Omit for the deferred-create flow where no inquiry exists yet. */
@@ -29,7 +29,7 @@ const COUNTRY_CODES = [
 const digitsOnly = (s: string) => s.replace(/\D+/g, "");
 
 const ChannelChooser: FC<Props> = ({
-  manufacturer: m,
+  manufacturers,
   fallbackHours,
   inquiryLabel,
   onSendEmail,
@@ -44,11 +44,26 @@ const ChannelChooser: FC<Props> = ({
   const [testLocal, setTestLocal] = useState("");
   const [testDialedTo, setTestDialedTo] = useState<string | null>(null);
 
+  const m = manufacturers[0];
+  const isMulti = manufacturers.length > 1;
+
   const emailTarget = m?.official_mi_email || m?.team_verified_email;
   const phoneTarget = m?.mi_phone;
   const inHours = isWithinBusinessHoursNow(m?.mi_phone_hours);
   const outOfHours = inHours === false;
-  const callDisabled = !phoneTarget || busy !== null || outOfHours;
+
+  const emailCapableCount = isMulti
+    ? manufacturers.filter(x => x.official_mi_email || x.team_verified_email).length
+    : 0;
+  const callCapableCount = isMulti
+    ? manufacturers.filter(x => x.mi_phone).length
+    : 0;
+  const emailDraftCount = isMulti ? manufacturers.length - emailCapableCount : 0;
+  const callDraftCount = isMulti ? manufacturers.length - callCapableCount : 0;
+
+  const callDisabled = isMulti
+    ? callCapableCount === 0 || busy !== null
+    : !phoneTarget || busy !== null || outOfHours;
 
   const testDigits = digitsOnly(testLocal);
   const fullTestNumber = `${countryCode}${testDigits}`;
@@ -76,7 +91,7 @@ const ChannelChooser: FC<Props> = ({
   };
 
   const handleCall = async () => {
-    if (outOfHours) return;
+    if (!isMulti && outOfHours) return;
     setBusy("call");
     setError(null);
     try {
@@ -133,7 +148,7 @@ const ChannelChooser: FC<Props> = ({
         <div className="modal-header">
           <div>
             {inquiryLabel && <div className="meta-text">{inquiryLabel}</div>}
-            <h2>How should we reach {m?.manufacturer ?? "the manufacturer"}?</h2>
+            <h2>How should we reach {isMulti ? `these ${manufacturers.length} manufacturers` : (m?.manufacturer ?? "the manufacturer")}?</h2>
           </div>
           <button
             type="button"
@@ -157,7 +172,7 @@ const ChannelChooser: FC<Props> = ({
 
           <div className="channel-grid">
             {/* Email card */}
-            <div className={`channel-card ${!emailTarget ? "channel-disabled" : ""}`}>
+            <div className={`channel-card ${(isMulti ? emailCapableCount === 0 : !emailTarget) ? "channel-disabled" : ""}`}>
               <div className="channel-icon channel-icon-email">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="5" width="18" height="14" rx="2" />
@@ -166,7 +181,16 @@ const ChannelChooser: FC<Props> = ({
               </div>
               <div className="channel-title">Send Email</div>
               <div className="channel-sub">
-                {emailTarget ? (
+                {isMulti ? (
+                  <>
+                    <strong>{emailCapableCount}</strong>{" "}
+                    {emailCapableCount === 1 ? "manufacturer" : "manufacturers"} will be emailed
+                    {emailDraftCount > 0 && (
+                      <> · <strong>{emailDraftCount}</strong> will become drafts (no email on file)</>
+                    )}. Voice agent will call any that don't reply within{" "}
+                    <strong>{fallbackHours}h</strong>.
+                  </>
+                ) : emailTarget ? (
                   <>
                     We'll send to <strong>{emailTarget}</strong> and wait{" "}
                     <strong>{fallbackHours}h</strong> for a reply before the
@@ -178,7 +202,7 @@ const ChannelChooser: FC<Props> = ({
               </div>
               <ul className="channel-meta">
                 <li>
-                  <span>SLA</span> {m?.typical_response_sla ?? "—"}
+                  <span>SLA</span> {isMulti ? "—" : (m?.typical_response_sla ?? "—")}
                 </li>
                 <li>
                   <span>Fallback</span> Agent call after {fallbackHours}h
@@ -187,7 +211,7 @@ const ChannelChooser: FC<Props> = ({
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={!emailTarget || busy !== null}
+                disabled={(isMulti ? emailCapableCount === 0 : !emailTarget) || busy !== null}
                 onClick={handleEmail}
               >
                 {busy === "email" ? "Sending…" : "Send Email"}
@@ -195,7 +219,7 @@ const ChannelChooser: FC<Props> = ({
             </div>
 
             {/* Call card */}
-            <div className={`channel-card ${!phoneTarget ? "channel-disabled" : ""}`}>
+            <div className={`channel-card ${(isMulti ? callCapableCount === 0 : !phoneTarget) ? "channel-disabled" : ""}`}>
               <div className="channel-icon channel-icon-call">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
@@ -203,7 +227,15 @@ const ChannelChooser: FC<Props> = ({
               </div>
               <div className="channel-title">Call Agent Now</div>
               <div className="channel-sub">
-                {phoneTarget ? (
+                {isMulti ? (
+                  <>
+                    <strong>{callCapableCount}</strong>{" "}
+                    {callCapableCount === 1 ? "manufacturer" : "manufacturers"} will be called
+                    {callDraftCount > 0 && (
+                      <> · <strong>{callDraftCount}</strong> will become drafts (no phone on file)</>
+                    )}.
+                  </>
+                ) : phoneTarget ? (
                   <>
                     Voice agent will dial <strong>{phoneTarget}</strong> and ask
                     the question on your behalf.
@@ -213,27 +245,35 @@ const ChannelChooser: FC<Props> = ({
                 )}
               </div>
               <ul className="channel-meta">
-                <li>
-                  <span>Hours</span>{" "}
-                  {m?.mi_phone_hours ?? m?.typical_response_sla ?? "—"}
-                </li>
-                <li>
-                  <span>Status</span>{" "}
-                  {inHours === null ? (
-                    <em className="warn">unknown</em>
-                  ) : inHours ? (
-                    <em className="ok">In business hours now</em>
-                  ) : (
-                    <em className="warn">Outside business hours</em>
-                  )}
-                </li>
+                {isMulti ? (
+                  <li>
+                    <span>Callable</span> {callCapableCount} of {manufacturers.length} have a phone
+                  </li>
+                ) : (
+                  <>
+                    <li>
+                      <span>Hours</span>{" "}
+                      {m?.mi_phone_hours ?? m?.typical_response_sla ?? "—"}
+                    </li>
+                    <li>
+                      <span>Status</span>{" "}
+                      {inHours === null ? (
+                        <em className="warn">unknown</em>
+                      ) : inHours ? (
+                        <em className="ok">In business hours now</em>
+                      ) : (
+                        <em className="warn">Outside business hours</em>
+                      )}
+                    </li>
+                  </>
+                )}
               </ul>
               <button
                 className="btn btn-primary"
                 type="button"
                 disabled={callDisabled}
                 title={
-                  outOfHours
+                  !isMulti && outOfHours
                     ? `Outside ${m?.manufacturer ?? "manufacturer"} business hours (${m?.mi_phone_hours ?? "unknown"}). Use Test Call to verify the agent, or wait until in-hours.`
                     : undefined
                 }

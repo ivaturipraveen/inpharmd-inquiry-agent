@@ -121,3 +121,15 @@ export interface InquiryInput {
   // manufacturer answers (by email or voice).
   source_inquiry_uuid?: string | null;
 }
+
+// Shape emitted by InquiryForm. Carries manufacturer_ids (array) so the
+// form supports multi-select. ContactManufacturerPage maps this to either
+// InquiryInput (single) or a bulkCreate payload (multiple).
+export interface InquiryFormData {
+  manufacturer_ids: number[];
+  subject: string;
+  question: string;
+  requester_name?: string | null;
+  requester_email?: string | null;
+  fallback_after_hours: number;
+}

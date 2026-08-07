@@ -8,6 +8,7 @@ import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import type {
   Inquiry,
   InquiryInput,
+  InquiryFormData,
   ManufacturerContact,
   ManufacturerContactInput,
 } from "../types";
@@ -155,6 +156,8 @@ export default function ContactManufacturerPage() {
   // duplicate inquiry if the second step (sendEmail / triggerCall) fails and
   // the user retries — subsequent attempts reuse this id instead of creating again.
   const [pendingCreatedId, setPendingCreatedId] = useState<number | null>(null);
+  // Multi-manufacturer manual flow: holds InquiryFormData with manufacturer_ids.length > 1
+  const [pendingBulkManualInput, setPendingBulkManualInput] = useState<InquiryFormData | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -289,11 +292,21 @@ export default function ContactManufacturerPage() {
   }, []);
 
   const handleSingleCreate = useCallback(
-    async (data: InquiryInput) => {
-      const payload: InquiryInput = ctx?.uuid
-        ? { ...data, source_inquiry_uuid: ctx.uuid }
-        : data;
-      setPendingInquiryInput(payload);
+    async (data: InquiryFormData) => {
+      if (data.manufacturer_ids.length === 1) {
+        const payload: InquiryInput = {
+          manufacturer_id: data.manufacturer_ids[0],
+          subject: data.subject,
+          question: data.question,
+          requester_name: data.requester_name,
+          requester_email: data.requester_email,
+          fallback_after_hours: data.fallback_after_hours,
+          ...(ctx?.uuid ? { source_inquiry_uuid: ctx.uuid } : {}),
+        };
+        setPendingInquiryInput(payload);
+      } else {
+        setPendingBulkManualInput(data);
+      }
     },
     [ctx],
   );
@@ -305,6 +318,10 @@ export default function ContactManufacturerPage() {
   const closePending = useCallback(() => {
     setPendingInquiryInput(null);
     setPendingCreatedId(null);
+  }, []);
+
+  const closePendingBulk = useCallback(() => {
+    setPendingBulkManualInput(null);
   }, []);
 
   const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
@@ -1266,7 +1283,7 @@ export default function ContactManufacturerPage() {
 
         return (
           <ChannelChooser
-            manufacturer={mfr}
+            manufacturers={mfr ? [mfr] : []}
             fallbackHours={pendingInquiryInput.fallback_after_hours}
             onClose={closePending}
             onSendEmail={async () => {
@@ -1302,6 +1319,66 @@ export default function ContactManufacturerPage() {
               closePending();
               goTo("inquiries");
             }}
+          />
+        );
+      })()}
+
+      {pendingBulkManualInput && (() => {
+        const mfrs = pendingBulkManualInput.manufacturer_ids
+          .map(id => mfrById[id])
+          .filter((x): x is ManufacturerContact => x != null);
+
+        const bulkDispatch = async (channel: "email" | "call" | "none") => {
+          const result = await api.inquiries.bulkCreate({
+            targets: pendingBulkManualInput.manufacturer_ids.map(id => ({ manufacturer_id: id })),
+            subject: pendingBulkManualInput.subject,
+            question: pendingBulkManualInput.question,
+            fallback_after_hours: pendingBulkManualInput.fallback_after_hours,
+            source_inquiry_uuid: ctx.uuid ?? null,
+            source_excel_url: null,
+            source_excel_sheet: null,
+            dispatch_channel: channel,
+          });
+          const total = result.created.length;
+          const failed = result.failed.length;
+          if (channel === "call") {
+            setBanner(
+              `Calling ${result.dispatched ?? 0} manufacturer${(result.dispatched ?? 0) === 1 ? "" : "s"}` +
+                (failed > 0 ? ` · ${failed} skipped` : ""),
+            );
+          } else if (channel === "email") {
+            setBanner(
+              `Emailed ${total} manufacturer${total === 1 ? "" : "s"}` +
+                (failed > 0 ? ` · ${failed} failed` : ""),
+            );
+          } else {
+            setBanner(`${total} ${total === 1 ? "inquiry" : "inquiries"} saved as draft.`);
+          }
+          closePendingBulk();
+          goTo("inquiries");
+        };
+
+        return (
+          <ChannelChooser
+            manufacturers={mfrs}
+            fallbackHours={pendingBulkManualInput.fallback_after_hours}
+            onClose={closePendingBulk}
+            onSendEmail={() => bulkDispatch("email")}
+            onCallAgent={() => bulkDispatch("call")}
+            onTestCall={async (phone) => {
+              await api.inquiries.testCallPreview({
+                phone_number: phone,
+                subject: pendingBulkManualInput.subject,
+                question: pendingBulkManualInput.question,
+                manufacturer_id: mfrs[0]?.id ?? null,
+              });
+              setBanner(
+                mfrs[0]
+                  ? `Test call dialing ${phone} with ${mfrs[0].manufacturer} context.`
+                  : `Test call dialing ${phone}.`,
+              );
+            }}
+            onSaveDraft={() => bulkDispatch("none")}
           />
         );
       })()}

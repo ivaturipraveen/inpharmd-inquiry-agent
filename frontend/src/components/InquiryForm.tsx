@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import type { ClientTools } from "@elevenlabs/react";
-import type { InquiryInput, ManufacturerContact } from "../types";
+import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 import VoiceFillButton from "./VoiceFillButton";
 
@@ -25,7 +25,7 @@ interface Props {
   // Optional submit button label (defaults to "Create Inquiry").
   submitLabel?: string;
   onClose: () => void;
-  onSubmit: (data: InquiryInput) => Promise<void>;
+  onSubmit: (data: InquiryFormData) => Promise<void>;
 }
 
 const FALLBACK_PRESETS = [
@@ -51,8 +51,8 @@ const InquiryForm: FC<Props> = ({
   onClose,
   onSubmit,
 }) => {
-  const [manufacturerId, setManufacturerId] = useState<number | "">(
-    defaultManufacturerId ?? ""
+  const [manufacturerIds, setManufacturerIds] = useState<number[]>(
+    defaultManufacturerId != null ? [defaultManufacturerId] : []
   );
   const [mfrQuery, setMfrQuery] = useState("");
   const [mfrOpen, setMfrOpen] = useState(false);
@@ -73,18 +73,24 @@ const InquiryForm: FC<Props> = ({
   const formRef = useRef<HTMLFormElement | null>(null);
 
   useEffect(() => {
-    if (defaultManufacturerId) setManufacturerId(defaultManufacturerId);
+    if (defaultManufacturerId != null) {
+      setManufacturerIds(prev =>
+        prev.includes(defaultManufacturerId) ? prev : [defaultManufacturerId]
+      );
+    }
   }, [defaultManufacturerId]);
 
-  const selected = useMemo(
-    () => manufacturers.find((m) => m.id === manufacturerId),
-    [manufacturers, manufacturerId]
+  const selectedMfrs = useMemo(
+    () => manufacturerIds
+      .map(id => manufacturers.find(m => m.id === id))
+      .filter((m): m is ManufacturerContact => m != null),
+    [manufacturers, manufacturerIds]
   );
 
   // Filter manufacturers by query (case-insensitive substring on name + parent).
   const filtered = useMemo(() => {
     const q = mfrQuery.trim().toLowerCase();
-    if (!q) return manufacturers.slice(0, MAX_RESULTS);
+    if (!q) return manufacturers;
     return manufacturers
       .filter((m) => {
         const hay = `${m.manufacturer} ${m.parent_owner ?? ""}`.toLowerCase();
@@ -111,19 +117,16 @@ const InquiryForm: FC<Props> = ({
     setActiveIndex(0);
   }, [mfrQuery, mfrOpen]);
 
-  const pickManufacturer = (m: ManufacturerContact) => {
-    setManufacturerId(m.id);
+  const toggleManufacturer = (m: ManufacturerContact) => {
+    setManufacturerIds(prev =>
+      prev.includes(m.id) ? prev.filter(id => id !== m.id) : [...prev, m.id]
+    );
     setMfrQuery("");
-    setMfrOpen(false);
   };
 
-  const clearManufacturer = () => {
-    setManufacturerId("");
-    setMfrQuery("");
-    setTimeout(() => {
-      mfrInputRef.current?.focus();
-      setMfrOpen(true);
-    }, 0);
+  const removeManufacturer = (id: number) => {
+    setManufacturerIds(prev => prev.filter(x => x !== id));
+    setTimeout(() => mfrInputRef.current?.focus(), 0);
   };
 
   const handleMfrKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -137,7 +140,7 @@ const InquiryForm: FC<Props> = ({
     } else if (e.key === "Enter") {
       if (mfrOpen && filtered[activeIndex]) {
         e.preventDefault();
-        pickManufacturer(filtered[activeIndex]);
+        toggleManufacturer(filtered[activeIndex]);
       }
     } else if (e.key === "Escape") {
       setMfrOpen(false);
@@ -180,14 +183,14 @@ const InquiryForm: FC<Props> = ({
         if (!name) return "No manufacturer name given.";
         const { exact, candidates } = findManufacturer(name);
         if (exact) {
-          setManufacturerId(exact.id);
-          return `Selected ${exact.manufacturer}.`;
+          setManufacturerIds(prev => prev.includes(exact.id) ? prev : [...prev, exact.id]);
+          return `Added ${exact.manufacturer}.`;
         }
         if (candidates.length === 0)
           return `No manufacturer matches "${name}". Try a different spelling.`;
         if (candidates.length === 1) {
-          setManufacturerId(candidates[0].id);
-          return `Selected ${candidates[0].manufacturer}.`;
+          setManufacturerIds(prev => prev.includes(candidates[0].id) ? prev : [...prev, candidates[0].id]);
+          return `Added ${candidates[0].manufacturer}.`;
         }
         return `Multiple matches for "${name}": ${candidates
           .map((c) => c.manufacturer)
@@ -223,14 +226,14 @@ const InquiryForm: FC<Props> = ({
         }
       },
       submit_form: async () => {
-        if (!manufacturerId) return "Cannot submit — pick a manufacturer first.";
+        if (manufacturerIds.length === 0) return "Cannot submit — pick at least one manufacturer first.";
         if (!subject.trim()) return "Cannot submit — subject is required.";
         if (!question.trim()) return "Cannot submit — question is required.";
         formRef.current?.requestSubmit();
         return "Submitting the inquiry now.";
       },
     };
-  }, [manufacturers, manufacturerId, subject, question]);
+  }, [manufacturers, manufacturerIds, subject, question]);
 
   const voiceVars = useMemo(
     () => ({
@@ -247,8 +250,8 @@ const InquiryForm: FC<Props> = ({
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!manufacturerId) {
-      setError("Pick a manufacturer.");
+    if (manufacturerIds.length === 0) {
+      setError("Pick at least one manufacturer.");
       return;
     }
     if (!subject.trim()) {
@@ -267,7 +270,7 @@ const InquiryForm: FC<Props> = ({
     setError(null);
     try {
       await onSubmit({
-        manufacturer_id: Number(manufacturerId),
+        manufacturer_ids: manufacturerIds,
         subject: subject.trim(),
         question: question.trim(),
         requester_name: requesterName.trim() || null,
@@ -312,112 +315,103 @@ const InquiryForm: FC<Props> = ({
                   Manufacturer<span className="req">*</span>
                 </label>
 
-                {selected ? (
-                  <div className="mfr-selected">
-                    <div className="mfr-selected-main">
-                      <span className="mfr-selected-check">✓</span>
-                      <div>
-                        <div className="mfr-selected-name">
-                          {selected.manufacturer}
-                        </div>
-                        {selected.parent_owner && (
-                          <div className="mfr-selected-parent">
-                            {selected.parent_owner}
-                          </div>
-                        )}
-                      </div>
+                <div className="mfr-combo" ref={mfrWrapRef}>
+                  {selectedMfrs.length > 0 && (
+                    <div className="mfr-pills">
+                      {selectedMfrs.map(m => (
+                        <span key={m.id} className="mfr-pill">
+                          <span className="mfr-pill-name">{m.manufacturer}</span>
+                          <button
+                            type="button"
+                            className="mfr-pill-remove"
+                            onClick={() => removeManufacturer(m.id)}
+                            aria-label={`Remove ${m.manufacturer}`}
+                          >×</button>
+                        </span>
+                      ))}
                     </div>
-                    <button
-                      type="button"
-                      className="mfr-clear"
-                      onClick={clearManufacturer}
-                      aria-label="Change manufacturer"
-                      title="Change manufacturer"
+                  )}
+                  <div className="mfr-combo-input-wrap">
+                    <svg
+                      className="mfr-combo-icon"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
                     >
-                      ×
-                    </button>
+                      <circle cx="9" cy="9" r="6" />
+                      <path d="m17 17-3.5-3.5" />
+                    </svg>
+                    <input
+                      ref={mfrInputRef}
+                      type="text"
+                      className="mfr-combo-input"
+                      placeholder={
+                        selectedMfrs.length > 0
+                          ? `Add more (${selectedMfrs.length} selected)…`
+                          : `Search ${manufacturers.length} manufacturers…`
+                      }
+                      value={mfrQuery}
+                      onChange={(e) => {
+                        setMfrQuery(e.target.value);
+                        setMfrOpen(true);
+                      }}
+                      onFocus={() => setMfrOpen(true)}
+                      onKeyDown={handleMfrKeyDown}
+                      autoComplete="off"
+                    />
                   </div>
-                ) : (
-                  <div className="mfr-combo" ref={mfrWrapRef}>
-                    <div className="mfr-combo-input-wrap">
-                      <svg
-                        className="mfr-combo-icon"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <circle cx="9" cy="9" r="6" />
-                        <path d="m17 17-3.5-3.5" />
-                      </svg>
-                      <input
-                        ref={mfrInputRef}
-                        type="text"
-                        className="mfr-combo-input"
-                        placeholder={`Search ${manufacturers.length} manufacturers…`}
-                        value={mfrQuery}
-                        onChange={(e) => {
-                          setMfrQuery(e.target.value);
-                          setMfrOpen(true);
-                        }}
-                        onFocus={() => setMfrOpen(true)}
-                        onKeyDown={handleMfrKeyDown}
-                        autoComplete="off"
-                      />
-                    </div>
-                    {mfrOpen && (
-                      <div className="mfr-combo-menu">
-                        {filtered.length === 0 ? (
-                          <div className="mfr-combo-empty">
-                            No manufacturers match "{mfrQuery}".
-                          </div>
-                        ) : (
-                          <>
-                            {filtered.map((m, idx) => (
-                              <button
-                                type="button"
-                                key={m.id}
-                                className={`mfr-combo-item ${
-                                  idx === activeIndex
-                                    ? "mfr-combo-item-active"
-                                    : ""
-                                }`}
-                                onMouseEnter={() => setActiveIndex(idx)}
-                                onClick={() => pickManufacturer(m)}
-                              >
-                                <span className="mfr-combo-name">
-                                  {m.manufacturer}
+                  {mfrOpen && (
+                    <div className="mfr-combo-menu">
+                      {filtered.length === 0 ? (
+                        <div className="mfr-combo-empty">
+                          No manufacturers match "{mfrQuery}".
+                        </div>
+                      ) : (
+                        <>
+                          {filtered.map((m, idx) => (
+                            <button
+                              type="button"
+                              key={m.id}
+                              className={`mfr-combo-item ${idx === activeIndex ? "mfr-combo-item-active" : ""}`}
+                              onMouseEnter={() => setActiveIndex(idx)}
+                              onClick={() => toggleManufacturer(m)}
+                            >
+                              <div className="mfr-combo-item-inner">
+                                <span className="mfr-combo-item-check">
+                                  {manufacturerIds.includes(m.id) ? "✓" : ""}
                                 </span>
-                                {m.parent_owner && (
-                                  <span className="mfr-combo-parent">
-                                    {m.parent_owner}
-                                  </span>
-                                )}
-                              </button>
-                            ))}
-                            {filtered.length === MAX_RESULTS && (
-                              <div className="mfr-combo-empty">
-                                Showing first {MAX_RESULTS} matches — refine your
-                                search to narrow further.
+                                <div>
+                                  <div className="mfr-combo-name">{m.manufacturer}</div>
+                                  {m.parent_owner && (
+                                    <div className="mfr-combo-parent">{m.parent_owner}</div>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                            </button>
+                          ))}
+                          {mfrQuery.trim() && filtered.length === MAX_RESULTS && (
+                            <div className="mfr-combo-empty">
+                              Showing first {MAX_RESULTS} matches — refine your
+                              search to narrow further.
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
 
-                {selected && (
+                {selectedMfrs.length === 1 && (
                   <div className="hint-row">
-                    {selected.official_mi_email && (
-                      <span>📧 {selected.official_mi_email}</span>
+                    {selectedMfrs[0].official_mi_email && (
+                      <span>📧 {selectedMfrs[0].official_mi_email}</span>
                     )}
-                    {selected.mi_phone && <span>📞 {selected.mi_phone}</span>}
-                    {selected.typical_response_sla && (
-                      <span>⏱ SLA: {selected.typical_response_sla}</span>
+                    {selectedMfrs[0].mi_phone && <span>📞 {selectedMfrs[0].mi_phone}</span>}
+                    {selectedMfrs[0].typical_response_sla && (
+                      <span>⏱ SLA: {selectedMfrs[0].typical_response_sla}</span>
                     )}
                   </div>
                 )}

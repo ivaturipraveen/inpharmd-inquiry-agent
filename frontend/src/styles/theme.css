@@ -2033,7 +2033,6 @@ pre.raw-json {
 }
 .mfr-combo-item {
   display: flex;
-  flex-direction: column;
   align-items: flex-start;
   width: 100%;
   padding: 8px 10px;
@@ -2065,58 +2064,69 @@ pre.raw-json {
   text-align: center;
 }
 
-/* Selected-manufacturer pill */
-.mfr-selected {
+/* Multi-select pills row */
+.mfr-pills {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: var(--line-soft);
 }
-.mfr-selected-main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+.mfr-combo:has(.mfr-pills) .mfr-combo-input-wrap .mfr-combo-input {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
-.mfr-selected-check {
+.mfr-pill {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--green-soft);
-  color: var(--green);
-  font-weight: 700;
+  gap: 4px;
+  padding: 2px 8px 2px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
   font-size: 12px;
-  flex-shrink: 0;
-}
-.mfr-selected-name {
-  font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ink);
 }
-.mfr-selected-parent {
-  font-size: 11px;
-  color: var(--muted);
+.mfr-pill-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.mfr-clear {
+.mfr-pill-remove {
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 22px;
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  padding: 0 4px;
-  border-radius: 4px;
+  padding: 0 2px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
-.mfr-clear:hover {
+.mfr-pill-remove:hover {
   color: var(--ink);
-  background: rgba(15, 23, 42, 0.05);
+  background: rgba(15, 23, 42, 0.06);
+}
+
+/* Dropdown item with checkmark column */
+.mfr-combo-item-inner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+.mfr-combo-item-check {
+  width: 14px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--brand-orange);
+  font-weight: 700;
+  margin-top: 2px;
 }
 
 .hint-row {
