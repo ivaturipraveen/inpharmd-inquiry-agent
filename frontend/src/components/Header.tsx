@@ -49,7 +49,7 @@ const Header: FC<Props> = ({ active, onChange, onLogout }) => {
           <button
             type="button"
             className="tab tab-logout"
-            onClick={onLogout}
+            onClick={() => { if (confirm("Sign out of InpharmD?")) onLogout(); }}
             title="Sign out"
           >
             Sign out
