@@ -206,14 +206,11 @@ async def bulk_create_inquiries(
     dispatched = 0
 
     if channel == "email":
-        # Group inquiries by destination email so we send ONE email per unique
-        # recipient. Multiple Excel rows can resolve to the same manufacturer
-        # (e.g. 25 MUE rows all directed at Fresenius Kabi) — without this
-        # dedup we'd fire 25 identical emails. Every sibling inquiry in a
-        # group still gets email_scheduled_for stamped so the scheduler sends
-        # one email and stamps all siblings email_sent together.
-        groups: dict[str, list[Inquiry]] = {}
-        scheduled_for = _now() + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES)
+        # Every inquiry gets its own stagger slot in selection order.
+        # No two inquiries share the same email_scheduled_for, even if they
+        # target the same manufacturer or recipient address.
+        bulk_base = _now()
+        slot = 0
         for obj in list(created_objs):
             # Idempotency: if this inquiry was already dispatched (e.g. client
             # retry after a network blip), skip it.
@@ -230,13 +227,10 @@ async def bulk_create_inquiries(
                     "error": f"{mfr.manufacturer} has no email address on file",
                 })
                 continue
-            groups.setdefault(to_email.strip().lower(), []).append(obj)
-
-        for _to_email_key, siblings in groups.items():
-            for sib in siblings:
-                sib.status = "email_pending"
-                sib.email_scheduled_for = scheduled_for
-            dispatched += 1  # unique email groups scheduled, not inquiries stamped
+            slot += 1
+            obj.status = "email_pending"
+            obj.email_scheduled_for = bulk_base + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES * slot)
+            dispatched += 1
         db.commit()
 
     elif channel == "call":
@@ -463,25 +457,6 @@ def send_now(
             detail=f"{mfr.manufacturer} has no email address on file",
         )
 
-    # Fetch siblings before sending so their medication data can be included.
-    siblings: list[Inquiry] = []
-    if locked.source_inquiry_uuid:
-        siblings = (
-            db.query(Inquiry)
-            .filter(
-                Inquiry.source_inquiry_uuid == locked.source_inquiry_uuid,
-                Inquiry.manufacturer_id == locked.manufacturer_id,
-                Inquiry.id != locked.id,
-                Inquiry.status == "email_pending",
-            )
-            .all()
-        )
-
-    siblings_meds = [
-        {"medication_name": sib.medication_name, "pi_storage_data": sib.pi_storage_data, "pi_link": sib.pi_link}
-        for sib in siblings
-    ]
-
     try:
         message_id = email_service.send_inquiry_email(
             inquiry_id=locked.id,
@@ -494,7 +469,6 @@ def send_now(
             medication_name=locked.medication_name,
             pi_storage_data=locked.pi_storage_data,
             pi_link=locked.pi_link,
-            extra_medications=siblings_meds or None,
         )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -507,14 +481,6 @@ def send_now(
     locked.email_message_id = message_id
     locked.email_scheduled_for = None
     locked.call_scheduled_for = now + timedelta(hours=locked.fallback_after_hours)
-
-    # Stamp same-group siblings as sent so the scheduler skips them.
-    for sib in siblings:
-        sib.status = "email_sent"
-        sib.email_sent_at = now
-        sib.email_message_id = message_id
-        sib.email_scheduled_for = None
-        sib.call_scheduled_for = now + timedelta(hours=sib.fallback_after_hours)
 
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)

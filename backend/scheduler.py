@@ -104,11 +104,12 @@ def _scan_and_send_pending_emails() -> None:
     """Scheduler tick: send emails whose scheduled delivery time has elapsed.
 
     Strategy:
-    1. Read all due email_pending rows (no lock) to build group keys.
-    2. For each group, re-fetch with SELECT FOR UPDATE SKIP LOCKED so
+    1. Read all due email_pending rows (no lock) to resolve manufacturer data.
+    2. For each inquiry, re-fetch with SELECT FOR UPDATE SKIP LOCKED so
        concurrent instances / the send-now endpoint can't double-send.
-    3. Each group is committed independently so a SendGrid failure on one
-       group doesn't roll back the others.
+    3. Each inquiry is committed independently so a SendGrid failure on one
+       does not roll back the others.
+    One inquiry always produces exactly one outbound email.
     """
     import email_service
 
@@ -146,87 +147,60 @@ def _scan_and_send_pending_emails() -> None:
         if obj.manufacturer:
             mfr_by_inquiry[obj.id] = obj.manufacturer
 
-    # Group by (to_email, source_inquiry_uuid_or_id) — mirrors the bulk-dispatch
-    # grouping so siblings from the same MUE batch receive one email, while two
-    # separate batches to the same manufacturer address stay independent.
-    groups: dict[str, list[int]] = {}
     for obj in pending:
         mfr = mfr_by_inquiry.get(obj.id)
         if not mfr:
             log.warning("Inquiry %s has no manufacturer; skipping scheduled send", obj.id)
             continue
-        to_email = (mfr.official_mi_email or mfr.team_verified_email or "").strip().lower()
-        if not to_email:
+        to_email_send = (mfr.official_mi_email or mfr.team_verified_email or "").strip()
+        if not to_email_send:
             log.warning("Inquiry %s manufacturer '%s' has no email; skipping", obj.id, mfr.manufacturer)
             continue
-        uuid_key = (obj.source_inquiry_uuid or "").strip() or str(obj.id)
-        groups.setdefault(f"{to_email}|{uuid_key}", []).append(obj.id)
 
-    for group_key, ids in groups.items():
         db2 = SessionLocal()
         try:
-            # No joinedload here — FOR UPDATE + outer join is rejected by PostgreSQL.
-            # Manufacturer data comes from mfr_by_inquiry built above.
             locked = (
                 db2.query(Inquiry)
-                .filter(Inquiry.id.in_(ids), Inquiry.status == "email_pending")
+                .filter(Inquiry.id == obj.id, Inquiry.status == "email_pending")
                 .with_for_update(skip_locked=True)
-                .all()
+                .first()
             )
             if not locked:
                 db2.close()
                 continue
 
-            primary = min(locked, key=lambda x: x.id)
-            mfr = mfr_by_inquiry.get(primary.id)
-            if not mfr:
-                log.warning("No manufacturer cached for inquiry %s; skipping group %s", primary.id, group_key)
-                db2.close()
-                continue
-            to_email_send = (mfr.official_mi_email or mfr.team_verified_email or "").strip()
-
-            siblings_meds = [
-                {"medication_name": sib.medication_name, "pi_storage_data": sib.pi_storage_data, "pi_link": sib.pi_link}
-                for sib in locked if sib.id != primary.id
-            ]
-
             try:
                 message_id = email_service.send_inquiry_email(
-                    inquiry_id=primary.id,
+                    inquiry_id=locked.id,
                     manufacturer_name=mfr.manufacturer,
                     to_email=to_email_send,
-                    subject=primary.subject,
-                    question=primary.question,
-                    requester_name=primary.requester_name,
-                    requester_email=primary.requester_email,
-                    medication_name=primary.medication_name,
-                    pi_storage_data=primary.pi_storage_data,
-                    pi_link=primary.pi_link,
-                    extra_medications=siblings_meds or None,
+                    subject=locked.subject,
+                    question=locked.question,
+                    requester_name=locked.requester_name,
+                    requester_email=locked.requester_email,
+                    medication_name=locked.medication_name,
+                    pi_storage_data=locked.pi_storage_data,
+                    pi_link=locked.pi_link,
                 )
             except Exception:
                 log.exception(
-                    "Scheduled email send failed for group %s (inquiry %s); will retry on next tick",
-                    group_key, primary.id,
+                    "Scheduled email send failed for inquiry %s; will retry on next tick",
+                    locked.id,
                 )
                 db2.rollback()
                 db2.close()
                 continue
 
             sent_at = _now()
-            for sib in locked:
-                sib.status = "email_sent"
-                sib.email_sent_at = sent_at
-                sib.email_message_id = message_id
-                sib.email_scheduled_for = None
-                sib.call_scheduled_for = sent_at + timedelta(hours=sib.fallback_after_hours)
+            locked.status = "email_sent"
+            locked.email_sent_at = sent_at
+            locked.email_message_id = message_id
+            locked.email_scheduled_for = None
+            locked.call_scheduled_for = sent_at + timedelta(hours=locked.fallback_after_hours)
             db2.commit()
-            log.info(
-                "Scheduled email sent for group %s (primary inquiry %s, %s sibling(s))",
-                group_key, primary.id, len(locked),
-            )
+            log.info("Scheduled email sent for inquiry %s", locked.id)
         except Exception:
-            log.exception("Unexpected error processing scheduled email group %s; rolling back", group_key)
+            log.exception("Unexpected error processing inquiry %s; rolling back", obj.id)
             db2.rollback()
         finally:
             db2.close()
