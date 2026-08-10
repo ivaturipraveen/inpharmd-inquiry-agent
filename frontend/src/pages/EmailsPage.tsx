@@ -173,6 +173,7 @@ export default function EmailsPage() {
     const sent = allEmails.length;
     const replied = allEmails.filter((i) => i.email_response_at).length;
     const awaiting = allEmails.filter((i) => i.status === "email_sent").length;
+    const scheduled = inquiries.filter((i) => i.status === "email_pending").length;
     const rate = sent ? Math.round((replied / sent) * 100) : 0;
 
     // Avg response time (hours) — only for replied threads with both timestamps.
@@ -194,8 +195,8 @@ export default function EmailsPage() {
     const sentToday = allEmails.filter((i) => last24h(i.email_sent_at)).length;
     const repliedToday = allEmails.filter((i) => last24h(i.email_response_at)).length;
 
-    return { sent, replied, awaiting, rate, avgHours, sentToday, repliedToday };
-  }, [allEmails]);
+    return { sent, replied, awaiting, scheduled, rate, avgHours, sentToday, repliedToday };
+  }, [allEmails, inquiries]);
 
   const formatHours = (h: number | null) => {
     if (h === null) return "—";
@@ -246,47 +247,17 @@ export default function EmailsPage() {
   return (
     <>
       <div className="gm-stats">
-        <StatTile
-          label="Emails Sent"
-          value={stats.sent}
-          sub={stats.sentToday ? `+${stats.sentToday} in last 24h` : "no new sends in 24h"}
-          tone="neutral"
-        />
-        <StatTile
-          label="Replies Received"
-          value={stats.replied}
-          sub={stats.repliedToday ? `+${stats.repliedToday} in last 24h` : "no new replies in 24h"}
-          tone="good"
-        />
-        <StatTile
-          label="Awaiting Reply"
-          value={stats.awaiting}
-          sub={stats.awaiting > 0 ? "manufacturers haven't responded yet" : "all caught up"}
-          tone={stats.awaiting > 0 ? "warn" : "good"}
-        />
-        <StatTile
-          label="Response Rate"
-          value={`${stats.rate}%`}
-          sub={`${stats.replied} of ${stats.sent || 0} threads replied`}
-          tone={stats.rate >= 70 ? "good" : stats.rate >= 40 ? "warn" : "bad"}
-        />
-        <StatTile
-          label="Avg Response Time"
-          value={formatHours(stats.avgHours)}
-          sub={stats.avgHours === null ? "no replies yet" : "from send → reply"}
-          tone="neutral"
-        />
+        <StatTile label="Emails Scheduled" value={stats.scheduled} tone={stats.scheduled > 0 ? "warn" : "neutral"} />
+        <StatTile label="Emails Sent" value={stats.sent} tone="neutral" />
+        <StatTile label="Replies Received" value={stats.replied} tone="good" />
+        <StatTile label="Awaiting Reply" value={stats.awaiting} tone={stats.awaiting > 0 ? "warn" : "good"} />
+        <StatTile label="Response Rate" value={`${stats.rate}%`} tone={stats.rate >= 70 ? "good" : stats.rate >= 40 ? "warn" : "bad"} />
+        <StatTile label="Avg Response Time" value={formatHours(stats.avgHours)} tone="neutral" />
       </div>
 
       <section className="gm-shell">
         {/* Left rail: folders */}
       <aside className="gm-rail">
-        <button type="button" className="gm-compose" disabled title="Compose (coming soon)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-          <span>Compose</span>
-        </button>
         <nav className="gm-folders" aria-label="Folders">
           {FOLDERS.map((f) => (
             <button
