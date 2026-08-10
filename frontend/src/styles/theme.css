@@ -2466,6 +2466,9 @@ pre.raw-json {
   margin-top: 8px;
   font-size: 12px;
 }
+.transcript-toggle summary {
+  cursor: pointer;
+}
 .transcript-toggle pre {
   background: var(--line-soft);
   padding: 10px 12px;
