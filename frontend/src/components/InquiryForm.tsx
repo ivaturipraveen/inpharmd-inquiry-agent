@@ -29,6 +29,7 @@ interface Props {
 }
 
 const FALLBACK_PRESETS = [
+  { hours: 0, label: "5 min (testing)" },
   { hours: 12, label: "12 hours" },
   { hours: 24, label: "24 hours" },
   { hours: 48, label: "48 hours" },

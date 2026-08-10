@@ -177,6 +177,12 @@ const ManufacturerTable: FC<Props> = ({ items, onEdit, onDelete }) => {
                           )}
                           {detailField("MI Phone", m.mi_phone)}
                           {detailField("Phone Hours", m.mi_phone_hours)}
+                          <div className="detail-field">
+                            <div className="detail-label">Fallback Call</div>
+                            <div className="detail-value" style={{ color: m.fallback_call_enabled ? "var(--green)" : "var(--ink-soft)" }}>
+                              {m.fallback_call_enabled ? "Enabled" : "Disabled"}
+                            </div>
+                          </div>
                           {detailField("MI Fax", m.mi_fax)}
                           {detailField(
                             "HCP Portal",

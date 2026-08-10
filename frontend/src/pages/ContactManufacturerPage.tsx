@@ -5,6 +5,7 @@ import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
+import { fmtFallbackHours } from "../utils/fallback";
 import type {
   Inquiry,
   InquiryInput,
@@ -1036,6 +1037,7 @@ export default function ContactManufacturerPage() {
                       value={fallbackHours}
                       onChange={(e) => setFallbackHours(Number(e.target.value))}
                     >
+                      <option value={0}>5 min (testing)</option>
                       <option value={12}>12 hours</option>
                       <option value={24}>24 hours</option>
                       <option value={48}>48 hours</option>
@@ -1096,14 +1098,14 @@ export default function ContactManufacturerPage() {
                         <div className="channel-sub">
                           Email all {total} selected manufacturer{total === 1 ? "" : "s"}.
                           Voice agent will call any that don't reply within{" "}
-                          <strong>{fallbackHours}h</strong>.
+                          <strong>{fmtFallbackHours(fallbackHours)}</strong>.
                         </div>
                         <ul className="channel-meta">
                           <li>
                             <span>Reachable</span> {reachableByEmail} of {total} have email
                           </li>
                           <li>
-                            <span>Fallback</span> agent call after {fallbackHours}h
+                            <span>Fallback</span> agent call after {fmtFallbackHours(fallbackHours)}
                           </li>
                         </ul>
                         <button

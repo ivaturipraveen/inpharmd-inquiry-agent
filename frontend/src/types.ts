@@ -18,6 +18,7 @@ export interface ManufacturerContact {
   typical_response_sla?: string | null;
   last_outreach_date?: string | null;
   last_outreach_status?: string | null;
+  fallback_call_enabled?: boolean | null;
   notes?: string | null;
   created_at?: string | null;
   updated_at?: string | null;

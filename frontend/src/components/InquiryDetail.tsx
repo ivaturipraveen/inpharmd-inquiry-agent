@@ -2,6 +2,7 @@ import { FC, useEffect, useState } from "react";
 import StatusBadge from "./StatusBadge";
 import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
+import { fmtFallbackHours } from "../utils/fallback";
 
 interface Props {
   inquiry: Inquiry;
@@ -292,7 +293,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               )}
               <div>
                 <div className="detail-label">Fallback window</div>
-                <div>{inquiry.fallback_after_hours} hours</div>
+                <div>{fmtFallbackHours(inquiry.fallback_after_hours)}</div>
               </div>
             </div>
           )}

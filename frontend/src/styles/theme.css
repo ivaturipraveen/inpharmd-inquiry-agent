@@ -1542,6 +1542,7 @@ pre.raw-json {
 }
 
 .mue-stats-cell { vertical-align: middle !important; }
+.status-td { vertical-align: top; }
 .mue-stat-pills {
   display: flex;
   flex-wrap: wrap;
@@ -2160,7 +2161,7 @@ pre.raw-json {
   font-family: inherit;
   transition: all 0.12s ease;
 }
-.preset-chip:hover {
+.preset-chip:not(.preset-chip-active):hover {
   border-color: var(--brand-orange);
   color: var(--brand-orange);
 }
@@ -2168,6 +2169,10 @@ pre.raw-json {
   background: var(--brand-orange);
   color: #fff;
   border-color: var(--brand-orange);
+}
+.preset-chip-active:hover {
+  background: var(--brand-orange);
+  color: #fff;
 }
 .preset-num {
   width: 90px;

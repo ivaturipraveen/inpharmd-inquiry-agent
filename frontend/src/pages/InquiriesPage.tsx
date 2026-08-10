@@ -3,6 +3,7 @@ import StatusBadge from "../components/StatusBadge";
 import InquiryDetail from "../components/InquiryDetail";
 import { api } from "../api";
 import type { Inquiry } from "../types";
+import { fmtFallbackHours } from "../utils/fallback";
 
 const STATUS_FILTERS = [
   { value: "", label: "All statuses" },
@@ -469,20 +470,32 @@ export default function InquiriesPage() {
                             i.manufacturer?.manufacturer ?? "—"
                           )}
                         </td>
-                        <td>
-                          <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                        <td className="status-td">
+                          <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
                             <StatusBadge status={i.status} />
                             {i.status === "email_pending" && i.email_scheduled_for && (
-                              <span className="cell-muted" style={{ fontSize: "0.75rem" }}>
+                              <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
                                 {new Date(i.email_scheduled_for) > new Date()
                                   ? `Sends at ${new Date(i.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
                                   : "Sending soon…"}
                               </span>
                             )}
+                            {i.status === "email_sent" && i.call_scheduled_for && (
+                              <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
+                                {new Date(i.call_scheduled_for) > new Date()
+                                  ? `Fallback call at ${new Date(i.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                  : "Fallback call pending…"}
+                              </span>
+                            )}
+                            {i.email_sent_at && (i.status === "call_pending" || i.status === "call_completed" || i.status === "needs_attention") && (
+                              <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
+                                via fallback call
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="cell-muted">{fmtDate(i.created_at)}</td>
-                        <td className="cell-muted">{i.fallback_after_hours}h</td>
+                        <td className="cell-muted">{fmtFallbackHours(i.fallback_after_hours)}</td>
                       </tr>
                     );
                   }
@@ -533,7 +546,7 @@ export default function InquiriesPage() {
                             </span>
                           )}
                         </td>
-                        <td>
+                        <td className="status-td">
                           {row.children.every((c) => c.status === "closed") ? (
                             <StatusBadge status="closed" />
                           ) : (
@@ -553,7 +566,7 @@ export default function InquiriesPage() {
                           )}
                         </td>
                         <td className="cell-muted">{fmtDate(groupCreated)}</td>
-                        <td className="cell-muted">{sample.fallback_after_hours}h</td>
+                        <td className="cell-muted">{fmtFallbackHours(sample.fallback_after_hours)}</td>
                       </tr>
                       {open &&
                         row.children.map((c) => (
@@ -589,9 +602,25 @@ export default function InquiriesPage() {
                               </div>
                             </td>
                             <td>{c.manufacturer?.manufacturer ?? "—"}</td>
-                            <td><StatusBadge status={c.status} /></td>
+                            <td className="status-td">
+                              <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                                <StatusBadge status={c.status} />
+                                {c.status === "email_sent" && c.call_scheduled_for && (
+                                  <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
+                                    {new Date(c.call_scheduled_for) > new Date()
+                                      ? `Fallback call at ${new Date(c.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                      : "Fallback call pending…"}
+                                  </span>
+                                )}
+                                {c.email_sent_at && (c.status === "call_pending" || c.status === "call_completed" || c.status === "needs_attention") && (
+                                  <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
+                                    via fallback call
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="cell-muted">{fmtDate(c.created_at)}</td>
-                            <td className="cell-muted">{c.fallback_after_hours}h</td>
+                            <td className="cell-muted">{fmtFallbackHours(c.fallback_after_hours)}</td>
                           </tr>
                         ))}
                     </Fragment>

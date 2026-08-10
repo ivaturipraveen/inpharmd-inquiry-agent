@@ -123,7 +123,12 @@ def submit_answer(
         # Auto-retry only on voicemail / no_answer (transient failures).
         # wrong_number and call_back_later are deliberate human signals — don't auto-retry.
         if payload.outcome in ("voicemail", "no_answer"):
-            schedule_retry_after_failure(db, obj, delay_minutes=2)
+            if obj.email_sent_at:
+                # Fallback call — one-shot, don't retry
+                obj.status = "needs_attention"
+                obj.next_retry_at = None
+            else:
+                schedule_retry_after_failure(db, obj, delay_minutes=2)
 
     db.commit()
 

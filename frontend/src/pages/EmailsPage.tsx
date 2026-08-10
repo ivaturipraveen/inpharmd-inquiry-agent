@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
+import { fmtFallbackHours } from "../utils/fallback";
 
 /* ----------------------------- helpers ----------------------------- */
 
@@ -495,7 +496,7 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
             <div className="gm-awaiting-title">Waiting for {m?.manufacturer ?? "manufacturer"} to reply</div>
             <div className="gm-awaiting-sub">
               Voice agent will auto-fall back after{" "}
-              <strong>{inquiry.fallback_after_hours}h</strong> if there's no reply.
+              <strong>{fmtFallbackHours(inquiry.fallback_after_hours)}</strong> if there's no reply.
             </div>
           </div>
         </div>

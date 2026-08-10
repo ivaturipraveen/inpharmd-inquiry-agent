@@ -480,7 +480,9 @@ def send_now(
     locked.email_sent_at = now
     locked.email_message_id = message_id
     locked.email_scheduled_for = None
-    locked.call_scheduled_for = now + timedelta(hours=locked.fallback_after_hours)
+    if mfr.fallback_call_enabled:
+        fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
+        locked.call_scheduled_for = now + fallback_delta
 
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
@@ -561,6 +563,19 @@ async def trigger_call(
             detail="This inquiry already has an answer. Reopen it before retrying.",
         )
 
+    # Fallback-call guard: once an email has been sent, the system's one automatic
+    # call is the fallback call. Manual call placement is not allowed after that
+    # point to ensure the one-shot guarantee.
+    if obj.email_sent_at:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This inquiry already went through the email → fallback flow. "
+                "The automatic fallback call is one-shot. Close this inquiry and "
+                "create a new one to place another call."
+            ),
+        )
+
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
     if not mfr:
         raise HTTPException(status_code=400, detail="Manufacturer missing")
@@ -579,15 +594,38 @@ async def trigger_call(
             detail=f"{mfr.manufacturer} is currently outside business hours{hours_str}. Use the force option to call anyway.",
         )
 
+    # Re-fetch with a row lock before placing the call so two concurrent requests
+    # for the same inquiry cannot both pass the status checks above and both dial out.
+    locked = (
+        db.query(Inquiry)
+        .with_for_update()
+        .filter(Inquiry.id == inquiry_id)
+        .first()
+    )
+    if locked is None:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    # Re-check the guards on the now-locked row in case state changed between the
+    # initial read and the lock acquisition.
+    if locked.status in ("email_responded", "closed", "email_pending", "call_pending"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Inquiry state changed to '{locked.status}' before the call could be placed.",
+        )
+    if locked.email_sent_at:
+        raise HTTPException(
+            status_code=409,
+            detail="Inquiry entered the email → fallback flow before the call could be placed.",
+        )
+
     try:
         resp = await call_service.place_inquiry_call(
-            inquiry_id=obj.id,
+            inquiry_id=locked.id,
             to_number=mfr.mi_phone,
             manufacturer_name=mfr.manufacturer,
-            subject=obj.subject,
-            question=obj.question,
-            requester_name=obj.requester_name,
-            requester_email=obj.requester_email,
+            subject=locked.subject,
+            question=locked.question,
+            requester_name=locked.requester_name,
+            requester_email=locked.requester_email,
         )
     except call_service.CallConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -599,13 +637,13 @@ async def trigger_call(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to place call: {e}")
 
-    obj.status = "call_pending"
-    obj.call_scheduled_for = _now()
-    obj.call_conversation_id = (
+    locked.status = "call_pending"
+    locked.call_scheduled_for = _now()
+    locked.call_conversation_id = (
         resp.get("conversation_id") or resp.get("conversationId")
     )
-    obj.call_provider_status = resp.get("status") or "initiated"
-    obj.next_retry_at = None  # manual trigger cancels any pending auto-retry
+    locked.call_provider_status = resp.get("status") or "initiated"
+    locked.next_retry_at = None  # manual trigger cancels any pending auto-retry
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

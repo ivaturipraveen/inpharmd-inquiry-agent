@@ -34,6 +34,7 @@ class ManufacturerContact(Base):
     typical_response_sla = Column(String(255))
     last_outreach_date = Column(Date)
     last_outreach_status = Column(String(255))
+    fallback_call_enabled = Column(Boolean, nullable=False, default=False)
     notes = Column(Text)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

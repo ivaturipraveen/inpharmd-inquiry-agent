@@ -54,6 +54,9 @@ def _due_inquiries(db):
                 Inquiry.call_provider_status.in_(("voicemail", "no_answer")),
                 # Never auto-retry test calls — they must not dial manufacturer numbers
                 Inquiry.is_test_call.isnot(True),
+                # Fallback calls (email_sent_at set) are one-shot; the webhook marks
+                # them needs_attention directly rather than feeding the retry loop.
+                Inquiry.email_sent_at.is_(None),
             )
         )
         .all()
@@ -196,11 +199,129 @@ def _scan_and_send_pending_emails() -> None:
             locked.email_sent_at = sent_at
             locked.email_message_id = message_id
             locked.email_scheduled_for = None
-            locked.call_scheduled_for = sent_at + timedelta(hours=locked.fallback_after_hours)
+            if mfr.fallback_call_enabled:
+                fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
+                locked.call_scheduled_for = sent_at + fallback_delta
             db2.commit()
             log.info("Scheduled email sent for inquiry %s", locked.id)
         except Exception:
             log.exception("Unexpected error processing inquiry %s; rolling back", obj.id)
+            db2.rollback()
+        finally:
+            db2.close()
+
+
+def _scan_and_trigger_fallback_calls() -> None:
+    """Scheduler tick: place fallback calls for emails that hit their SLA without a reply."""
+    import call_service
+
+    db = SessionLocal()
+    try:
+        now = _now()
+        pending = (
+            db.query(Inquiry)
+            .options(joinedload(Inquiry.manufacturer))
+            .filter(
+                Inquiry.status == "email_sent",
+                Inquiry.call_scheduled_for.isnot(None),
+                Inquiry.call_scheduled_for <= now,
+            )
+            .all()
+        )
+    except Exception:
+        log.exception("Fallback call scan query failed")
+        return
+    finally:
+        db.close()
+
+    if not pending:
+        return
+
+    log.info("Fallback call scan: %s due", len(pending))
+
+    mfr_by_inquiry: dict[int, ManufacturerContact] = {}
+    for obj in pending:
+        if obj.manufacturer:
+            mfr_by_inquiry[obj.id] = obj.manufacturer
+
+    for obj in pending:
+        mfr = mfr_by_inquiry.get(obj.id)
+        if not mfr:
+            log.warning("Inquiry %s has no manufacturer; skipping fallback call", obj.id)
+            continue
+        if not mfr.fallback_call_enabled:
+            log.info("Inquiry %s manufacturer '%s' has fallback disabled; skipping", obj.id, mfr.manufacturer)
+            continue
+        if not mfr.mi_phone:
+            log.warning("Inquiry %s manufacturer '%s' has no phone; skipping fallback call", obj.id, mfr.manufacturer)
+            continue
+
+        db2 = SessionLocal()
+        try:
+            locked = (
+                db2.query(Inquiry)
+                .filter(
+                    Inquiry.id == obj.id,
+                    Inquiry.status == "email_sent",
+                    Inquiry.call_scheduled_for.isnot(None),
+                    Inquiry.call_scheduled_for <= _now(),
+                )
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if not locked:
+                db2.close()
+                continue
+
+            # Re-fetch manufacturer in db2 for an authoritative, current read.
+            fresh_mfr = db2.get(ManufacturerContact, locked.manufacturer_id)
+            if not fresh_mfr:
+                log.warning("Inquiry %s manufacturer disappeared; skipping", locked.id)
+                db2.rollback()
+                db2.close()
+                continue
+            if not fresh_mfr.fallback_call_enabled:
+                log.info(
+                    "Inquiry %s manufacturer '%s' has fallback disabled (re-checked); skipping",
+                    locked.id, fresh_mfr.manufacturer,
+                )
+                db2.rollback()
+                db2.close()
+                continue
+            if not fresh_mfr.mi_phone:
+                log.warning(
+                    "Inquiry %s manufacturer '%s' has no phone (re-checked); skipping",
+                    locked.id, fresh_mfr.manufacturer,
+                )
+                db2.rollback()
+                db2.close()
+                continue
+
+            try:
+                resp = call_service.place_inquiry_call_sync(
+                    inquiry_id=locked.id,
+                    to_number=fresh_mfr.mi_phone,
+                    manufacturer_name=fresh_mfr.manufacturer,
+                    subject=locked.subject,
+                    question=locked.question,
+                    requester_name=locked.requester_name,
+                    requester_email=locked.requester_email,
+                )
+            except Exception:
+                log.exception("Fallback call failed for inquiry %s; will retry on next tick", locked.id)
+                db2.rollback()
+                db2.close()
+                continue
+
+            locked.status = "call_pending"
+            locked.call_scheduled_for = _now()
+            locked.call_conversation_id = resp.get("conversation_id") or resp.get("conversationId")
+            locked.call_provider_status = resp.get("status") or "initiated"
+            locked.next_retry_at = None
+            db2.commit()
+            log.info("Fallback call placed for inquiry %s (conv %s)", locked.id, locked.call_conversation_id)
+        except Exception:
+            log.exception("Unexpected error during fallback call for inquiry %s; rolling back", obj.id)
             db2.rollback()
         finally:
             db2.close()
@@ -289,6 +410,14 @@ def start_scheduler() -> None:
         "interval",
         seconds=_email_send_seconds,
         id="scheduled_email_send",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _scan_and_trigger_fallback_calls,
+        "interval",
+        seconds=_TICK_SECONDS,
+        id="fallback_call_scan",
         max_instances=1,
         coalesce=True,
     )

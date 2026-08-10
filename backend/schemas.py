@@ -24,6 +24,7 @@ class ManufacturerContactBase(BaseModel):
     typical_response_sla: Optional[str] = None
     last_outreach_date: Optional[date] = None
     last_outreach_status: Optional[str] = None
+    fallback_call_enabled: bool = False
     notes: Optional[str] = None
 
 

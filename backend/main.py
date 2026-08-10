@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         "ALTER TABLE inquiries ALTER COLUMN manufacturer_id DROP NOT NULL",
         # Test Call: store the dialed phone number for display in Outreach.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS test_call_phone VARCHAR(32)",
+        # Email→call fallback: per-manufacturer opt-in flag.
+        "ALTER TABLE manufacturer_contacts ADD COLUMN IF NOT EXISTS fallback_call_enabled BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

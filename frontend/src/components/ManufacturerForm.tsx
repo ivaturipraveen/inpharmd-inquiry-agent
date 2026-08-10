@@ -26,6 +26,7 @@ const emptyForm: ManufacturerContactInput = {
   typical_response_sla: "",
   last_outreach_date: "",
   last_outreach_status: "",
+  fallback_call_enabled: false,
   notes: "",
 };
 
@@ -58,6 +59,7 @@ const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, on
         typical_response_sla: initial.typical_response_sla ?? "",
         last_outreach_date: initial.last_outreach_date ?? "",
         last_outreach_status: initial.last_outreach_status ?? "",
+        fallback_call_enabled: initial.fallback_call_enabled ?? false,
         notes: initial.notes ?? "",
       });
     } else {
@@ -302,6 +304,35 @@ const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, on
                   onChange={update("mi_phone_hours")}
                   placeholder="Mon-Fri 8a-6p ET"
                 />
+              </div>
+
+              <div className="field">
+                <label>Call Fallback</label>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5em" }}>
+                  <input
+                    id="fallback-call-enabled"
+                    type="checkbox"
+                    checked={!!form.fallback_call_enabled}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, fallback_call_enabled: e.target.checked }))
+                    }
+                    style={{ width: "16px", height: "16px", cursor: "pointer", flexShrink: 0 }}
+                  />
+                  <label
+                    htmlFor="fallback-call-enabled"
+                    style={{
+                      margin: 0,
+                      textTransform: "none",
+                      fontSize: "0.875rem",
+                      fontWeight: 400,
+                      letterSpacing: "normal",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Enable automatic fallback call
+                  </label>
+                </div>
               </div>
 
               <div className="field">

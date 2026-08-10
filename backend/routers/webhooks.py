@@ -116,9 +116,17 @@ async def elevenlabs_post_call(
     if obj.status == "call_pending":
         obj.status = "call_completed"
 
-    # Auto-retry only if submit_answer didn't capture a real answer AND outcome is retriable
-    if obj.call_provider_status in ("voicemail", "no_answer") and not obj.call_summary:
-        schedule_retry_after_failure(db, obj, delay_minutes=2)
+    # Fallback calls (email_sent_at is set) are one-shot: the system already tried email
+    # then a call. On voicemail/no_answer, always go directly to needs_attention regardless
+    # of whether ElevenLabs included a summary in the payload (decoupled from call_summary).
+    # For normal non-fallback calls, only schedule a retry when submit_answer hasn't already
+    # captured a real answer (indicated by call_summary being empty).
+    if obj.call_provider_status in ("voicemail", "no_answer"):
+        if obj.email_sent_at:
+            obj.status = "needs_attention"
+            obj.next_retry_at = None
+        elif not obj.call_summary:
+            schedule_retry_after_failure(db, obj, delay_minutes=2)
 
     # If we have a transcript but no clean answer yet, try LLM extraction
     if obj.call_transcript and not obj.final_answer and summary_service.is_configured():
