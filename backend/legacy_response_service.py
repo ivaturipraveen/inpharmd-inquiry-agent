@@ -7,13 +7,12 @@ the legacy platform can attach it to its own record.
 Endpoint (Rails on Heroku):
     POST {INPHARMD_API_BASE_URL}/api/legacy/manufacturing_response
     Header: X-Api-Key: {LEGACY_RESPONSE_API_KEY}
-    Content-Type: application/x-www-form-urlencoded
+    Content-Type: multipart/form-data
     Form fields:
         inquiry_uuid       str      (required)
         mfr_email_response str      (required)
-        mfr_s3_url[]       str[]    (optional — one field per attachment URL;
-                                     Rails receives params[:mfr_s3_url] as an
-                                     array; legacy fetches from S3 itself)
+        mfr_attachment[]   file     (optional — one part per attachment;
+                                     bytes downloaded from S3 and sent directly)
 
 The base URL is the SAME as the rest of the InpharmD APIs — we reuse
 `INPHARMD_API_BASE_URL` (defined in inpharmd_service) so there's a single
@@ -23,9 +22,9 @@ LEGACY_RESPONSE_API_KEY.
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import time
-import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -55,6 +54,35 @@ def is_configured() -> bool:
     return bool(url and key)
 
 
+def _filename_from_url(s3_url: str) -> str:
+    """Extract a clean filename from a presigned S3 URL."""
+    path = s3_url.split("?", 1)[0]
+    name = path.rsplit("/", 1)[-1] or "attachment"
+    return name
+
+
+def _download_attachment(s3_url: str) -> Optional[tuple[str, bytes, str]]:
+    """Download a file from a presigned S3 URL.
+
+    Returns (filename, bytes, content_type) or None on failure.
+    """
+    try:
+        with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
+            res = client.get(s3_url)
+        if not res.is_success:
+            log.warning("Failed to download attachment %s: HTTP %s", s3_url[:80], res.status_code)
+            return None
+        filename = _filename_from_url(s3_url)
+        content_type = res.headers.get("content-type", "").split(";")[0].strip()
+        if not content_type or content_type == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(filename)
+            content_type = guessed or "application/octet-stream"
+        return filename, res.content, content_type
+    except Exception:
+        log.exception("Exception downloading attachment %s", s3_url[:80])
+        return None
+
+
 def post_response(
     *,
     inquiry_uuid: str,
@@ -65,10 +93,9 @@ def post_response(
 ) -> bool:
     """POST the response back to legacy as multipart/form-data.
 
-    `mfr_s3_urls` is a list of direct S3 URLs for all attachments — legacy
-    fetches from S3 itself. Each URL is sent as a separate `mfr_s3_url[]`
-    field so Rails receives them as an array. Pass None or [] when there are
-    no attachments.
+    Each URL in `mfr_s3_urls` is downloaded and sent as a separate
+    `mfr_attachment[]` file part. Pass None or [] when there are no
+    attachments.
 
     Returns True on 2xx, False otherwise. Never raises — failures are
     logged and the inquiry flow continues.
@@ -88,37 +115,43 @@ def post_response(
 
     urls = [u for u in (mfr_s3_urls or []) if u]
 
-    # Build as a list of (name, value) tuples so urllib.parse.urlencode can
-    # emit repeated mfr_s3_url[] fields — Rails parses these as an array.
-    # We encode manually and pass as raw `content` so httpx doesn't touch
-    # the field names (httpx's dict/files encoding doesn't support repeated
-    # keys with [] suffix reliably across versions).
-    params = [
-        ("inquiry_uuid", inquiry_uuid),
-        ("mfr_email_response", mfr_email_response or ""),
-    ]
-    if manufacturer_name:
-        params.append(("manufacturer_name", manufacturer_name))
-    if medication_name:
-        params.append(("medication_name", medication_name))
+    # Download each attachment before opening the retry loop so we don't
+    # re-fetch from S3 on every retry attempt.
+    attachments = []
     for s3_url in urls:
-        params.append(("mfr_s3_url[]", s3_url))
+        result = _download_attachment(s3_url)
+        if result:
+            attachments.append(result)
+        else:
+            log.warning("Skipping attachment that could not be downloaded: %s", s3_url[:80])
 
-    encoded_body = urllib.parse.urlencode(params).encode("utf-8")
+    data = {"inquiry_uuid": inquiry_uuid, "mfr_email_response": mfr_email_response or ""}
+    if manufacturer_name:
+        data["manufacturer_name"] = manufacturer_name
+    if medication_name:
+        data["medication_name"] = medication_name
+
+    # Build the files list: repeated mfr_attachment[] parts, one per attachment.
+    files = [
+        ("mfr_attachment[]", (filename, content, content_type))
+        for filename, content, content_type in attachments
+    ]
 
     log.info(
-        "pipeline: legacy POST sending uuid=%s response_chars=%d s3_urls=%d manufacturer=%s medication=%s",
+        "pipeline: legacy POST sending uuid=%s response_chars=%d attachments=%d (of %d urls) manufacturer=%s medication=%s",
         inquiry_uuid,
         len(mfr_email_response or ""),
+        len(attachments),
         len(urls),
         manufacturer_name or "(none)",
         medication_name or "(none)",
     )
 
+    # X-Api-Key only — do not set Content-Type manually; httpx sets the
+    # multipart boundary automatically when files= is provided.
     headers = {
         "X-Api-Key": key,
         "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
     }
 
     last_status = None
@@ -127,7 +160,7 @@ def post_response(
         started = time.monotonic()
         try:
             with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
-                res = client.post(url, headers=headers, content=encoded_body)
+                res = client.post(url, headers=headers, data=data, files=files or None)
         except httpx.TimeoutException as e:
             elapsed = (time.monotonic() - started) * 1000
             log.warning(
