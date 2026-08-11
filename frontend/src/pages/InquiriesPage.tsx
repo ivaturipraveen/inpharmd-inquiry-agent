@@ -457,14 +457,8 @@ export default function InquiriesPage() {
                         <td>
                           {i.is_test_call ? (
                             <div>
-                              <span style={{ fontSize: "0.7rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.5, marginRight: 4 }}>Test</span>
-                              {i.manufacturer?.manufacturer ?? (i.test_call_phone ?? "No manufacturer matched")}
-                              {i.manufacturer && i.test_call_phone && (
-                                <span className="cell-muted" style={{ marginLeft: 4 }}>{i.test_call_phone}</span>
-                              )}
-                              {!i.manufacturer && !i.test_call_phone && (
-                                <span className="cell-muted">No manufacturer matched</span>
-                              )}
+                              <div>{i.manufacturer?.manufacturer ?? "No manufacturer matched"}</div>
+                              <span style={{ fontSize: "0.7rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.5 }}>Test</span>
                             </div>
                           ) : (
                             i.manufacturer?.manufacturer ?? "—"
