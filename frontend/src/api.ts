@@ -252,10 +252,6 @@ export const api = {
         body: JSON.stringify(data),
       }),
   },
-  voice: {
-    signedUrl: () =>
-      request<{ signed_url: string; agent_id: string }>(`/api/voice/signed-url`),
-  },
   auth: {
     login: (email: string, password: string, channel_id?: string) =>
       request<

@@ -7,10 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
-import type { ClientTools } from "@elevenlabs/react";
 import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
-import VoiceFillButton from "./VoiceFillButton";
 
 interface Props {
   manufacturers: ManufacturerContact[];
@@ -148,107 +146,6 @@ const InquiryForm: FC<Props> = ({
     }
   };
 
-  // Client tools the voice agent can call to fill this form.
-  const voiceTools: ClientTools = useMemo(() => {
-    const norm = (s: string) =>
-      s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
-    const findManufacturer = (raw: string) => {
-      const q = norm(raw);
-      if (!q) return { exact: null, candidates: [] as ManufacturerContact[] };
-      // Exact name match wins
-      const exact = manufacturers.find((m) => norm(m.manufacturer) === q);
-      if (exact) return { exact, candidates: [exact] };
-      // Then startsWith / contains on name or parent
-      const ranked = manufacturers
-        .map((m) => {
-          const name = norm(m.manufacturer);
-          const parent = norm(m.parent_owner ?? "");
-          let score = 0;
-          if (name.startsWith(q)) score = 100;
-          else if (name.includes(q)) score = 70;
-          else if (parent.startsWith(q)) score = 50;
-          else if (parent.includes(q)) score = 30;
-          return { m, score };
-        })
-        .filter((x) => x.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5)
-        .map((x) => x.m);
-      return { exact: ranked[0] && ranked.length === 1 ? ranked[0] : null, candidates: ranked };
-    };
-
-    return {
-      pick_manufacturer: async (params) => {
-        const name = String(params?.name ?? "").trim();
-        if (!name) return "No manufacturer name given.";
-        const { exact, candidates } = findManufacturer(name);
-        if (exact) {
-          setManufacturerIds(prev => prev.includes(exact.id) ? prev : [...prev, exact.id]);
-          return `Added ${exact.manufacturer}.`;
-        }
-        if (candidates.length === 0)
-          return `No manufacturer matches "${name}". Try a different spelling.`;
-        if (candidates.length === 1) {
-          setManufacturerIds(prev => prev.includes(candidates[0].id) ? prev : [...prev, candidates[0].id]);
-          return `Added ${candidates[0].manufacturer}.`;
-        }
-        return `Multiple matches for "${name}": ${candidates
-          .map((c) => c.manufacturer)
-          .join(", ")}. Ask the user which one.`;
-      },
-      set_field: async (params) => {
-        const field = String(params?.field ?? "").trim();
-        const value = params?.value;
-        const str = value == null ? "" : String(value);
-        switch (field) {
-          case "subject":
-            setSubject(str);
-            return `Subject set.`;
-          case "question":
-            setQuestion(str);
-            return `Question set.`;
-          case "requester_name":
-            setRequesterName(str);
-            return `Requester name set.`;
-          case "requester_email":
-            setRequesterEmail(str);
-            return `Requester email set.`;
-          case "fallback_hours": {
-            const n = Number(value);
-            if (!Number.isFinite(n) || n < 1)
-              return `Invalid fallback_hours value "${str}".`;
-            setFallbackHours(n);
-            setCustomMode(!PRESET_HOURS.includes(n));
-            return `Fallback set to ${n} hours.`;
-          }
-          default:
-            return `Unknown field "${field}". Valid fields: subject, question, requester_name, requester_email, fallback_hours.`;
-        }
-      },
-      submit_form: async () => {
-        if (manufacturerIds.length === 0) return "Cannot submit — pick at least one manufacturer first.";
-        if (!subject.trim()) return "Cannot submit — subject is required.";
-        if (!question.trim()) return "Cannot submit — question is required.";
-        formRef.current?.requestSubmit();
-        return "Submitting the inquiry now.";
-      },
-    };
-  }, [manufacturers, manufacturerIds, subject, question]);
-
-  const voiceVars = useMemo(
-    () => ({
-      form_type: "inquiry",
-      manufacturer_count: manufacturers.length,
-      current_subject: subject || "(empty)",
-      current_question_length: question.length,
-      requester_name: requesterName,
-      requester_email: requesterEmail,
-      fallback_hours: fallbackHours,
-    }),
-    [manufacturers.length, subject, question, requesterName, requesterEmail, fallbackHours]
-  );
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (manufacturerIds.length === 0) {
@@ -290,10 +187,6 @@ const InquiryForm: FC<Props> = ({
       <div className={variant === "page" ? "page-form-header" : "modal-header"}>
         <h2>{title}</h2>
         <div className="modal-header-actions">
-          <VoiceFillButton
-            clientTools={voiceTools}
-            dynamicVariables={voiceVars}
-          />
           {variant === "modal" && (
             <button
               type="button"
