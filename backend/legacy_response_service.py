@@ -87,13 +87,13 @@ def post_response(
     *,
     inquiry_uuid: str,
     mfr_email_response: str,
-    mfr_s3_urls: Optional[list] = None,
+    mfr_attachment: Optional[list] = None,
     manufacturer_name: Optional[str] = None,
     medication_name: Optional[str] = None,
 ) -> bool:
     """POST the response back to legacy as multipart/form-data.
 
-    Each URL in `mfr_s3_urls` is downloaded and sent as a separate
+    Each URL in `mfr_attachment` is downloaded and sent as a separate
     `mfr_attachment[]` file part. Pass None or [] when there are no
     attachments.
 
@@ -113,7 +113,7 @@ def post_response(
         )
         return False
 
-    urls = [u for u in (mfr_s3_urls or []) if u]
+    urls = [u for u in (mfr_attachment or []) if u]
 
     # Download each attachment before opening the retry loop so we don't
     # re-fetch from S3 on every retry attempt.
@@ -305,7 +305,7 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
     ok = post_response(
         inquiry_uuid=uuid,
         mfr_email_response=response_text,
-        mfr_s3_urls=s3_urls,
+        mfr_attachment=s3_urls,
         manufacturer_name=mfr_name,
         medication_name=med_name,
     )
