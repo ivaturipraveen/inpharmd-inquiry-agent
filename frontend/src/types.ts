@@ -47,6 +47,7 @@ export interface ManufacturerSummary {
   team_verified_email?: string | null;
   mi_phone?: string | null;
   typical_response_sla?: string | null;
+  fallback_call_enabled?: boolean;
 }
 
 export interface InquiryAttachment {

@@ -545,36 +545,31 @@ async def trigger_call(
             status_code=409,
             detail="Cannot trigger a production call on a test call inquiry.",
         )
-    if obj.status in ("email_responded", "closed", "email_pending"):
+    if obj.status == "closed":
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot trigger call from status '{obj.status}'"
-            + (" — cancel the scheduled email first." if obj.status == "email_pending" else ""),
+            detail="Cannot trigger call — inquiry is closed.",
         )
     if obj.status == "call_pending":
         raise HTTPException(
             status_code=409,
             detail="A call is already in progress for this inquiry. Wait for it to complete before placing another.",
         )
-    # call_completed (with non-answered outcome) and needs_attention are valid retry sources
-    if obj.status == "call_completed" and obj.call_provider_status == "answered":
+    # Keyed on the provider outcome + completion timestamp directly, not on
+    # `status == "call_completed"` — protects against the case where the
+    # post-call webhook has recorded a successful answer but the status
+    # field hasn't been synchronized yet.
+    if obj.call_provider_status == "answered" and obj.call_completed_at is not None:
         raise HTTPException(
             status_code=409,
-            detail="This inquiry already has an answer. Reopen it before retrying.",
+            detail="This inquiry already has a successfully completed call. Reopen it before retrying.",
         )
 
-    # Fallback-call guard: once an email has been sent, the system's one automatic
-    # call is the fallback call. Manual call placement is not allowed after that
-    # point to ensure the one-shot guarantee.
-    if obj.email_sent_at:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This inquiry already went through the email → fallback flow. "
-                "The automatic fallback call is one-shot. Close this inquiry and "
-                "create a new one to place another call."
-            ),
-        )
+    # Manual call placement is intentionally independent of the email/fallback
+    # workflow — an inquiry that already has an email sent or a fallback call
+    # scheduled can still be called manually at any time. (Duplicate-call,
+    # closed, phone-number, test-call, and business-hours protections above
+    # and below still apply.)
 
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
     if not mfr:
@@ -606,15 +601,15 @@ async def trigger_call(
         raise HTTPException(status_code=404, detail="Inquiry not found")
     # Re-check the guards on the now-locked row in case state changed between the
     # initial read and the lock acquisition.
-    if locked.status in ("email_responded", "closed", "email_pending", "call_pending"):
+    if locked.status in ("closed", "call_pending"):
         raise HTTPException(
             status_code=409,
             detail=f"Inquiry state changed to '{locked.status}' before the call could be placed.",
         )
-    if locked.email_sent_at:
+    if locked.call_provider_status == "answered" and locked.call_completed_at is not None:
         raise HTTPException(
             status_code=409,
-            detail="Inquiry entered the email → fallback flow before the call could be placed.",
+            detail="Inquiry already has a successfully completed call. Reopen it before retrying.",
         )
 
     try:
@@ -637,6 +632,11 @@ async def trigger_call(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to place call: {e}")
 
+    # Moving off "email_sent" here also cancels any pending fallback call:
+    # the background scanner (scheduler._scan_and_trigger_fallback_calls)
+    # only ever matches status == "email_sent", so once this manual call is
+    # placed the fallback job can never pick this inquiry up again, even if
+    # a fallback was already scheduled.
     locked.status = "call_pending"
     locked.call_scheduled_for = _now()
     locked.call_conversation_id = (

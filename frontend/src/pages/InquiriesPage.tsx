@@ -3,7 +3,7 @@ import StatusBadge from "../components/StatusBadge";
 import InquiryDetail from "../components/InquiryDetail";
 import { api } from "../api";
 import type { Inquiry } from "../types";
-import { fmtFallbackHours } from "../utils/fallback";
+import { fmtFallbackStatus, fmtFallbackGroup } from "../utils/fallback";
 
 const STATUS_FILTERS = [
   { value: "", label: "All statuses" },
@@ -87,14 +87,19 @@ export default function InquiriesPage() {
   }, []);
 
   // If the hash carries ?id=NN (e.g. from a Slack deep-link), pop open that inquiry
-  // once the list is loaded.
+  // once the list is loaded. One-shot via this ref — without it, closing the modal
+  // (which every action now does immediately) would re-trigger this effect and
+  // reopen the same inquiry, since the ?id= stays in the URL until a tab change.
+  const deepLinkAppliedRef = useRef(false);
   useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
     if (loading || inquiries.length === 0 || selected) return;
     const qs = window.location.hash.split("?")[1];
     if (!qs) return;
     const params = new URLSearchParams(qs);
     const idStr = params.get("id");
     if (!idStr) return;
+    deepLinkAppliedRef.current = true;
     const target = inquiries.find((i) => i.id === Number(idStr));
     if (target) setSelected(target);
   }, [loading, inquiries, selected]);
@@ -216,63 +221,64 @@ export default function InquiriesPage() {
 
   const handleAction = async (action: string, payload?: any) => {
     if (!selected) return;
+    // Close the modal immediately — success/error banners render on the
+    // page behind it, so leaving the modal open hides them until the user
+    // closes it manually. The action still runs to completion below.
+    const current = selected;
+    setSelected(null);
     try {
-      let updated: Inquiry;
       switch (action) {
         case "sendEmail":
-          updated = await api.inquiries.sendEmail(selected.id);
+          await api.inquiries.sendEmail(current.id);
           setSuccess("Email scheduled — will send in ~30 min.");
           break;
         case "cancelScheduledEmail":
-          updated = await api.inquiries.cancelScheduledEmail(selected.id);
+          await api.inquiries.cancelScheduledEmail(current.id);
           setSuccess("Scheduled email cancelled. Inquiry returned to draft.");
           break;
         case "editDraft":
-          updated = await api.inquiries.update(selected.id, { subject: payload.subject, question: payload.question });
+          await api.inquiries.update(current.id, { subject: payload.subject, question: payload.question });
           setSuccess("Draft updated.");
           break;
         case "editScheduledEmail":
-          updated = await api.inquiries.editScheduledEmailContent(selected.id, payload.subject, payload.question);
+          await api.inquiries.editScheduledEmailContent(current.id, payload.subject, payload.question);
           setSuccess("Email content updated.");
           break;
         case "sendNow":
-          updated = await api.inquiries.sendEmailNow(selected.id);
+          await api.inquiries.sendEmailNow(current.id);
           setSuccess("Email sent immediately.");
           break;
         case "recordEmailResponse":
-          updated = await api.inquiries.recordEmailResponse(selected.id, payload);
+          await api.inquiries.recordEmailResponse(current.id, payload);
           setSuccess("Email response saved.");
           break;
         case "triggerCall":
-          updated = await api.inquiries.triggerCall(selected.id);
+          await api.inquiries.triggerCall(current.id);
           setSuccess("Call queued.");
           break;
         case "recordCallResult":
-          updated = await api.inquiries.recordCallResult(
-            selected.id,
+          await api.inquiries.recordCallResult(
+            current.id,
             payload.summary,
             payload.transcript
           );
           setSuccess("Call result saved.");
           break;
         case "close":
-          updated = await api.inquiries.close(selected.id);
-          setSelected(null);
+          await api.inquiries.close(current.id);
           setSuccess("Inquiry closed.");
-          load();
-          return;
+          break;
         case "extractAnswer":
-          updated = await api.inquiries.extractAnswer(selected.id);
+          await api.inquiries.extractAnswer(current.id);
           setSuccess("Answer extracted from transcript.");
           break;
         case "resetRetries":
-          updated = await api.inquiries.resetRetries(selected.id);
+          await api.inquiries.resetRetries(current.id);
           setSuccess("Retries reset. Inquiry returned to draft.");
           break;
         default:
           return;
       }
-      setSelected(updated);
       load();
     } catch (err: any) {
       setError(err?.message ?? "Action failed.");
@@ -281,10 +287,11 @@ export default function InquiriesPage() {
 
   const handleDelete = async () => {
     if (!selected) return;
+    const current = selected;
+    setSelected(null);
     try {
-      await api.inquiries.remove(selected.id);
+      await api.inquiries.remove(current.id);
       setSuccess("Inquiry deleted.");
-      setSelected(null);
       load();
     } catch (err: any) {
       setError(err?.message ?? "Delete failed.");
@@ -489,7 +496,7 @@ export default function InquiriesPage() {
                           </div>
                         </td>
                         <td className="cell-muted">{fmtDate(i.created_at)}</td>
-                        <td className="cell-muted">{fmtFallbackHours(i.fallback_after_hours)}</td>
+                        <td className="cell-muted">{fmtFallbackStatus(i.manufacturer?.fallback_call_enabled, i.fallback_after_hours)}</td>
                       </tr>
                     );
                   }
@@ -508,6 +515,12 @@ export default function InquiriesPage() {
                   ).length;
                   // children are already sorted newest-first; use [0] to match sort order
                   const groupCreated = row.children[0]?.created_at ?? "";
+                  const groupFallback = fmtFallbackGroup(
+                    row.children.map((c) => ({
+                      enabled: c.manufacturer?.fallback_call_enabled,
+                      hours: c.fallback_after_hours,
+                    }))
+                  );
                   return (
                     <Fragment key={`g-${row.uuid}`}>
                       <tr
@@ -560,7 +573,7 @@ export default function InquiriesPage() {
                           )}
                         </td>
                         <td className="cell-muted">{fmtDate(groupCreated)}</td>
-                        <td className="cell-muted">{fmtFallbackHours(sample.fallback_after_hours)}</td>
+                        <td className="cell-muted">{groupFallback}</td>
                       </tr>
                       {open &&
                         row.children.map((c) => (
@@ -614,7 +627,7 @@ export default function InquiriesPage() {
                               </div>
                             </td>
                             <td className="cell-muted">{fmtDate(c.created_at)}</td>
-                            <td className="cell-muted">{fmtFallbackHours(c.fallback_after_hours)}</td>
+                            <td className="cell-muted">{fmtFallbackStatus(c.manufacturer?.fallback_call_enabled, c.fallback_after_hours)}</td>
                           </tr>
                         ))}
                     </Fragment>

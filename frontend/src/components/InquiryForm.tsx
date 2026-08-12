@@ -86,6 +86,13 @@ const InquiryForm: FC<Props> = ({
     [manufacturers, manufacturerIds]
   );
 
+  // Only assert "disabled" when exactly one manufacturer is selected and its
+  // flag is explicitly false — with multiple selected manufacturers, whether
+  // fallback applies can differ per manufacturer, so the shared picker is
+  // left as-is rather than guessing which one the state should reflect.
+  const fallbackDisabled =
+    selectedMfrs.length === 1 && selectedMfrs[0].fallback_call_enabled === false;
+
   // Filter manufacturers by query (case-insensitive substring on name + parent).
   const filtered = useMemo(() => {
     const q = mfrQuery.trim().toLowerCase();
@@ -363,6 +370,12 @@ const InquiryForm: FC<Props> = ({
 
               <div className="field full">
                 <label>If no email response within</label>
+                {fallbackDisabled ? (
+                  <div className="cell-muted">
+                    Disabled — {selectedMfrs[0].manufacturer} does not have fallback calling enabled.
+                  </div>
+                ) : (
+                <>
                 <div className="preset-row">
                   {FALLBACK_PRESETS.map((p) => (
                     <button
@@ -443,9 +456,12 @@ const InquiryForm: FC<Props> = ({
                     </div>
                   </div>
                 )}
+                </>
+                )}
                 <div className="hint">
-                  After this window passes without an email reply, the inquiry
-                  becomes eligible for an automated voice-agent fallback call.
+                  {fallbackDisabled
+                    ? "This manufacturer will not receive an automated fallback call if the email goes unanswered."
+                    : "After this window passes without an email reply, the inquiry becomes eligible for an automated voice-agent fallback call."}
                 </div>
               </div>
             </div>
