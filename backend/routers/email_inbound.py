@@ -5,17 +5,25 @@ POSTs the parsed email here as multipart/form-data.  We extract the inquiry ID
 from the subject tag [InpharmD #N], strip quoted text, run GPT cleanup, and
 store the answer so it appears on the dashboard immediately.
 
+SendGrid's Inbound Parse has no signature/HMAC verification of its own (unlike
+their separate Event Webhook), so the URL path itself carries a secret token —
+anyone without it gets a 404, same as a route that doesn't exist.
+
 Setup (one-time in SendGrid):
-    Mail Settings → Inbound Parse → Add Host & URL
-    MX host : inpharmd.com  (or the sub-domain you point MX records at)
-    URL     : https://inpharmd-inquiry-api.onrender.com/api/email/inbound
-    Check "POST the raw, full MIME message" = OFF (default form-data is fine)
+    1. Generate a secret: `python -c "import secrets; print(secrets.token_hex(32))"`
+       and set it as EMAIL_INBOUND_SECRET in the backend environment.
+    2. Mail Settings → Inbound Parse → Add Host & URL
+       MX host : inpharmd.com  (or the sub-domain you point MX records at)
+       URL     : https://inpharmd-inquiry-api.onrender.com/api/email/inbound/<EMAIL_INBOUND_SECRET>
+       Check "POST the raw, full MIME message" = OFF (default form-data is fine)
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +38,13 @@ from database import SessionLocal
 
 log = logging.getLogger("inquiry.email_inbound")
 router = APIRouter(prefix="/api/email", tags=["email"])
+
+_INBOUND_SECRET = os.getenv("EMAIL_INBOUND_SECRET")
+if not _INBOUND_SECRET:
+    log.warning(
+        "EMAIL_INBOUND_SECRET is not set — /api/email/inbound/* will reject "
+        "every request (fail-closed) until it's configured."
+    )
 
 _SUBJECT_TAG = re.compile(r"\[InpharmD #(\d+)\]", re.IGNORECASE)
 
@@ -117,9 +132,17 @@ async def _collect_sendgrid_attachments(form) -> list[dict]:
     return results
 
 
-@router.post("/inbound")
-async def sendgrid_inbound(request: Request) -> Response:
-    """Receive a SendGrid Inbound Parse POST and store the manufacturer's reply."""
+@router.post("/inbound/{token}")
+async def sendgrid_inbound(token: str, request: Request) -> Response:
+    """Receive a SendGrid Inbound Parse POST and store the manufacturer's reply.
+
+    `token` must match EMAIL_INBOUND_SECRET — this is the only auth SendGrid's
+    Inbound Parse supports (it can't send a signature or custom header), so a
+    wrong or missing token gets a 404, not a 401 (don't confirm the route exists).
+    """
+    if not _INBOUND_SECRET or not secrets.compare_digest(token, _INBOUND_SECRET):
+        return Response(status_code=404)
+
     form = await request.form()
 
     subject: str = form.get("subject", "") or ""
