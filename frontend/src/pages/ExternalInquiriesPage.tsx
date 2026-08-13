@@ -241,8 +241,8 @@ export default function ExternalInquiriesPage() {
     let withDocs = 0;
     let totalAttachments = 0;
     for (const i of inquiries) {
-      const types = i.inquiry_types ?? [];
-      for (const t of types) byType[t] = (byType[t] || 0) + 1;
+      const code = typeCode(i);
+      byType[code] = (byType[code] || 0) + 1;
       const email = submitterEmail(i) || i.inquiry_submitter || "";
       if (email) submitters.add(email);
       const atts = i.attachments ?? [];
@@ -306,9 +306,9 @@ export default function ExternalInquiriesPage() {
               className={`ext-chip ${!typeFilter ? "ext-chip-active" : ""}`}
               onClick={() => handleTypeFilter("")}
             >
-              All <span className="ext-chip-num">{stagingMeta?.total_entries ?? stats.total}</span>
+              All
             </button>
-            {allTypes.map(([t, n]) => (
+            {allTypes.map(([t]) => (
               <button
                 key={t}
                 type="button"
@@ -317,7 +317,7 @@ export default function ExternalInquiriesPage() {
                 }`}
                 onClick={() => handleTypeFilter(typeFilter === t ? "" : t)}
               >
-                {t} <span className="ext-chip-num">{n}</span>
+                {t}
               </button>
             ))}
           </div>

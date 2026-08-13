@@ -120,6 +120,19 @@ def _matches_search(item: dict, q: str) -> bool:
     return q in " ".join(parts).lower()
 
 
+def _type_code(item: dict) -> str:
+    """Classify an inquiry into TE / DI / PT — mirrors the frontend's
+    typeCode() in ExternalInquiriesPage.tsx. temperature_excursion takes
+    priority; otherwise project_types missing/"None" is DI, any real
+    project type is PT."""
+    if item.get("temperature_excursion") is True:
+        return "TE"
+    pt = item.get("project_types")
+    if not pt or pt == "None":
+        return "DI"
+    return "PT"
+
+
 @router.get("")
 def list_external_inquiries(
     response: Response,
@@ -166,9 +179,7 @@ def list_external_inquiries(
         if q:
             filtered = [i for i in filtered if _matches_search(i, q)]
     if inquiry_type:
-        filtered = [i for i in filtered if inquiry_type in (
-            i.get("project_types") or i.get("inquiry_types") or []
-        )]
+        filtered = [i for i in filtered if _type_code(i) == inquiry_type]
     if with_attachments:
         filtered = [i for i in filtered if i.get("attachments")]
 
