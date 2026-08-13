@@ -213,9 +213,21 @@ export default function ContactManufacturerPage() {
 
   useEffect(() => {
     if (!banner) return;
-    const t = setTimeout(() => setBanner(null), 3500);
+    const t = setTimeout(() => setBanner(null), 6000);
     return () => clearTimeout(t);
   }, [banner]);
+
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
+
+  useEffect(() => {
+    if (!extractError) return;
+    const t = setTimeout(() => setExtractError(null), 6000);
+    return () => clearTimeout(t);
+  }, [extractError]);
 
   // All attachments that can be processed for manufacturer extraction.
   const extractableAttachments = useMemo(
@@ -1063,6 +1075,10 @@ export default function ContactManufacturerPage() {
                 return !!m?.mi_phone;
               });
               const reachableByPhone = phoneRows.length;
+              const fallbackEligibleCount = allSelectedRows.filter((r) => {
+                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
+                return !!(m?.fallback_call_enabled && m?.mi_phone);
+              }).length;
               const outOfHoursNow = phoneRows.filter((r) => {
                 const m = r.matched_id ? mfrById[r.matched_id] : undefined;
                 return isWithinBusinessHoursNow(m?.mi_phone_hours) === false;
@@ -1097,16 +1113,29 @@ export default function ContactManufacturerPage() {
                         <div className="channel-title">Send Email</div>
                         <div className="channel-sub">
                           Email all {total} selected manufacturer{total === 1 ? "" : "s"}.
-                          Voice agent will call any that don't reply within{" "}
-                          <strong>{fmtFallbackHours(fallbackHours)}</strong>.
+                          {fallbackEligibleCount > 0 && (
+                            <>
+                              {" "}Voice agent will call{" "}
+                              {fallbackEligibleCount < total
+                                ? <>{fallbackEligibleCount} of {total} that don't</>
+                                : <>any that don't</>}{" "}
+                              reply within{" "}
+                              <strong>{fmtFallbackHours(fallbackHours)}</strong>.
+                            </>
+                          )}
                         </div>
                         <ul className="channel-meta">
                           <li>
                             <span>Reachable</span> {reachableByEmail} of {total} have email
                           </li>
-                          <li>
-                            <span>Fallback</span> agent call after {fmtFallbackHours(fallbackHours)}
-                          </li>
+                          {fallbackEligibleCount > 0 && (
+                            <li>
+                              <span>Fallback</span> agent call after {fmtFallbackHours(fallbackHours)}
+                              {fallbackEligibleCount < total && (
+                                <span className="cell-muted"> · {fallbackEligibleCount} of {total} eligible</span>
+                              )}
+                            </li>
+                          )}
                         </ul>
                         <button
                           className="btn btn-primary"
@@ -1297,7 +1326,7 @@ export default function ContactManufacturerPage() {
             }}
             onCallAgent={async () => {
               const id = await getOrCreateId();
-              await api.inquiries.triggerCall(id, false);
+              await api.inquiries.triggerCall(id);
               setBanner("Call placed — the agent is dialing now.");
               closePending();
               goTo("inquiries");

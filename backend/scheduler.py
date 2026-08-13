@@ -199,9 +199,11 @@ def _scan_and_send_pending_emails() -> None:
             locked.email_sent_at = sent_at
             locked.email_message_id = message_id
             locked.email_scheduled_for = None
-            if mfr.fallback_call_enabled:
+            if mfr.fallback_call_enabled and mfr.mi_phone:
                 fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
                 locked.call_scheduled_for = sent_at + fallback_delta
+            elif mfr.fallback_call_enabled and not mfr.mi_phone:
+                log.warning("Inquiry %s: fallback skipped — manufacturer '%s' has no MI phone", locked.id, mfr.manufacturer)
             db2.commit()
             log.info("Scheduled email sent for inquiry %s", locked.id)
         except Exception:
@@ -225,6 +227,7 @@ def _scan_and_trigger_fallback_calls() -> None:
                 Inquiry.status == "email_sent",
                 Inquiry.call_scheduled_for.isnot(None),
                 Inquiry.call_scheduled_for <= now,
+                Inquiry.is_test_call.isnot(True),
             )
             .all()
         )
@@ -249,13 +252,6 @@ def _scan_and_trigger_fallback_calls() -> None:
         if not mfr:
             log.warning("Inquiry %s has no manufacturer; skipping fallback call", obj.id)
             continue
-        if not mfr.fallback_call_enabled:
-            log.info("Inquiry %s manufacturer '%s' has fallback disabled; skipping", obj.id, mfr.manufacturer)
-            continue
-        if not mfr.mi_phone:
-            log.warning("Inquiry %s manufacturer '%s' has no phone; skipping fallback call", obj.id, mfr.manufacturer)
-            continue
-
         db2 = SessionLocal()
         try:
             locked = (
@@ -281,19 +277,25 @@ def _scan_and_trigger_fallback_calls() -> None:
                 db2.close()
                 continue
             if not fresh_mfr.fallback_call_enabled:
-                log.info(
-                    "Inquiry %s manufacturer '%s' has fallback disabled (re-checked); skipping",
+                log.warning(
+                    "Inquiry %s manufacturer '%s' has fallback disabled (re-checked); marking needs_attention",
                     locked.id, fresh_mfr.manufacturer,
                 )
-                db2.rollback()
+                locked.status = "needs_attention"
+                locked.call_scheduled_for = None
+                locked.next_retry_at = None
+                db2.commit()
                 db2.close()
                 continue
             if not fresh_mfr.mi_phone:
                 log.warning(
-                    "Inquiry %s manufacturer '%s' has no phone (re-checked); skipping",
+                    "Inquiry %s manufacturer '%s' has no phone (re-checked); marking needs_attention",
                     locked.id, fresh_mfr.manufacturer,
                 )
-                db2.rollback()
+                locked.status = "needs_attention"
+                locked.call_scheduled_for = None
+                locked.next_retry_at = None
+                db2.commit()
                 db2.close()
                 continue
 

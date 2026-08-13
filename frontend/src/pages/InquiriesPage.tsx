@@ -106,7 +106,7 @@ export default function InquiriesPage() {
 
   useEffect(() => {
     if (!success) return;
-    const t = setTimeout(() => setSuccess(null), 2500);
+    const t = setTimeout(() => setSuccess(null), 6000);
     return () => clearTimeout(t);
   }, [success]);
 
@@ -138,6 +138,12 @@ export default function InquiriesPage() {
     }, 5000);
     return () => clearInterval(id);
   }, [hasInFlight]);
+
+  useEffect(() => {
+    if (!error) return;
+    const id = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(id);
+  }, [error]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -496,7 +502,7 @@ export default function InquiriesPage() {
                           </div>
                         </td>
                         <td className="cell-muted">{fmtDate(i.created_at)}</td>
-                        <td className="cell-muted">{fmtFallbackStatus(i.manufacturer?.fallback_call_enabled, i.fallback_after_hours)}</td>
+                        <td className="cell-muted">{fmtFallbackStatus(i.manufacturer?.fallback_call_enabled, i.fallback_after_hours, i.manufacturer?.mi_phone)}</td>
                       </tr>
                     );
                   }
@@ -519,6 +525,7 @@ export default function InquiriesPage() {
                     row.children.map((c) => ({
                       enabled: c.manufacturer?.fallback_call_enabled,
                       hours: c.fallback_after_hours,
+                      miPhone: c.manufacturer?.mi_phone,
                     }))
                   );
                   return (
@@ -627,7 +634,7 @@ export default function InquiriesPage() {
                               </div>
                             </td>
                             <td className="cell-muted">{fmtDate(c.created_at)}</td>
-                            <td className="cell-muted">{fmtFallbackStatus(c.manufacturer?.fallback_call_enabled, c.fallback_after_hours)}</td>
+                            <td className="cell-muted">{fmtFallbackStatus(c.manufacturer?.fallback_call_enabled, c.fallback_after_hours, c.manufacturer?.mi_phone)}</td>
                           </tr>
                         ))}
                     </Fragment>

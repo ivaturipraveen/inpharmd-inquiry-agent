@@ -175,11 +175,8 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ response }),
       }),
-    triggerCall: (id: number, force = false) =>
-      request<Inquiry>(
-        `/api/inquiries/${id}/trigger-call${force ? "?force=true" : ""}`,
-        { method: "POST" }
-      ),
+    triggerCall: (id: number) =>
+      request<Inquiry>(`/api/inquiries/${id}/trigger-call`, { method: "POST" }),
     testCall: (id: number, phoneNumber: string) =>
       request<Inquiry>(`/api/inquiries/${id}/test-call`, {
         method: "POST",

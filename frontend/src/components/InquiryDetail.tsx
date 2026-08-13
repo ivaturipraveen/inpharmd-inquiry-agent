@@ -293,7 +293,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               )}
               <div>
                 <div className="detail-label">Fallback window</div>
-                <div>{fmtFallbackStatus(inquiry.manufacturer?.fallback_call_enabled, inquiry.fallback_after_hours)}</div>
+                <div>{fmtFallbackStatus(inquiry.manufacturer?.fallback_call_enabled, inquiry.fallback_after_hours, inquiry.manufacturer?.mi_phone)}</div>
               </div>
             </div>
           )}

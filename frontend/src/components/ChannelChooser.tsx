@@ -70,6 +70,18 @@ const ChannelChooser: FC<Props> = ({
   const testValid =
     testDigits.length >= 7 && fullTestNumber.replace("+", "").length <= 15;
 
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
+
+  useEffect(() => {
+    if (!testDialedTo) return;
+    const t = setTimeout(() => setTestDialedTo(null), 6000);
+    return () => clearTimeout(t);
+  }, [testDialedTo]);
+
   // Escape key closes without creating anything.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

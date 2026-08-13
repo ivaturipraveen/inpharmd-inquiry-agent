@@ -1,4 +1,4 @@
-import { FC, FormEvent, useState } from "react";
+import { FC, FormEvent, useEffect, useState } from "react";
 import { api, session } from "../api";
 
 export interface AuthUser {
@@ -39,6 +39,18 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
   const [otp, setOtp] = useState("");
   const [resending, setResending] = useState(false);
   const [resendMessage, setResendMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
+
+  useEffect(() => {
+    if (!resendMessage) return;
+    const t = setTimeout(() => setResendMessage(null), 6000);
+    return () => clearTimeout(t);
+  }, [resendMessage]);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();

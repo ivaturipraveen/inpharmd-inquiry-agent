@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
+import { fmtFallbackHours } from "../utils/fallback";
 
 interface Props {
   manufacturers: ManufacturerContact[];
@@ -86,12 +87,20 @@ const InquiryForm: FC<Props> = ({
     [manufacturers, manufacturerIds]
   );
 
-  // Only assert "disabled" when exactly one manufacturer is selected and its
-  // flag is explicitly false — with multiple selected manufacturers, whether
-  // fallback applies can differ per manufacturer, so the shared picker is
-  // left as-is rather than guessing which one the state should reflect.
-  const fallbackDisabled =
-    selectedMfrs.length === 1 && selectedMfrs[0].fallback_call_enabled === false;
+  // Per-manufacturer fallback buckets — used to show independent status for
+  // each selected manufacturer regardless of how many are selected.
+  const fallbackEligible = useMemo(
+    () => selectedMfrs.filter(m => m.fallback_call_enabled && !!m.mi_phone),
+    [selectedMfrs]
+  );
+  const fallbackNoCallMfrs = useMemo(
+    () => selectedMfrs.filter(m => !m.fallback_call_enabled),
+    [selectedMfrs]
+  );
+  const fallbackNoPhoneMfrs = useMemo(
+    () => selectedMfrs.filter(m => m.fallback_call_enabled && !m.mi_phone),
+    [selectedMfrs]
+  );
 
   // Filter manufacturers by query (case-insensitive substring on name + parent).
   const filtered = useMemo(() => {
@@ -122,6 +131,12 @@ const InquiryForm: FC<Props> = ({
   useEffect(() => {
     setActiveIndex(0);
   }, [mfrQuery, mfrOpen]);
+
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   const toggleManufacturer = (m: ManufacturerContact) => {
     setManufacturerIds(prev =>
@@ -370,98 +385,122 @@ const InquiryForm: FC<Props> = ({
 
               <div className="field full">
                 <label>If no email response within</label>
-                {fallbackDisabled ? (
-                  <div className="cell-muted">
-                    Disabled — {selectedMfrs[0].manufacturer} does not have fallback calling enabled.
-                  </div>
-                ) : (
-                <>
-                <div className="preset-row">
-                  {FALLBACK_PRESETS.map((p) => (
-                    <button
-                      type="button"
-                      key={p.hours}
-                      className={`preset-chip ${
-                        !customMode && fallbackHours === p.hours
-                          ? "preset-chip-active"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setCustomMode(false);
-                        setFallbackHours(p.hours);
-                      }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className={`preset-chip ${
-                      customMode ? "preset-chip-active" : ""
-                    }`}
-                    onClick={() => {
-                      setCustomMode(true);
-                      const initial =
-                        !PRESET_HOURS.includes(fallbackHours)
-                          ? fallbackHours
-                          : 24;
-                      setCustomValue(
-                        customUnit === "days" ? Math.ceil(initial / 24) : initial
-                      );
-                      setFallbackHours(initial);
-                    }}
-                  >
-                    Custom…
-                  </button>
-                </div>
-                {customMode && (
-                  <div className="custom-row">
-                    <input
-                      type="number"
-                      min={1}
-                      max={customUnit === "days" ? 30 : 720}
-                      value={customValue}
-                      onChange={(e) => {
-                        const v = Math.max(1, Number(e.target.value) || 1);
-                        setCustomValue(v);
-                        setFallbackHours(customUnit === "days" ? v * 24 : v);
-                      }}
-                      className="preset-num"
-                    />
-                    <div className="unit-toggle">
+                {fallbackEligible.length > 0 && (
+                  <>
+                    <div className="preset-row">
+                      {FALLBACK_PRESETS.map((p) => (
+                        <button
+                          type="button"
+                          key={p.hours}
+                          className={`preset-chip ${
+                            !customMode && fallbackHours === p.hours
+                              ? "preset-chip-active"
+                              : ""
+                          }`}
+                          onClick={() => {
+                            setCustomMode(false);
+                            setFallbackHours(p.hours);
+                          }}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
                       <button
                         type="button"
-                        className={
-                          customUnit === "hours" ? "unit-active" : ""
-                        }
+                        className={`preset-chip ${
+                          customMode ? "preset-chip-active" : ""
+                        }`}
                         onClick={() => {
-                          setCustomUnit("hours");
-                          setFallbackHours(customValue);
+                          setCustomMode(true);
+                          const initial =
+                            !PRESET_HOURS.includes(fallbackHours)
+                              ? fallbackHours
+                              : 24;
+                          setCustomValue(
+                            customUnit === "days" ? Math.ceil(initial / 24) : initial
+                          );
+                          setFallbackHours(initial);
                         }}
                       >
-                        hours
-                      </button>
-                      <button
-                        type="button"
-                        className={
-                          customUnit === "days" ? "unit-active" : ""
-                        }
-                        onClick={() => {
-                          setCustomUnit("days");
-                          setFallbackHours(customValue * 24);
-                        }}
-                      >
-                        days
+                        Custom…
                       </button>
                     </div>
-                  </div>
+                    {customMode && (
+                      <div className="custom-row">
+                        <input
+                          type="number"
+                          min={1}
+                          max={customUnit === "days" ? 30 : 720}
+                          value={customValue}
+                          onChange={(e) => {
+                            const v = Math.max(1, Number(e.target.value) || 1);
+                            setCustomValue(v);
+                            setFallbackHours(customUnit === "days" ? v * 24 : v);
+                          }}
+                          className="preset-num"
+                        />
+                        <div className="unit-toggle">
+                          <button
+                            type="button"
+                            className={customUnit === "hours" ? "unit-active" : ""}
+                            onClick={() => {
+                              setCustomUnit("hours");
+                              setFallbackHours(customValue);
+                            }}
+                          >
+                            hours
+                          </button>
+                          <button
+                            type="button"
+                            className={customUnit === "days" ? "unit-active" : ""}
+                            onClick={() => {
+                              setCustomUnit("days");
+                              setFallbackHours(customValue * 24);
+                            }}
+                          >
+                            days
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
-                </>
+                {selectedMfrs.length > 1 ? (
+                  // Multiple manufacturers — show per-manufacturer status
+                  <div className="fallback-mfr-notes">
+                    {fallbackEligible.map(m => (
+                      <div key={m.id} className="fallback-mfr-note">
+                        <span className="fallback-mfr-name">{m.manufacturer}</span>
+                        <span className="fallback-mfr-detail">— fallback call after {fmtFallbackHours(fallbackHours)}</span>
+                      </div>
+                    ))}
+                    {fallbackNoCallMfrs.map(m => (
+                      <div key={m.id} className="fallback-mfr-note fallback-mfr-note-muted">
+                        <span className="fallback-mfr-name">{m.manufacturer}</span>
+                        <span className="fallback-mfr-detail">— Fallback calling is disabled.</span>
+                      </div>
+                    ))}
+                    {fallbackNoPhoneMfrs.map(m => (
+                      <div key={m.id} className="fallback-mfr-note fallback-mfr-note-muted">
+                        <span className="fallback-mfr-name">{m.manufacturer}</span>
+                        <span className="fallback-mfr-detail">— No MI phone number on file.</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  // Single manufacturer — show message if chips are hidden
+                  fallbackEligible.length === 0 && selectedMfrs.length === 1 && (
+                    <div className="cell-muted">
+                      {fallbackNoCallMfrs.length > 0
+                        ? "Fallback calling is disabled for this manufacturer."
+                        : "Fallback unavailable — no MI phone number on file."}
+                    </div>
+                  )
                 )}
                 <div className="hint">
-                  {fallbackDisabled
-                    ? "This manufacturer will not receive an automated fallback call if the email goes unanswered."
-                    : "After this window passes without an email reply, the inquiry becomes eligible for an automated voice-agent fallback call."}
+                  {fallbackEligible.length > 0
+                    ? "After this window passes without an email reply, eligible manufacturers become eligible for an automated voice-agent fallback call."
+                    : "No selected manufacturers will receive an automated fallback call if the email goes unanswered."}
                 </div>
               </div>
             </div>

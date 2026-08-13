@@ -35,9 +35,15 @@ export default function ManufacturersPage() {
 
   useEffect(() => {
     if (!success) return;
-    const t = setTimeout(() => setSuccess(null), 2500);
+    const t = setTimeout(() => setSuccess(null), 6000);
     return () => clearTimeout(t);
   }, [success]);
+
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   const filtered = useMemo(() => {
     const q = filters.q.trim().toLowerCase();

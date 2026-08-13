@@ -65,6 +65,12 @@ const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, on
     }
   }, [initial]);
 
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
+
   const update =
     (key: keyof ManufacturerContactInput) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>

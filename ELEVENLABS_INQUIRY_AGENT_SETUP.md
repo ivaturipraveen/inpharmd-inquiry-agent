@@ -490,7 +490,6 @@ Wrong `ELEVENLABS_INQUIRY_PHONE_NUMBER_ID`. In the dashboard it's a string like 
 The manufacturer's `mi_phone_hours` field says we're outside their window. Either:
 
 - Wait until in-hours, or
-- Click **Call anyway** in the confirm dialog (the UI passes `?force=true`), or
 - Edit the manufacturer row's hours via the UI
 
 ### Call connects but agent stays silent
@@ -565,7 +564,7 @@ curl -X POST http://127.0.0.1:8000/api/inquiries/<id>/record-call-result \
 
 | Trigger                                        | Component                                                     | What happens                                                                                                                                 |
 | ---------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pharmacist clicks **Call Agent Now** in the UI | `POST /api/inquiries/{id}/trigger-call`                       | Validates business hours (skippable with `?force=true`), calls `place_inquiry_call`, stores `conversation_id`, sets status to `call_pending` |
+| Pharmacist clicks **Call Agent Now** in the UI | `POST /api/inquiries/{id}/trigger-call`                       | Validates business hours, calls `place_inquiry_call`, stores `conversation_id`, sets status to `call_pending` |
 | Backend → ElevenLabs                           | `call_service.place_inquiry_call`                             | POSTs to `https://api.elevenlabs.io/v1/convai/twilio/outbound-call` with the dynamic variables + first-message override                      |
 | ElevenLabs → Twilio → manufacturer             | (handled by ElevenLabs)                                       | Twilio dials the manufacturer's MI phone, voice agent speaks                                                                                 |
 | Agent captures answer mid-call                 | `submit_answer` tool → `POST /api/agent-tools/submit-answer`  | Updates `call_summary`, `final_answer`, `call_provider_status`, marks `call_completed_at`                                                    |

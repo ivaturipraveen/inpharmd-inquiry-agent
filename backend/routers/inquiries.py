@@ -480,9 +480,11 @@ def send_now(
     locked.email_sent_at = now
     locked.email_message_id = message_id
     locked.email_scheduled_for = None
-    if mfr.fallback_call_enabled:
+    if mfr.fallback_call_enabled and mfr.mi_phone:
         fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
         locked.call_scheduled_for = now + fallback_delta
+    elif mfr.fallback_call_enabled and not mfr.mi_phone:
+        log.warning("Inquiry %s: fallback skipped — manufacturer '%s' has no MI phone", locked.id, mfr.manufacturer)
 
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
@@ -532,7 +534,6 @@ def business_hours_check(
 @router.post("/{inquiry_id}/trigger-call", response_model=InquiryOut)
 async def trigger_call(
     inquiry_id: int,
-    force: bool = Query(False, description="Place the call even if outside business hours"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -580,13 +581,12 @@ async def trigger_call(
             detail=f"{mfr.manufacturer} has no MI phone number on file",
         )
 
-    # Business-hours guard (skippable via ?force=true)
     in_hours = call_service.is_within_business_hours(mfr.mi_phone_hours)
-    if in_hours is False and not force:
+    if in_hours is False:
         hours_str = f" ({mfr.mi_phone_hours})" if mfr.mi_phone_hours else ""
         raise HTTPException(
             status_code=409,
-            detail=f"{mfr.manufacturer} is currently outside business hours{hours_str}. Use the force option to call anyway.",
+            detail=f"{mfr.manufacturer} is currently outside business hours{hours_str}.",
         )
 
     # Re-fetch with a row lock before placing the call so two concurrent requests

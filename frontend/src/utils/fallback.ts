@@ -7,11 +7,18 @@ export function fmtFallbackHours(h: number): string {
 }
 
 /** Fallback column display: "Disabled" when the manufacturer has fallback
- * calling turned off, otherwise the configured duration. `enabled` is
- * `undefined` when there's no matched manufacturer to check — in that case
- * we can't assert it's disabled, so fall back to showing the duration. */
-export function fmtFallbackStatus(enabled: boolean | undefined | null, h: number): string {
+ * calling turned off, "Unavailable" when fallback is enabled but no MI phone
+ * is on file (no call can be placed), otherwise the configured duration.
+ * `enabled` is `undefined` when there's no matched manufacturer to check —
+ * in that case we can't assert it's disabled, so fall back to showing the
+ * duration. */
+export function fmtFallbackStatus(
+  enabled: boolean | undefined | null,
+  h: number,
+  miPhone?: string | null,
+): string {
   if (enabled === false) return "Disabled";
+  if (enabled === true && !miPhone) return "Unavailable";
   return fmtFallbackHours(h);
 }
 
@@ -20,9 +27,9 @@ export function fmtFallbackStatus(enabled: boolean | undefined | null, h: number
  * status is identical; otherwise "Varied" rather than picking one child
  * to represent the whole group. */
 export function fmtFallbackGroup(
-  items: { enabled: boolean | undefined | null; hours: number }[]
+  items: { enabled: boolean | undefined | null; hours: number; miPhone?: string | null }[]
 ): string {
   if (items.length === 0) return "—";
-  const statuses = items.map((it) => fmtFallbackStatus(it.enabled, it.hours));
+  const statuses = items.map((it) => fmtFallbackStatus(it.enabled, it.hours, it.miPhone));
   return statuses.every((s) => s === statuses[0]) ? statuses[0] : "Varied";
 }

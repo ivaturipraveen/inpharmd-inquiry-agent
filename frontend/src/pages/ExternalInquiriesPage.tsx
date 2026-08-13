@@ -201,6 +201,12 @@ export default function ExternalInquiriesPage() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 6000);
+    return () => clearTimeout(t);
+  }, [error]);
+
   const inquiries: MueInquiry[] = useMemo(() => {
     if (!raw) return [];
     const list: any[] = Array.isArray(raw)

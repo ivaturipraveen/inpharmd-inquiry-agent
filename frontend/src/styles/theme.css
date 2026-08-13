@@ -2146,6 +2146,28 @@ pre.raw-json {
   color: #fff;
 }
 
+.fallback-mfr-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.fallback-mfr-note {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+}
+.fallback-mfr-name {
+  font-weight: 500;
+}
+.fallback-mfr-detail {
+  color: var(--ink-soft);
+}
+.fallback-mfr-note-muted .fallback-mfr-name,
+.fallback-mfr-note-muted .fallback-mfr-detail {
+  color: var(--muted);
+}
+
 .label-hint {
   font-weight: 400;
   color: var(--muted);
