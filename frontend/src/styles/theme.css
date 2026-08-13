@@ -997,7 +997,7 @@ pre.raw-json {
    table-layout: fixed is on) */
 .ext-table .col-id         { width: 90px; }
 .ext-table .col-question   { width: auto; }      /* flexible */
-.ext-table .col-submitter  { width: 220px; }
+.ext-table .col-submitter  { width: 270px; }
 .ext-table .col-assignee   { width: 130px; }
 .ext-table .col-status     { width: 150px; }
 .ext-table .col-turnaround { width: 120px; }

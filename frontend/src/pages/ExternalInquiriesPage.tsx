@@ -27,6 +27,9 @@ interface MueInquiry {
   title: string;
   inquiry_submitter?: string;
   inquiry_types?: string[];
+  project_types?: string | null;
+  temperature_excursion?: boolean;
+  turnaround_time?: string | null;
   attachments?: Attachment[];
   inquiry_submitter_details?: SubmitterDetails;
 }
@@ -36,6 +39,26 @@ const truncate = (s: string, n = 80): string =>
 
 const shortUuid = (uuid: string): string =>
   uuid ? uuid.slice(0, 8) : "—";
+
+// TE = temperature excursion (overrides project type entirely); DI = no
+// project type assigned (staging's own value is the literal string "None");
+// PT = a real project type is set.
+const typeCode = (i: MueInquiry): "TE" | "DI" | "PT" => {
+  if (i.temperature_excursion === true) return "TE";
+  if (!i.project_types || i.project_types === "None") return "DI";
+  return "PT";
+};
+
+const TURNAROUND_LABELS: Record<string, string> = {
+  not_urgent: "Not Urgent",
+  asap: "ASAP",
+  one_day: "1 Day",
+  a_few_days: "A Few Days",
+  a_week: "1 Week",
+};
+
+const fmtTurnaround = (t?: string | null): string =>
+  t ? (TURNAROUND_LABELS[t] ?? t) : "—";
 
 const submitterEmail = (i: MueInquiry): string =>
   i.inquiry_submitter_details?.email ?? "";
@@ -367,6 +390,7 @@ export default function ExternalInquiriesPage() {
                 <col className="col-question" />
                 <col className="col-submitter" />
                 <col className="col-type" />
+                <col className="col-turnaround" />
                 <col className="col-docs" />
                 <col className="col-actions" />
               </colgroup>
@@ -376,6 +400,7 @@ export default function ExternalInquiriesPage() {
                   <th>Title</th>
                   <th>Submitter</th>
                   <th>Type</th>
+                  <th>Turnaround</th>
                   <th className="th-center">Attachment(s)</th>
                   <th className="th-center" aria-label="Actions"></th>
                 </tr>
@@ -383,7 +408,6 @@ export default function ExternalInquiriesPage() {
               <tbody>
                 {inquiries.map((i: MueInquiry) => {
                   const docCount = i.attachments?.length ?? 0;
-                  const types = i.inquiry_types ?? [];
                   return (
                     <tr
                       key={i.inquiry_uuid}
@@ -410,15 +434,9 @@ export default function ExternalInquiriesPage() {
                         )}
                       </td>
                       <td className="ext-pill-cell">
-                        {types.length > 0 ? (
-                          <span className="ext-chip ext-chip-info ext-chip-static">
-                            {truncate(types[0], 32)}
-                            {types.length > 1 && ` +${types.length - 1}`}
-                          </span>
-                        ) : (
-                          <span className="ext-chip ext-chip-static">DI</span>
-                        )}
+                        <span className="ext-chip ext-chip-static">{typeCode(i)}</span>
                       </td>
+                      <td className="cell-muted">{fmtTurnaround(i.turnaround_time)}</td>
                       <td className="ext-docs-cell">
                         {docCount > 0 ? (
                           <span className="ext-doc-badge" title={`${docCount} attachment(s)`}>
