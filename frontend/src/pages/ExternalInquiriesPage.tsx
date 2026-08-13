@@ -49,6 +49,17 @@ const typeCode = (i: MueInquiry): "TE" | "DI" | "PT" => {
   return "PT";
 };
 
+// Human-readable version of typeCode() — TE/DI map to a descriptive label,
+// PT shows the actual project type string received from the API.
+const TYPE_DESCRIPTIVE_LABELS: Record<"TE" | "DI", string> = {
+  TE: "Temperature Excursion",
+  DI: "Drug Information",
+};
+const typeLabel = (i: MueInquiry): string => {
+  const code = typeCode(i);
+  return code === "PT" ? (i.project_types as string) : TYPE_DESCRIPTIVE_LABELS[code];
+};
+
 const TURNAROUND_LABELS: Record<string, string> = {
   not_urgent: "Not Urgent",
   asap: "ASAP",
@@ -258,7 +269,7 @@ export default function ExternalInquiriesPage() {
       uuid: i.inquiry_uuid,
       title: i.title,
       submitter: submitterDisplay(i),
-      type: (i.inquiry_types ?? [])[0],
+      type: typeLabel(i),
       attachments: i.attachments,
     });
   };
@@ -698,18 +709,14 @@ const DetailModal = ({
                 )}
               </span>
             </div>
-            {(inquiry.inquiry_types ?? []).length > 0 && (
-              <div className="contact-context-row">
-                <span className="contact-context-label">Types</span>
-                <span className="contact-context-value">
-                  {(inquiry.inquiry_types ?? []).map((t) => (
-                    <span key={t} className="ext-chip ext-chip-info ext-chip-static">
-                      {t}
-                    </span>
-                  ))}
+            <div className="contact-context-row">
+              <span className="contact-context-label">Inquiry Type</span>
+              <span className="contact-context-value">
+                <span className="ext-chip ext-chip-info ext-chip-static">
+                  {typeLabel(inquiry)}
                 </span>
-              </div>
-            )}
+              </span>
+            </div>
             {(inquiry.attachments ?? []).length > 0 && (
               <div className="contact-context-row">
                 <span className="contact-context-label">
