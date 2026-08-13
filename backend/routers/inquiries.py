@@ -503,7 +503,9 @@ def record_email_response(
     obj.email_response_at = _now()
     obj.final_answer = payload.response
     db.commit()
-    legacy_response_service.maybe_post_for_inquiry(db, obj)
+    legacy_response_service.maybe_post_for_inquiry(
+        db, obj, f"manual-email:{obj.id}:{obj.email_response_at.isoformat()}"
+    )
     return _get_or_404(db, inquiry_id, current_user)
 
 
@@ -791,7 +793,9 @@ def extract_answer(
     obj.call_summary = extracted
     obj.final_answer = extracted
     db.commit()
-    legacy_response_service.maybe_post_for_inquiry(db, obj)
+    legacy_response_service.maybe_post_for_inquiry(
+        db, obj, f"call-extract:{obj.call_conversation_id}"
+    )
     return _get_or_404(db, inquiry_id, current_user)
 
 
@@ -831,7 +835,9 @@ def record_call_result(
         obj.final_answer = payload.summary
     db.commit()
     if not obj.is_test_call:
-        legacy_response_service.maybe_post_for_inquiry(db, obj)
+        legacy_response_service.maybe_post_for_inquiry(
+            db, obj, f"call:{obj.call_conversation_id}"
+        )
     return _get_or_404(db, inquiry_id, current_user)
 
 

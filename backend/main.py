@@ -129,6 +129,9 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS test_call_phone VARCHAR(32)",
         # Email→call fallback: per-manufacturer opt-in flag.
         "ALTER TABLE manufacturer_contacts ADD COLUMN IF NOT EXISTS fallback_call_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+        # Event-level legacy POST dedup key — "call:<conversation_id>" or "email:<EmailReply.id>".
+        # Replaces the attachment-count heuristic with true per-event identity.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_last_event_key VARCHAR(255)",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

@@ -378,6 +378,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     )
     return {
         "inquiry_id": inquiry_id,
+        "email_reply_id": email_reply.id,
         "manufacturer": mfr_name,
         "subject": obj.subject,
         "question": obj.question,
@@ -577,7 +578,9 @@ def poll_once() -> int:
                 try:
                     obj = db.get(Inquiry, changed.get("inquiry_id"))
                     if obj is not None:
-                        legacy_response_service.maybe_post_for_inquiry(db, obj)
+                        legacy_response_service.maybe_post_for_inquiry(
+                            db, obj, f"email:{changed.get('email_reply_id')}"
+                        )
                 except Exception:
                     log.exception(
                         "Legacy POST after Graph poll failed for inquiry %s",

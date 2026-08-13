@@ -134,7 +134,9 @@ def submit_answer(
 
     # Forward to legacy if this inquiry came from InpharmD (no-op otherwise).
     if payload.outcome in ("answered", "follow_up_via_email"):
-        legacy_response_service.maybe_post_for_inquiry(db, obj)
+        legacy_response_service.maybe_post_for_inquiry(
+            db, obj, f"call:{obj.call_conversation_id}"
+        )
 
     return {
         "success": True,

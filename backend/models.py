@@ -134,6 +134,11 @@ class Inquiry(Base):
     source_inquiry_uuid = Column(String(128), index=True)
     legacy_response_posted_at = Column(DateTime(timezone=True))
     legacy_attachment_url_count = Column(Integer, nullable=False, default=0, server_default="0")
+    # Stores the event key of the most recently successfully POSTed response
+    # (e.g. "call:<conversation_id>" or "email:<EmailReply.id>"). Used by
+    # maybe_post_for_inquiry to skip re-posting the exact same event while
+    # still allowing genuinely new responses to go through.
+    legacy_last_event_key = Column(String(255), nullable=True)
 
     # When the InpharmD inquiry was a Medication-Use Evaluation with an Excel
     # attachment, we store the doc URL + the row this inquiry's manufacturer

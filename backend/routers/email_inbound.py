@@ -281,7 +281,9 @@ async def sendgrid_inbound(token: str, request: Request) -> Response:
 
         # If this inquiry was forwarded from InpharmD, POST the reply back.
         try:
-            legacy_response_service.maybe_post_for_inquiry(db, obj)
+            legacy_response_service.maybe_post_for_inquiry(
+                db, obj, f"email:{email_reply.id}"
+            )
         except Exception:
             log.exception("Legacy POST failed for inquiry %s (reply was stored)", inquiry_id)
 

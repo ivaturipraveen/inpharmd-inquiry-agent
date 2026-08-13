@@ -166,9 +166,17 @@ def _collect_attachments(msg: email.message.Message) -> list[dict]:
     return results
 
 
-def _process_message(db, raw_bytes: bytes) -> Optional[int]:
-    """Parse one raw email; if it matches an inquiry, store the reply. Returns
-    the inquiry id if matched/processed, else None."""
+def _process_message(db, raw_bytes: bytes) -> Optional[tuple]:
+    """Parse one raw email; if it matches an inquiry, store the reply.
+
+    Returns (inquiry_id, email_reply_id) when a new EmailReply row was
+    created, (inquiry_id, None) when the message was already processed by
+    another path (Graph / SendGrid), or None when the message didn't match
+    any inquiry at all.
+
+    Callers must only invoke maybe_post_for_inquiry when email_reply_id is
+    not None — the (inquiry_id, None) case means another path already did it.
+    """
     msg = email.message_from_bytes(raw_bytes)
     subject = _decode(msg.get("Subject"))
     m = _SUBJECT_TAG.search(subject or "")
@@ -191,7 +199,7 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
         EmailReply.inquiry_id == inquiry_id,
         EmailReply.graph_message_id == smtp_message_id,
     ).first():
-        return inquiry_id
+        return (inquiry_id, None)
 
     # Cross-path dedup: if Graph or SendGrid already stored a reply for the same
     # SMTP Message-ID, skip rather than creating a duplicate record.
@@ -203,14 +211,14 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
             "imap: skip inquiry=%s — smtp_message_id already processed by another path",
             inquiry_id,
         )
-        return inquiry_id
+        return (inquiry_id, None)
 
     sender = _decode(msg.get("From"))
     body = _get_plain_text(msg)
     reply = _strip_quoted(body)
     if not reply:
         log.info("Inquiry %s reply had no extractable body; skipping", inquiry_id)
-        return inquiry_id
+        return (inquiry_id, None)
 
     mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
     final = reply
@@ -263,7 +271,7 @@ def _process_message(db, raw_bytes: bytes) -> Optional[int]:
             obj.pdf_summary = first["summary"]
 
     log.info("Captured email reply for inquiry %s from %s (first=%s)", inquiry_id, sender, is_first_reply)
-    return inquiry_id
+    return (inquiry_id, email_reply.id)
 
 
 def poll_once() -> int:
@@ -307,18 +315,24 @@ def poll_once() -> int:
                     db.rollback()  # discard any partial db.add() calls from this message
                     continue
                 if matched is not None:
+                    inquiry_id, email_reply_id = matched
                     db.commit()
                     updated += 1
-                    # Forward to legacy if this inquiry came from InpharmD.
-                    try:
-                        obj = db.get(Inquiry, matched)
-                        if obj is not None:
-                            legacy_response_service.maybe_post_for_inquiry(db, obj)
-                    except Exception:
-                        log.exception(
-                            "Legacy POST after IMAP poll failed for inquiry %s",
-                            matched,
-                        )
+                    # Forward to legacy only when we created a new EmailReply row.
+                    # email_reply_id is None when the message was already processed
+                    # by Graph or SendGrid — that path already called maybe_post_for_inquiry.
+                    if email_reply_id is not None:
+                        try:
+                            obj = db.get(Inquiry, inquiry_id)
+                            if obj is not None:
+                                legacy_response_service.maybe_post_for_inquiry(
+                                    db, obj, f"email:{email_reply_id}"
+                                )
+                        except Exception:
+                            log.exception(
+                                "Legacy POST after IMAP poll failed for inquiry %s",
+                                inquiry_id,
+                            )
                     # Mark as read so we don't reprocess it next tick.
                     conn.store(mid, "+FLAGS", "\\Seen")
                 # Unmatched messages are left unseen for a human to handle.

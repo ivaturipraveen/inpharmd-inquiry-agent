@@ -214,15 +214,24 @@ def post_response(
     return False
 
 
-def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
-    """Idempotent wrapper that decides whether to POST for the given Inquiry.
+def maybe_post_for_inquiry(db: Session, inquiry, event_key: str) -> bool:
+    """Post a manufacturer response back to the InpharmD legacy endpoint.
 
     Sends only when:
-    - Source UUID is set (forwarded from InpharmD)
-    - There's a final_answer or email_response to send
-    - It hasn't already been posted (legacy_response_posted_at is None)
+    - source_inquiry_uuid is set (inquiry originated from InpharmD platform)
+    - There is response text to send
+    - This exact event has not already been posted (event_key differs from
+      legacy_last_event_key stored on the inquiry)
 
-    On success, stamps legacy_response_posted_at and commits.
+    `event_key` must uniquely identify the inbound response event:
+      - Call responses:  "call:<call_conversation_id>"
+      - Email responses: "email:<EmailReply.id>"
+
+    Same event_key fired again (ElevenLabs retry, agent_tools + webhook
+    double-fire, Graph re-poll) → skipped.
+    Different event_key (new email after a call, second email, etc.) → posted.
+
+    On success stamps legacy_response_posted_at, stores event_key, and commits.
     Returns True if posted, False otherwise.
     """
     log.info(
@@ -279,23 +288,20 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
         scalar = getattr(inquiry, "pdf_url", None) or None
         s3_urls = [scalar] if scalar else []
 
-    # Allow re-posting when new attachments have arrived since the last POST.
-    # Old code sent at most 1 URL; legacy_attachment_url_count defaults to 0
-    # for those rows, so any non-empty attachment list triggers a re-post.
-    already_posted = getattr(inquiry, "legacy_response_posted_at", None) is not None
-    stored_count = getattr(inquiry, "legacy_attachment_url_count", 0) or 0
-    if already_posted and len(s3_urls) <= stored_count:
+    # Skip only when this exact event was already posted — not merely because
+    # any prior response exists. Different event_key = new manufacturer response
+    # = must POST regardless of what was sent before.
+    stored_key = getattr(inquiry, "legacy_last_event_key", None)
+    if stored_key == event_key:
         log.info(
-            "pipeline: legacy POST skipped for inquiry %s: already posted at %s "
-            "with %d URL(s), still have %d — no change",
-            inquiry.id, inquiry.legacy_response_posted_at, stored_count, len(s3_urls),
+            "pipeline: legacy POST skipped for inquiry %s — event_key %r already posted",
+            inquiry.id, event_key,
         )
         return False
-    if already_posted:
+    if stored_key:
         log.info(
-            "pipeline: re-posting legacy response for inquiry %s: "
-            "previously sent %d URL(s), now have %d",
-            inquiry.id, stored_count, len(s3_urls),
+            "pipeline: posting new response for inquiry %s (prev event_key %r → new %r)",
+            inquiry.id, stored_key, event_key,
         )
 
     mfr = getattr(inquiry, "manufacturer", None)
@@ -312,6 +318,7 @@ def maybe_post_for_inquiry(db: Session, inquiry) -> bool:
     if ok:
         inquiry.legacy_response_posted_at = datetime.now(timezone.utc)
         inquiry.legacy_attachment_url_count = len(s3_urls)
+        inquiry.legacy_last_event_key = event_key
         try:
             db.commit()
         except Exception:

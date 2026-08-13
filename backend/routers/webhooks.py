@@ -151,7 +151,9 @@ async def elevenlabs_post_call(
     # Forward to legacy if this inquiry came from InpharmD (real calls only).
     if not is_test:
         try:
-            legacy_response_service.maybe_post_for_inquiry(db, obj)
+            legacy_response_service.maybe_post_for_inquiry(
+                db, obj, f"call:{obj.call_conversation_id}"
+            )
         except Exception:
             log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
 
