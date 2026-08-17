@@ -579,7 +579,8 @@ def poll_once() -> int:
                     obj = db.get(Inquiry, changed.get("inquiry_id"))
                     if obj is not None:
                         legacy_response_service.maybe_post_for_inquiry(
-                            db, obj, f"email:{changed.get('email_reply_id')}"
+                            db, obj, f"email:{changed.get('email_reply_id')}",
+                            email_reply_id=changed.get('email_reply_id'),
                         )
                 except Exception:
                     log.exception(

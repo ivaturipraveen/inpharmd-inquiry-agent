@@ -107,15 +107,23 @@ def submit_answer(
     if summary:
         obj.call_summary = summary
 
+    # Mirrors exactly what gets assigned to obj.final_answer for the two
+    # outcomes that trigger a legacy post below — kept as its own variable
+    # (not read back from obj.final_answer) so it can never pick up stale
+    # content from an earlier, unrelated event.
+    legacy_response_text: Optional[str] = None
+
     if payload.outcome == "answered":
         obj.status = "call_completed"
         if summary:
             obj.final_answer = summary
+            legacy_response_text = summary
     elif payload.outcome == "follow_up_via_email":
         # Rep will email — keep status as call_completed but flag it in summary
         obj.status = "call_completed"
         followup_note = f"Rep promised to follow up via email to {obj.requester_email or 'requester'}."
         obj.final_answer = f"{summary}\n\n{followup_note}" if summary else followup_note
+        legacy_response_text = f"{summary}\n\n{followup_note}" if summary else followup_note
     elif payload.outcome in ("voicemail", "wrong_number", "no_answer", "call_back_later"):
         # Call attempted but no useful info
         obj.status = "call_completed"
@@ -135,7 +143,8 @@ def submit_answer(
     # Forward to legacy if this inquiry came from InpharmD (no-op otherwise).
     if payload.outcome in ("answered", "follow_up_via_email"):
         legacy_response_service.maybe_post_for_inquiry(
-            db, obj, f"call:{obj.call_conversation_id}"
+            db, obj, f"call:{obj.call_conversation_id}",
+            direct_response_text=legacy_response_text,
         )
 
     return {

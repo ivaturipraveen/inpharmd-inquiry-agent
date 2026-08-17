@@ -31,11 +31,27 @@ const DRAFT_STATUSES = ["draft"];
 // `matchesStatusFilter` handles both.
 const BUCKET_FILTERS = new Set(["responded", "awaiting", "drafts"]);
 
-function matchesStatusFilter(status: string, filter: string): boolean {
+function matchesStatusFilter(
+  status: string,
+  filter: string,
+  callCompletedAt?: string | null,
+): boolean {
   if (!filter) return true;
   if (filter === "responded") return RESPONDED_STATUSES.includes(status);
   if (filter === "awaiting") return AWAITING_STATUSES.includes(status);
   if (filter === "drafts") return DRAFT_STATUSES.includes(status);
+  // An inquiry that got a completed call and then a later email reply ends up
+  // with status "email_responded" (the email path always overwrites status on
+  // the first reply, regardless of a prior completed call — see
+  // graph_service.py / imap_service.py / email_inbound.py). Surface it under
+  // "Call Completed" too, without reinterpreting call_completed_at for any
+  // other status (needs_attention/closed are deliberately excluded).
+  if (filter === "call_completed") {
+    return (
+      status === "call_completed" ||
+      (status === "email_responded" && callCompletedAt != null)
+    );
+  }
   return status === filter;
 }
 
@@ -148,7 +164,7 @@ export default function InquiriesPage() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return inquiries.filter((i) => {
-      if (!matchesStatusFilter(i.status, statusFilter)) return false;
+      if (!matchesStatusFilter(i.status, statusFilter, i.call_completed_at)) return false;
       if (q) {
         const hay = `${i.subject} ${i.question} ${i.manufacturer?.manufacturer ?? ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
