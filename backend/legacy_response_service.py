@@ -214,8 +214,27 @@ def post_response(
     return False
 
 
-def maybe_post_for_inquiry(db: Session, inquiry, event_key: str) -> bool:
+def maybe_post_for_inquiry(
+    db: Session,
+    inquiry,
+    event_key: str,
+    *,
+    email_reply_id: Optional[int] = None,
+    direct_response_text: Optional[str] = None,
+) -> bool:
     """Post a manufacturer response back to the InpharmD legacy endpoint.
+
+    Callers must supply exactly one of:
+      - email_reply_id: the specific EmailReply whose exact `.body` and
+        reply-scoped InquiryAttachment rows (reply_id == email_reply_id)
+        should be sent. Used by every email-channel caller.
+      - direct_response_text: the exact response text for a call event (or
+        the reply-row-less manual-email endpoint). Call events NEVER carry
+        attachments — no InquiryAttachment query, no pdf_url fallback, ever.
+
+    There is no fallback to `final_answer`/`email_response`/`call_summary`
+    inside this function — the caller is always the authoritative source
+    of the text for its own event.
 
     Sends only when:
     - source_inquiry_uuid is set (inquiry originated from InpharmD platform)
@@ -259,12 +278,13 @@ def maybe_post_for_inquiry(db: Session, inquiry, event_key: str) -> bool:
         return False
     inquiry = locked
 
-    response_text = (
-        getattr(inquiry, "final_answer", None)
-        or getattr(inquiry, "email_response", None)
-        or getattr(inquiry, "call_summary", None)
-        or ""
-    ).strip()
+    if email_reply_id is not None:
+        from models import EmailReply
+        reply = db.get(EmailReply, email_reply_id)
+        response_text = ((reply.body if reply else None) or "").strip()
+    else:
+        response_text = (direct_response_text or "").strip()
+
     if not response_text:
         log.info(
             "pipeline: legacy POST skipped for inquiry %s: no response text yet",
@@ -272,21 +292,23 @@ def maybe_post_for_inquiry(db: Session, inquiry, event_key: str) -> bool:
         )
         return False
 
-    # Collect all InquiryAttachment URLs for this inquiry, ordered by
-    # display_order.  Falls back to the scalar pdf_url for inquiries that
-    # pre-date the InquiryAttachment table.
-    from models import InquiryAttachment
-    s3_urls = [
-        att.url
-        for att in db.query(InquiryAttachment)
-            .filter(InquiryAttachment.inquiry_id == inquiry.id)
-            .order_by(InquiryAttachment.display_order)
-            .all()
-        if att.url
-    ]
-    if not s3_urls:
-        scalar = getattr(inquiry, "pdf_url", None) or None
-        s3_urls = [scalar] if scalar else []
+    # Attachments are scoped to the exact triggering event, never derived
+    # generically from the inquiry as a whole:
+    #   - Email event: only the InquiryAttachment rows tied to this specific
+    #     reply_id. No pdf_url fallback.
+    #   - Call event: always zero attachments. Never query InquiryAttachment,
+    #     never fall back to pdf_url — call responses never carry files.
+    s3_urls: list[str] = []
+    if email_reply_id is not None:
+        from models import InquiryAttachment
+        s3_urls = [
+            att.url
+            for att in db.query(InquiryAttachment)
+                .filter(InquiryAttachment.reply_id == email_reply_id)
+                .order_by(InquiryAttachment.display_order)
+                .all()
+            if att.url
+        ]
 
     # Skip only when this exact event was already posted — not merely because
     # any prior response exists. Different event_key = new manufacturer response

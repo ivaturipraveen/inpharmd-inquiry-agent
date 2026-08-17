@@ -152,7 +152,8 @@ async def elevenlabs_post_call(
     if not is_test:
         try:
             legacy_response_service.maybe_post_for_inquiry(
-                db, obj, f"call:{obj.call_conversation_id}"
+                db, obj, f"call:{obj.call_conversation_id}",
+                direct_response_text=obj.call_summary,
             )
         except Exception:
             log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
