@@ -132,6 +132,10 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # Event-level legacy POST dedup key — "call:<conversation_id>" or "email:<EmailReply.id>".
         # Replaces the attachment-count heuristic with true per-event identity.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_last_event_key VARCHAR(255)",
+        # Set when an outbound-call HTTP request times out with no response, so we can't
+        # tell whether ElevenLabs actually placed the call. While non-null, the inquiry is
+        # excluded from automatic fallback/retry call placement.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_outcome_unknown_until TIMESTAMPTZ",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

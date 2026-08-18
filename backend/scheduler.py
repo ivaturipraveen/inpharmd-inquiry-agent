@@ -57,6 +57,10 @@ def _due_inquiries(db):
                 # Fallback calls (email_sent_at set) are one-shot; the webhook marks
                 # them needs_attention directly rather than feeding the retry loop.
                 Inquiry.email_sent_at.is_(None),
+                # A prior attempt's outcome is unresolved (HTTP timeout, no response) —
+                # unconditionally excluded regardless of how long ago that was; only a
+                # webhook match or _resolve_ambiguous_call_timeouts clears this.
+                Inquiry.call_outcome_unknown_until.is_(None),
             )
         )
         .all()
@@ -82,6 +86,16 @@ def _place_retry(db, obj: Inquiry) -> None:
             requester_name=obj.requester_name,
             requester_email=obj.requester_email,
         )
+    except call_service.CallOutcomeUnknown:
+        # The request timed out with no response — we cannot tell whether ElevenLabs
+        # already placed the call. Do NOT leave this eligible for another automatic
+        # retry; park it until a webhook resolves it or the window expires to needs_attention.
+        obj.call_outcome_unknown_until = _now() + timedelta(minutes=10)
+        log.warning(
+            "Retry call for inquiry %s timed out with unknown outcome; parked until %s",
+            obj.id, obj.call_outcome_unknown_until.isoformat(),
+        )
+        return
     except Exception as e:
         # If ElevenLabs is unreachable, leave next_retry_at unchanged so we'll try again next tick
         log.exception("Retry call for inquiry %s failed at place_call: %s", obj.id, e)
@@ -228,6 +242,8 @@ def _scan_and_trigger_fallback_calls() -> None:
                 Inquiry.call_scheduled_for.isnot(None),
                 Inquiry.call_scheduled_for <= now,
                 Inquiry.is_test_call.isnot(True),
+                # See _due_inquiries: unresolved prior attempt, unconditionally excluded.
+                Inquiry.call_outcome_unknown_until.is_(None),
             )
             .all()
         )
@@ -261,6 +277,7 @@ def _scan_and_trigger_fallback_calls() -> None:
                     Inquiry.status == "email_sent",
                     Inquiry.call_scheduled_for.isnot(None),
                     Inquiry.call_scheduled_for <= _now(),
+                    Inquiry.call_outcome_unknown_until.is_(None),
                 )
                 .with_for_update(skip_locked=True)
                 .first()
@@ -309,6 +326,19 @@ def _scan_and_trigger_fallback_calls() -> None:
                     requester_name=locked.requester_name,
                     requester_email=locked.requester_email,
                 )
+            except call_service.CallOutcomeUnknown:
+                # The request timed out with no response — ElevenLabs may have already
+                # placed the call. Do NOT leave this row eligible for another automatic
+                # fallback attempt; park it until a webhook resolves it or the window
+                # expires to needs_attention (see _resolve_ambiguous_call_timeouts).
+                locked.call_outcome_unknown_until = _now() + timedelta(minutes=10)
+                db2.commit()
+                log.warning(
+                    "Fallback call for inquiry %s timed out with unknown outcome; parked until %s",
+                    locked.id, locked.call_outcome_unknown_until.isoformat(),
+                )
+                db2.close()
+                continue
             except Exception:
                 log.exception("Fallback call failed for inquiry %s; will retry on next tick", locked.id)
                 db2.rollback()
@@ -341,8 +371,52 @@ def _poll_email_replies() -> None:
         log.exception("email poll tick failed")
 
 
+def _resolve_ambiguous_call_timeouts() -> None:
+    """One scheduler tick: give up on calls whose outcome has been unknown for too
+    long. This is the only place that compares call_outcome_unknown_until to the
+    current time — the fallback/retry eligibility filters exclude any row where
+    that column is non-null, full stop, regardless of elapsed time. So a row can
+    never become eligible for another automatic call just because the window
+    passed; it can only leave the unresolved state via a webhook match (clears
+    the column) or here (moves to needs_attention in the same commit that clears
+    it), which is why there is no ordering dependency between this function and
+    the fallback/retry scans.
+    """
+    db = SessionLocal()
+    try:
+        now = _now()
+        stuck = (
+            db.query(Inquiry)
+            .filter(
+                Inquiry.call_outcome_unknown_until.isnot(None),
+                Inquiry.call_outcome_unknown_until <= now,
+                Inquiry.status.in_(("email_sent", "call_pending")),
+            )
+            .all()
+        )
+        if not stuck:
+            return
+        for obj in stuck:
+            log.warning(
+                "Inquiry %s: call outcome still unknown after grace window; marking needs_attention",
+                obj.id,
+            )
+            obj.status = "needs_attention"
+            obj.call_scheduled_for = None
+            obj.next_retry_at = None
+            obj.call_outcome_unknown_until = None
+        db.commit()
+    except Exception:
+        log.exception("Ambiguous-call-timeout resolution tick failed; rolling back")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def _scan_and_retry() -> None:
     """One scheduler tick: place retries for everything that's due."""
+    _resolve_ambiguous_call_timeouts()
+
     db = SessionLocal()
     try:
         due = _due_inquiries(db)

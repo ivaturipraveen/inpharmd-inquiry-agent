@@ -30,6 +30,13 @@ class CallConfigError(RuntimeError):
     """Raised when ElevenLabs / Twilio configuration is missing."""
 
 
+class CallOutcomeUnknown(Exception):
+    """Raised when the outbound-call HTTP request timed out with no response.
+    ElevenLabs may have already accepted/placed the call — the caller must
+    not treat this the same as an explicit rejection or assume it's safe to
+    retry automatically."""
+
+
 def _required(name: str) -> str:
     val = os.getenv(name)
     if not val:
@@ -253,11 +260,19 @@ async def place_inquiry_call(
     )
 
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            f"{ELEVEN_BASE}/convai/twilio/outbound-call",
-            headers=headers,
-            json=payload,
-        )
+        try:
+            r = await client.post(
+                f"{ELEVEN_BASE}/convai/twilio/outbound-call",
+                headers=headers,
+                json=payload,
+            )
+        except httpx.TimeoutException as e:
+            log.warning(
+                "ElevenLabs outbound-call request for inquiry %s timed out with no "
+                "response; outcome unknown, the call may have already been placed",
+                inquiry_id,
+            )
+            raise CallOutcomeUnknown(str(e)) from e
         if not r.is_success:
             log.error("ElevenLabs rejected call: %s %s", r.status_code, r.text)
         r.raise_for_status()

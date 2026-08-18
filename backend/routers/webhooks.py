@@ -1,4 +1,5 @@
 """Webhook receivers for external services (currently: ElevenLabs post-call)."""
+import json
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 import legacy_response_service
 import summary_service
 from database import get_db
-from models import Inquiry
+from models import Inquiry, UnmatchedCallWebhook
 from scheduler import schedule_retry_after_failure
 
 log = logging.getLogger("inquiry.webhooks")
@@ -25,6 +26,34 @@ def _extract_conversation_id(body: Dict[str, Any]) -> Optional[str]:
         or (body.get("data") or {}).get("conversation_id")
         or (body.get("conversation") or {}).get("conversation_id")
     )
+
+
+def _extract_inquiry_id(body: Dict[str, Any]) -> Optional[int]:
+    """Fallback identifier when call_conversation_id doesn't match anything —
+    we set `inquiry_id` as a dynamic variable on every call we place, so it
+    should be echoed back under conversation_initiation_client_data.
+    Defensive about nesting the same way _extract_conversation_id is: checks
+    top-level, `data.*`, and `conversation.*`, and within each of those both
+    a top-level `dynamic_variables` key and one nested under
+    `conversation_initiation_client_data`."""
+    def _dv_candidates(container: Dict[str, Any]) -> list:
+        cid_client_data = container.get("conversation_initiation_client_data")
+        return [
+            container.get("dynamic_variables"),
+            cid_client_data.get("dynamic_variables") if isinstance(cid_client_data, dict) else None,
+        ]
+
+    containers = [body, body.get("data") or {}, body.get("conversation") or {}]
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for dv in _dv_candidates(container):
+            if isinstance(dv, dict) and dv.get("inquiry_id") is not None:
+                try:
+                    return int(dv["inquiry_id"])
+                except (TypeError, ValueError):
+                    continue
+    return None
 
 
 def _extract_summary(body: Dict[str, Any]) -> Optional[str]:
@@ -81,9 +110,43 @@ async def elevenlabs_post_call(
         .filter(Inquiry.call_conversation_id == convo_id)
         .first()
     )
+    matched_via_inquiry_id = False
     if not obj:
-        # Not one of our inquiries — silently accept so ElevenLabs doesn't retry forever
+        # call_conversation_id didn't match — the conversation may belong to an
+        # inquiry whose row currently holds a *different* call's id (e.g. after an
+        # ambiguous-timeout retry placed a second real call). Fall back to the
+        # inquiry_id dynamic variable we send on every outbound call.
+        fallback_inquiry_id = _extract_inquiry_id(body)
+        if fallback_inquiry_id is not None:
+            obj = (
+                db.query(Inquiry)
+                .options(joinedload(Inquiry.manufacturer))
+                .filter(Inquiry.id == fallback_inquiry_id)
+                .first()
+            )
+            matched_via_inquiry_id = obj is not None
+
+    if not obj:
+        # Truly unattributable — persist instead of silently discarding.
+        db.add(
+            UnmatchedCallWebhook(
+                conversation_id=convo_id,
+                raw_payload=json.dumps(body),
+                reason="no_inquiry_id_in_payload" if _extract_inquiry_id(body) is None else "inquiry_id_not_found",
+            )
+        )
+        db.commit()
+        log.error("Unmatched ElevenLabs post-call webhook persisted for review (conversation_id=%s)", convo_id)
         return {"matched": False, "conversation_id": convo_id}
+
+    if matched_via_inquiry_id:
+        log.warning(
+            "Inquiry %s matched via inquiry_id fallback, not call_conversation_id "
+            "(stored=%s, incoming=%s) — backfilling",
+            obj.id, obj.call_conversation_id, convo_id,
+        )
+        obj.call_conversation_id = obj.call_conversation_id or convo_id
+    obj.call_outcome_unknown_until = None
 
     summary = _extract_summary(body)
     transcript = _extract_transcript(body)
@@ -112,8 +175,11 @@ async def elevenlabs_post_call(
         else:
             obj.call_provider_status = provider_status
 
-    # If submit_answer ran, status is already set; otherwise mark call_completed
-    if obj.status == "call_pending":
+    # If submit_answer ran, status is already set; otherwise mark call_completed.
+    # needs_attention is included so a webhook that arrives after
+    # _resolve_ambiguous_call_timeouts gave up waiting still lands the real result
+    # instead of leaving the inquiry stuck awaiting manual follow-up.
+    if obj.status in ("call_pending", "needs_attention"):
         obj.status = "call_completed"
 
     # Fallback calls (email_sent_at is set) are one-shot: the system already tried email

@@ -209,6 +209,9 @@ async def bulk_create_inquiries(
         # Every inquiry gets its own stagger slot in selection order.
         # No two inquiries share the same email_scheduled_for, even if they
         # target the same manufacturer or recipient address.
+        # First email: T+EMAIL_SCHEDULE_DELAY_MINUTES. Each subsequent email:
+        # +1 minute after the previous one (slot is 1-indexed, so slot 1 adds
+        # zero extra minutes, slot 2 adds one, etc.)
         bulk_base = _now()
         slot = 0
         for obj in list(created_objs):
@@ -229,7 +232,7 @@ async def bulk_create_inquiries(
                 continue
             slot += 1
             obj.status = "email_pending"
-            obj.email_scheduled_for = bulk_base + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES * slot)
+            obj.email_scheduled_for = bulk_base + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES + (slot - 1))
             dispatched += 1
         db.commit()
 

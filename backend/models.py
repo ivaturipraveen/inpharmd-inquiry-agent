@@ -113,6 +113,15 @@ class Inquiry(Base):
     max_retries = Column(Integer, nullable=False, default=2)
     next_retry_at = Column(DateTime(timezone=True), index=True)
 
+    # Set when an outbound-call HTTP request timed out with no response, so
+    # we cannot tell whether ElevenLabs actually placed the call. While this
+    # is non-null, the inquiry is unconditionally excluded from automatic
+    # fallback/retry call placement (never re-checked against "now" for
+    # eligibility) — only a webhook match or _resolve_ambiguous_call_timeouts
+    # clears it, so there's no time-based window where a second automatic
+    # call could sneak in before the row is moved to needs_attention.
+    call_outcome_unknown_until = Column(DateTime(timezone=True), nullable=True)
+
     # True for inquiries created by the Test Call flow. These must never enter
     # the production manufacturer workflow: no retries, no Slack, no legacy POST.
     is_test_call = Column(Boolean, nullable=False, default=False, server_default="false")
@@ -257,6 +266,20 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_login_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UnmatchedCallWebhook(Base):
+    """A post-call webhook from ElevenLabs that could not be matched to any
+    inquiry — neither by call_conversation_id nor by the inquiry_id dynamic
+    variable in the payload. Persisted so a valid answer is never silently
+    discarded; requires manual investigation to reconcile."""
+    __tablename__ = "unmatched_call_webhooks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    received_at = Column(DateTime(timezone=True), server_default=func.now())
+    conversation_id = Column(String(128), index=True)
+    raw_payload = Column(Text, nullable=False)
+    reason = Column(String(64), nullable=False)
 
 
 class DailymedCache(Base):
