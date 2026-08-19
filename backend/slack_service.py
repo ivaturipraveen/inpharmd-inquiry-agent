@@ -44,6 +44,102 @@ def _truncate(text: str, limit: int = _MAX_TEXT) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _post(payload: dict, *, log_context: str) -> bool:
+    """Shared webhook POST used by the bulk-batch notifications below."""
+    if not is_configured():
+        return False
+    webhook = os.getenv("SLACK_WEBHOOK_URL")
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(webhook, json=payload)
+            if resp.status_code >= 400:
+                log.warning("Slack post failed (%s): %s %s", log_context, resp.status_code, resp.text[:200])
+                return False
+    except Exception as e:
+        log.warning("Slack post error (%s): %s", log_context, e)
+        return False
+    log.info("Posted Slack %s", log_context)
+    return True
+
+
+def notify_bulk_scheduled(batch_id: str, items: list) -> bool:
+    """Post one Slack notification listing every inquiry scheduled together
+    in one bulk_create_inquiries email dispatch.
+
+    items: list of dicts with keys inquiry_id, manufacturer, medication_name
+    (optional), email_scheduled_for (datetime).
+    """
+    lines = []
+    for item in items:
+        scheduled = item.get("email_scheduled_for")
+        scheduled_str = scheduled.strftime("%Y-%m-%d %H:%M UTC") if scheduled else "unknown"
+        medication = (item.get("medication_name") or "").strip() or "—"
+        lines.append(
+            f"• *#{item['inquiry_id']}* — {item['manufacturer']} — {medication} — {scheduled_str}"
+        )
+    body = _truncate("\n".join(lines))
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "\U0001F4C5 Bulk email batch scheduled", "emoji": True},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*{len(items)} inquir{'y' if len(items) == 1 else 'ies'} scheduled:*\n{body}"},
+        },
+    ]
+    payload = {
+        "text": f"Bulk email batch scheduled ({len(items)} inquiries)",
+        "blocks": blocks,
+    }
+    return _post(payload, log_context=f"bulk-scheduled card for batch {batch_id}")
+
+
+def notify_bulk_completed(
+    batch_id: str, *, total_count: int, sent_count: int, cancelled_items: list
+) -> bool:
+    """Post one Slack notification summarizing a finished bulk email batch —
+    every inquiry has either sent or been manually cancelled (draft).
+
+    cancelled_items: list of dicts with keys inquiry_id, manufacturer,
+    medication_name (optional).
+    """
+    cancelled_count = len(cancelled_items)
+    summary = f"Bulk batch completed: {sent_count} of {total_count} emails sent successfully."
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "✅ Bulk email batch complete", "emoji": True},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": summary},
+        },
+    ]
+
+    if cancelled_count:
+        lines = [
+            f"• *#{item['inquiry_id']}* — {item['manufacturer']} — {(item.get('medication_name') or '').strip() or '—'}"
+            for item in cancelled_items
+        ]
+        body = _truncate("\n".join(lines))
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{cancelled_count} email{'s' if cancelled_count != 1 else ''} cancelled:*\n{body}",
+            },
+        })
+
+    payload = {
+        "text": f"{summary}" + (f" {cancelled_count} cancelled." if cancelled_count else ""),
+        "blocks": blocks,
+    }
+    return _post(payload, log_context=f"bulk-completed card for batch {batch_id}")
+
+
 def _requester_line(name: Optional[str], email: Optional[str]) -> str:
     name = (name or "").strip()
     email = (email or "").strip()

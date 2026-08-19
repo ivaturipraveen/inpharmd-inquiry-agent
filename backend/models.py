@@ -101,6 +101,13 @@ class Inquiry(Base):
     email_response_at = Column(DateTime(timezone=True))
     email_response = Column(Text)
 
+    # Groups inquiries created together by one bulk_create_inquiries call
+    # (email channel only) so a single Slack notification can be sent for the
+    # whole batch, both at schedule time and at completion. Distinct from
+    # source_inquiry_uuid, which groups by MUE source inquiry and can span
+    # many separate dispatch actions over time.
+    bulk_batch_id = Column(String(64), index=True, nullable=True)
+
     call_scheduled_for = Column(DateTime(timezone=True))
     call_completed_at = Column(DateTime(timezone=True))
     call_transcript = Column(Text)
@@ -266,6 +273,18 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_login_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BulkEmailBatch(Base):
+    """One row per bulk_create_inquiries email dispatch. Exists solely to
+    guarantee the batch-completion Slack notification fires exactly once —
+    completed_notified_at is only ever set immediately after a confirmed
+    successful Slack post, never before."""
+    __tablename__ = "bulk_email_batches"
+
+    batch_id = Column(String(64), primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_notified_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class UnmatchedCallWebhook(Base):

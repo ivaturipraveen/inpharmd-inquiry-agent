@@ -136,6 +136,10 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # tell whether ElevenLabs actually placed the call. While non-null, the inquiry is
         # excluded from automatic fallback/retry call placement.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_outcome_unknown_until TIMESTAMPTZ",
+        # Groups inquiries from one bulk_create_inquiries email dispatch for batch-level
+        # Slack notifications (schedule + completion).
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS bulk_batch_id VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS ix_inquiries_bulk_batch_id ON inquiries (bulk_batch_id)",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

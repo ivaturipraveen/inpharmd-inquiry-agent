@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -10,9 +11,10 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 import call_service
 import email_service
 import legacy_response_service
+import slack_service
 import summary_service
 from database import get_db
-from models import EmailReply, Inquiry, InquiryAttachment, ManufacturerContact, User
+from models import BulkEmailBatch, EmailReply, Inquiry, InquiryAttachment, ManufacturerContact, User
 from routers.auth import get_current_user
 from scheduler import EMAIL_SCHEDULE_DELAY_MINUTES
 from schemas import (
@@ -214,6 +216,8 @@ async def bulk_create_inquiries(
         # zero extra minutes, slot 2 adds one, etc.)
         bulk_base = _now()
         slot = 0
+        batch_id: Optional[str] = None
+        batch_items: list[dict] = []
         for obj in list(created_objs):
             # Idempotency: if this inquiry was already dispatched (e.g. client
             # retry after a network blip), skip it.
@@ -231,10 +235,41 @@ async def bulk_create_inquiries(
                 })
                 continue
             slot += 1
+            if batch_id is None:
+                # Only mint a batch id once we know at least one inquiry in
+                # this call is actually being scheduled.
+                batch_id = uuid.uuid4().hex
             obj.status = "email_pending"
             obj.email_scheduled_for = bulk_base + timedelta(minutes=EMAIL_SCHEDULE_DELAY_MINUTES + (slot - 1))
+            obj.bulk_batch_id = batch_id
+            batch_items.append({
+                "inquiry_id": obj.id,
+                "manufacturer": mfr.manufacturer,
+                "medication_name": obj.medication_name,
+                "email_scheduled_for": obj.email_scheduled_for,
+            })
             dispatched += 1
         db.commit()
+
+        if batch_id and batch_items:
+            # The inquiries above are already committed and successfully
+            # scheduled regardless of what happens next — a failure here must
+            # never turn a successful dispatch into a misleading API failure.
+            try:
+                db.add(BulkEmailBatch(batch_id=batch_id))
+                db.commit()
+            except Exception:
+                db.rollback()
+                log.exception(
+                    "Failed to create BulkEmailBatch tracking row for batch %s "
+                    "(%d inquiries already scheduled); the completion notification "
+                    "will not be possible for this batch",
+                    batch_id, len(batch_items),
+                )
+            try:
+                slack_service.notify_bulk_scheduled(batch_id, batch_items)
+            except Exception:
+                log.exception("Slack bulk-scheduled notification failed for batch %s", batch_id)
 
     elif channel == "call":
         # Group by phone number so multiple MUE rows resolving to the same

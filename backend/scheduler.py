@@ -19,8 +19,9 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
 
 import call_service
+import slack_service
 from database import SessionLocal
-from models import Inquiry, ManufacturerContact
+from models import BulkEmailBatch, Inquiry, ManufacturerContact
 
 log = logging.getLogger("inquiry.scheduler")
 
@@ -130,6 +131,8 @@ def _scan_and_send_pending_emails() -> None:
     """
     import email_service
 
+    _notify_completed_bulk_batches()
+
     db = SessionLocal()
     try:
         now = _now()
@@ -225,6 +228,124 @@ def _scan_and_send_pending_emails() -> None:
             db2.rollback()
         finally:
             db2.close()
+
+
+def _notify_completed_bulk_batches() -> None:
+    """One scheduler tick: for each bulk email batch not yet notified as
+    complete, check whether every inquiry in it has left email_pending —
+    i.e. each has reached a final state: email_sent, or draft (a manually
+    cancelled scheduled email via cancel_scheduled_email). A cancelled email
+    must not block completion forever; it's reported in the summary instead.
+    Sends the Slack completion notice and ONLY THEN marks it notified — a
+    Slack failure leaves the row eligible for the next tick instead of being
+    lost, and the row lock prevents a duplicate send."""
+    db = SessionLocal()
+    try:
+        # Self-heal: bulk_create_inquiries may have failed to persist the
+        # BulkEmailBatch tracking row for a batch that was otherwise scheduled
+        # successfully (see the try/except around that insert). Backfill any
+        # bulk_batch_id present on Inquiry rows with no corresponding
+        # BulkEmailBatch row, so a transient failure there doesn't
+        # permanently strand the batch without a completion notification.
+        existing_batch_ids = {b[0] for b in db.query(BulkEmailBatch.batch_id).all()}
+        referenced_batch_ids = {
+            b[0] for b in db.query(Inquiry.bulk_batch_id)
+            .filter(Inquiry.bulk_batch_id.isnot(None))
+            .distinct()
+            .all()
+        }
+        for missing_batch_id in referenced_batch_ids - existing_batch_ids:
+            try:
+                db.add(BulkEmailBatch(batch_id=missing_batch_id))
+                db.commit()
+                log.warning(
+                    "Backfilled missing BulkEmailBatch tracking row for batch %s",
+                    missing_batch_id,
+                )
+            except Exception:
+                db.rollback()
+                log.exception(
+                    "Failed to backfill BulkEmailBatch row for %s; will retry next tick",
+                    missing_batch_id,
+                )
+
+        batches = (
+            db.query(BulkEmailBatch)
+            .filter(BulkEmailBatch.completed_notified_at.is_(None))
+            .all()
+        )
+        for batch in batches:
+            still_pending = (
+                db.query(Inquiry)
+                .filter(
+                    Inquiry.bulk_batch_id == batch.batch_id,
+                    Inquiry.status == "email_pending",
+                )
+                .first()
+            )
+            if still_pending:
+                continue
+
+            members = (
+                db.query(Inquiry)
+                .options(joinedload(Inquiry.manufacturer))
+                .filter(Inquiry.bulk_batch_id == batch.batch_id)
+                .all()
+            )
+            if not members:
+                continue
+
+            cancelled = [m for m in members if m.status == "draft"]
+            sent_count = len(members) - len(cancelled)
+            cancelled_items = [
+                {
+                    "inquiry_id": m.id,
+                    "manufacturer": m.manufacturer.manufacturer if m.manufacturer else "Unknown",
+                    "medication_name": m.medication_name,
+                }
+                for m in cancelled
+            ]
+
+            db2 = SessionLocal()
+            try:
+                locked = (
+                    db2.query(BulkEmailBatch)
+                    .filter(
+                        BulkEmailBatch.batch_id == batch.batch_id,
+                        BulkEmailBatch.completed_notified_at.is_(None),
+                    )
+                    .with_for_update(skip_locked=True)
+                    .first()
+                )
+                if not locked:
+                    db2.close()
+                    continue
+
+                sent = slack_service.notify_bulk_completed(
+                    batch.batch_id,
+                    total_count=len(members),
+                    sent_count=sent_count,
+                    cancelled_items=cancelled_items,
+                )
+                if sent:
+                    locked.completed_notified_at = _now()
+                    db2.commit()
+                    log.info("Bulk batch %s marked complete-notified", batch.batch_id)
+                else:
+                    log.warning(
+                        "Bulk batch %s ready for completion notice but Slack post failed; will retry next tick",
+                        batch.batch_id,
+                    )
+                    db2.rollback()
+            except Exception:
+                log.exception("Bulk batch completion check failed for %s; rolling back", batch.batch_id)
+                db2.rollback()
+            finally:
+                db2.close()
+    except Exception:
+        log.exception("Bulk batch completion scan failed")
+    finally:
+        db.close()
 
 
 def _scan_and_trigger_fallback_calls() -> None:
