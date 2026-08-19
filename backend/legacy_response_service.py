@@ -351,8 +351,10 @@ def maybe_post_for_inquiry(
             db.rollback()
 
     # MUE inquiries with an Excel attachment also get the updated workbook
-    # written + uploaded + POSTed under mfr_s3_url. This is an independent
-    # idempotent op — failures here don't roll back the legacy POST above.
+    # written + uploaded + POSTed to the v2 /sheet endpoint under the
+    # `s3_url` form field (see excel_writeback_service). This is an
+    # independent idempotent op — failures here don't roll back the legacy
+    # POST above.
     try:
         # Local import to avoid circular module loading at boot.
         import excel_writeback_service
