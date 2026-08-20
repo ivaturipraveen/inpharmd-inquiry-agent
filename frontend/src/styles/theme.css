@@ -313,6 +313,17 @@ a:hover {
   border-color: var(--brand-orange);
   box-shadow: 0 0 0 3px var(--brand-orange-soft);
 }
+/* Specificity bump: .field select has (0,1,1) and would otherwise win over a
+   single .filter-select class (0,1,0), wiping out the chevron background
+   with .field select's plain one. Pairing with .field gives us (0,2,1). */
+.field .filter-select {
+  padding: 10px 30px 10px 12px;
+  background: var(--surface)
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'><path d='M1 1l4 4 4-4' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>")
+    no-repeat right 12px center;
+  appearance: none;
+  -webkit-appearance: none;
+}
 
 /* ---------- Buttons ---------- */
 .btn {
@@ -330,6 +341,11 @@ a:hover {
 }
 .btn:active {
   transform: translateY(1px);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
 }
 .btn-primary {
   background: var(--brand-orange);
@@ -2068,104 +2084,64 @@ pre.raw-json {
   color: var(--muted);
   margin-top: 6px;
 }
-.preset-row {
+/* Per-manufacturer Drug Name + fallback rows (multi-manufacturer Contact
+   Manufacturer form). Grid (not flex) so all three columns line up
+   identically across every row regardless of manufacturer-name length or
+   whether the third column holds a select or a "disabled" note. */
+.mfr-target-rows {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
 }
-.preset-chip {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  color: var(--ink-soft);
-  font-size: 12px;
+.mfr-target-header {
+  display: grid;
+  grid-template-columns: 260px 1fr 200px;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--line-soft);
+  border-radius: var(--radius);
+  font-size: 11px;
   font-weight: 600;
-  padding: 6px 12px;
-  border-radius: 999px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: all 0.12s ease;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
-.preset-chip:not(.preset-chip-active):hover {
-  border-color: var(--brand-orange);
-  color: var(--brand-orange);
+.mfr-target-row {
+  display: grid;
+  grid-template-columns: 260px 1fr 200px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--line-soft);
+  border-radius: var(--radius);
 }
-.preset-chip-active {
-  background: var(--brand-orange);
-  color: #fff;
-  border-color: var(--brand-orange);
+.mfr-target-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
 }
-.preset-chip-active:hover {
-  background: var(--brand-orange);
-  color: #fff;
-}
-.preset-num {
-  width: 90px;
+.mfr-target-drug-input {
+  width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   font-size: 13px;
   font-family: inherit;
+  background: var(--surface);
+  color: var(--ink);
 }
-.preset-num:focus {
+.mfr-target-drug-input:focus {
   outline: none;
   border-color: var(--brand-orange);
   box-shadow: 0 0 0 3px var(--brand-orange-soft);
 }
-
-.custom-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 10px 12px;
-  background: var(--line-soft);
-  border-radius: var(--radius);
-}
-.unit-toggle {
-  display: inline-flex;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 2px;
-}
-.unit-toggle button {
-  background: transparent;
-  border: none;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  cursor: pointer;
-  border-radius: 5px;
-  font-family: inherit;
-  transition: all 0.12s ease;
-}
-.unit-toggle button.unit-active {
-  background: var(--brand-orange);
-  color: #fff;
-}
-
-.fallback-mfr-notes {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-}
-.fallback-mfr-note {
-  display: flex;
-  gap: 6px;
-  font-size: 13px;
-}
-.fallback-mfr-name {
-  font-weight: 500;
-}
-.fallback-mfr-detail {
-  color: var(--ink-soft);
-}
-.fallback-mfr-note-muted .fallback-mfr-name,
-.fallback-mfr-note-muted .fallback-mfr-detail {
-  color: var(--muted);
+.mfr-target-fallback-select {
+  width: 100%;
+  min-width: 0;
 }
 
 .label-hint {

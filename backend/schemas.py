@@ -107,6 +107,7 @@ class InquiryBase(BaseModel):
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
     source_excel_row: Optional[int] = None
+    medication_name: Optional[str] = None
 
 
 class InquiryCreate(InquiryBase):
@@ -121,6 +122,10 @@ class BulkTarget(BaseModel):
     # Product details extracted from the MUE Excel for this row.
     medication_name: Optional[str] = None
     pi_storage_data: Optional[str] = None
+    # Per-target override of the batch-level fallback_after_hours below.
+    # None (the default) means "use the batch-level value" — this keeps the
+    # Excel/MUE bulk flow (which never sets this) unchanged.
+    fallback_after_hours: Optional[int] = None
     # DailyMed-enriched fields (populated by the extract-manufacturers endpoint).
     pi_link: Optional[str] = None
 
@@ -159,6 +164,7 @@ class InquiryUpdate(BaseModel):
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
     fallback_after_hours: Optional[int] = None
+    medication_name: Optional[str] = None
     status: Optional[InquiryStatus] = None
     email_response: Optional[str] = None
     call_transcript: Optional[str] = None
@@ -217,7 +223,6 @@ class InquiryOut(InquiryBase):
     legacy_response_posted_at: Optional[datetime] = None
     excel_response_url: Optional[str] = None
     excel_response_posted_at: Optional[datetime] = None
-    medication_name: Optional[str] = None
     pi_storage_data: Optional[str] = None
     pi_link: Optional[str] = None
     created_at: Optional[datetime] = None

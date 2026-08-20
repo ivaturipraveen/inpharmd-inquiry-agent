@@ -9,7 +9,7 @@ import {
 } from "react";
 import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
-import { fmtFallbackHours } from "../utils/fallback";
+import { DEFAULT_FALLBACK_HOURS, FALLBACK_PRESETS } from "../utils/fallback";
 
 interface Props {
   manufacturers: ManufacturerContact[];
@@ -26,17 +26,6 @@ interface Props {
   onClose: () => void;
   onSubmit: (data: InquiryFormData) => Promise<void>;
 }
-
-const FALLBACK_PRESETS = [
-  { hours: 0, label: "5 min (testing)" },
-  { hours: 12, label: "12 hours" },
-  { hours: 24, label: "24 hours" },
-  { hours: 48, label: "48 hours" },
-  { hours: 72, label: "3 days" },
-  { hours: 168, label: "7 days" },
-];
-
-const PRESET_HOURS = FALLBACK_PRESETS.map((p) => p.hours);
 
 const MAX_RESULTS = 50;
 
@@ -64,10 +53,12 @@ const InquiryForm: FC<Props> = ({
   const [question, setQuestion] = useState(defaultQuestion ?? "");
   const [requesterName, setRequesterName] = useState("Leah");
   const [requesterEmail, setRequesterEmail] = useState("druginfo@inpharmd.com");
-  const [fallbackHours, setFallbackHours] = useState(24);
-  const [customMode, setCustomMode] = useState(false);
-  const [customValue, setCustomValue] = useState(24);
-  const [customUnit, setCustomUnit] = useState<"hours" | "days">("hours");
+  // Single source of truth for every selected manufacturer's own Drug Name +
+  // fallback time — used for both the 1-manufacturer and multi-manufacturer
+  // cases, so there's no separate structure to keep in sync.
+  const [targetData, setTargetData] = useState<
+    Record<number, { medicationName: string; fallbackHours: number }>
+  >({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
@@ -80,11 +71,46 @@ const InquiryForm: FC<Props> = ({
     }
   }, [defaultManufacturerId]);
 
+  // Keep targetData in lockstep with manufacturerIds: seed a default entry
+  // (empty Drug Name, 24h fallback — never blank) for every newly added id,
+  // drop entries for removed ids, keep existing entries untouched otherwise.
+  useEffect(() => {
+    setTargetData(prev => {
+      const next: typeof prev = {};
+      for (const id of manufacturerIds) {
+        next[id] = prev[id] ?? { medicationName: "", fallbackHours: DEFAULT_FALLBACK_HOURS };
+      }
+      return next;
+    });
+  }, [manufacturerIds]);
+
+  const updateTarget = (
+    id: number,
+    patch: Partial<{ medicationName: string; fallbackHours: number }>
+  ) => {
+    setTargetData(prev => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] ?? { medicationName: "", fallbackHours: DEFAULT_FALLBACK_HOURS }),
+        ...patch,
+      },
+    }));
+  };
+
   const selectedMfrs = useMemo(
     () => manufacturerIds
       .map(id => manufacturers.find(m => m.id === id))
       .filter((m): m is ManufacturerContact => m != null),
     [manufacturers, manufacturerIds]
+  );
+
+  // A Drug Name is required for every selected manufacturer before the
+  // inquiry can be created — used both to disable the submit button and to
+  // validate on submit (a disabled submit button alone doesn't stop implicit
+  // form submission via Enter).
+  const missingDrugNameFor = useMemo(
+    () => selectedMfrs.filter(m => !(targetData[m.id]?.medicationName ?? "").trim()),
+    [selectedMfrs, targetData]
   );
 
   // Per-manufacturer fallback buckets — used to show independent status for
@@ -174,6 +200,14 @@ const InquiryForm: FC<Props> = ({
       setError("Pick at least one manufacturer.");
       return;
     }
+    if (missingDrugNameFor.length > 0) {
+      setError(
+        missingDrugNameFor.length === 1
+          ? `Enter a Drug Name for ${missingDrugNameFor[0].manufacturer}.`
+          : `Enter a Drug Name for every manufacturer (missing: ${missingDrugNameFor.map(m => m.manufacturer).join(", ")}).`
+      );
+      return;
+    }
     if (!subject.trim()) {
       setError("Subject is required.");
       return;
@@ -190,12 +224,15 @@ const InquiryForm: FC<Props> = ({
     setError(null);
     try {
       await onSubmit({
-        manufacturer_ids: manufacturerIds,
+        targets: manufacturerIds.map(id => ({
+          manufacturer_id: id,
+          medication_name: (targetData[id]?.medicationName ?? "").trim() || null,
+          fallback_after_hours: targetData[id]?.fallbackHours ?? DEFAULT_FALLBACK_HOURS,
+        })),
         subject: subject.trim(),
         question: question.trim(),
         requester_name: requesterName.trim() || null,
         requester_email: requesterEmail.trim() || null,
-        fallback_after_hours: fallbackHours,
       });
     } catch (err: any) {
       setError(err?.message ?? "Failed to save inquiry.");
@@ -333,6 +370,79 @@ const InquiryForm: FC<Props> = ({
                 )}
               </div>
 
+              {selectedMfrs.length === 1 && (
+                <div className="field full">
+                  <label>
+                    Drug Name<span className="req">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={targetData[selectedMfrs[0].id]?.medicationName ?? ""}
+                    onChange={(e) => updateTarget(selectedMfrs[0].id, { medicationName: e.target.value })}
+                    placeholder="e.g. Drug X 500mg tablets"
+                    required
+                  />
+                </div>
+              )}
+
+              {selectedMfrs.length > 1 && (
+                <div className="field full">
+                  <label>
+                    Per-manufacturer details<span className="req">*</span>
+                  </label>
+                  <div className="mfr-target-rows">
+                    <div className="mfr-target-header">
+                      <span>Manufacturer</span>
+                      <span>Drug Name (required)</span>
+                      <span>Fallback after</span>
+                    </div>
+                    {selectedMfrs.map((m) => {
+                      const eligible = m.fallback_call_enabled && !!m.mi_phone;
+                      const data = targetData[m.id] ?? {
+                        medicationName: "",
+                        fallbackHours: DEFAULT_FALLBACK_HOURS,
+                      };
+                      return (
+                        <div key={m.id} className="mfr-target-row">
+                          <span className="mfr-target-row-name" title={m.manufacturer}>{m.manufacturer}</span>
+                          <input
+                            type="text"
+                            className="mfr-target-drug-input"
+                            value={data.medicationName}
+                            onChange={(e) => updateTarget(m.id, { medicationName: e.target.value })}
+                            placeholder="Drug name (required)"
+                          />
+                          {eligible ? (
+                            <select
+                              value={data.fallbackHours}
+                              onChange={(e) =>
+                                updateTarget(m.id, { fallbackHours: Number(e.target.value) })
+                              }
+                              className="filter-select mfr-target-fallback-select"
+                            >
+                              {FALLBACK_PRESETS.map((p) => (
+                                <option key={p.hours} value={p.hours}>{p.label}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span
+                              className="cell-muted"
+                              title={
+                                !m.fallback_call_enabled
+                                  ? "Fallback calling disabled"
+                                  : "No MI phone on file"
+                              }
+                            >
+                              Disabled
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="field full">
                 <label>
                   Subject<span className="req">*</span>
@@ -383,126 +493,39 @@ const InquiryForm: FC<Props> = ({
                 />
               </div>
 
-              <div className="field full">
-                <label>If no email response within</label>
-                {fallbackEligible.length > 0 && (
-                  <>
-                    <div className="preset-row">
-                      {FALLBACK_PRESETS.map((p) => (
-                        <button
-                          type="button"
-                          key={p.hours}
-                          className={`preset-chip ${
-                            !customMode && fallbackHours === p.hours
-                              ? "preset-chip-active"
-                              : ""
-                          }`}
-                          onClick={() => {
-                            setCustomMode(false);
-                            setFallbackHours(p.hours);
-                          }}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        className={`preset-chip ${
-                          customMode ? "preset-chip-active" : ""
-                        }`}
-                        onClick={() => {
-                          setCustomMode(true);
-                          const initial =
-                            !PRESET_HOURS.includes(fallbackHours)
-                              ? fallbackHours
-                              : 24;
-                          setCustomValue(
-                            customUnit === "days" ? Math.ceil(initial / 24) : initial
-                          );
-                          setFallbackHours(initial);
-                        }}
+              {selectedMfrs.length === 1 && (() => {
+                const soleId = selectedMfrs[0].id;
+                const soleFallbackHours = targetData[soleId]?.fallbackHours ?? DEFAULT_FALLBACK_HOURS;
+                const setSoleFallbackHours = (hours: number) => updateTarget(soleId, { fallbackHours: hours });
+                return (
+                  <div className="field full">
+                    <label>If no email response within</label>
+                    {fallbackEligible.length > 0 && (
+                      <select
+                        value={soleFallbackHours}
+                        onChange={(e) => setSoleFallbackHours(Number(e.target.value))}
+                        className="filter-select"
                       >
-                        Custom…
-                      </button>
-                    </div>
-                    {customMode && (
-                      <div className="custom-row">
-                        <input
-                          type="number"
-                          min={1}
-                          max={customUnit === "days" ? 30 : 720}
-                          value={customValue}
-                          onChange={(e) => {
-                            const v = Math.max(1, Number(e.target.value) || 1);
-                            setCustomValue(v);
-                            setFallbackHours(customUnit === "days" ? v * 24 : v);
-                          }}
-                          className="preset-num"
-                        />
-                        <div className="unit-toggle">
-                          <button
-                            type="button"
-                            className={customUnit === "hours" ? "unit-active" : ""}
-                            onClick={() => {
-                              setCustomUnit("hours");
-                              setFallbackHours(customValue);
-                            }}
-                          >
-                            hours
-                          </button>
-                          <button
-                            type="button"
-                            className={customUnit === "days" ? "unit-active" : ""}
-                            onClick={() => {
-                              setCustomUnit("days");
-                              setFallbackHours(customValue * 24);
-                            }}
-                          >
-                            days
-                          </button>
-                        </div>
+                        {FALLBACK_PRESETS.map((p) => (
+                          <option key={p.hours} value={p.hours}>{p.label}</option>
+                        ))}
+                      </select>
+                    )}
+                    {fallbackEligible.length === 0 && (
+                      <div className="cell-muted">
+                        {fallbackNoCallMfrs.length > 0
+                          ? "Fallback calling is disabled for this manufacturer."
+                          : "Fallback unavailable — no MI phone number on file."}
                       </div>
                     )}
-                  </>
-                )}
-                {selectedMfrs.length > 1 ? (
-                  // Multiple manufacturers — show per-manufacturer status
-                  <div className="fallback-mfr-notes">
-                    {fallbackEligible.map(m => (
-                      <div key={m.id} className="fallback-mfr-note">
-                        <span className="fallback-mfr-name">{m.manufacturer}</span>
-                        <span className="fallback-mfr-detail">— fallback call after {fmtFallbackHours(fallbackHours)}</span>
-                      </div>
-                    ))}
-                    {fallbackNoCallMfrs.map(m => (
-                      <div key={m.id} className="fallback-mfr-note fallback-mfr-note-muted">
-                        <span className="fallback-mfr-name">{m.manufacturer}</span>
-                        <span className="fallback-mfr-detail">— Fallback calling is disabled.</span>
-                      </div>
-                    ))}
-                    {fallbackNoPhoneMfrs.map(m => (
-                      <div key={m.id} className="fallback-mfr-note fallback-mfr-note-muted">
-                        <span className="fallback-mfr-name">{m.manufacturer}</span>
-                        <span className="fallback-mfr-detail">— No MI phone number on file.</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  // Single manufacturer — show message if chips are hidden
-                  fallbackEligible.length === 0 && selectedMfrs.length === 1 && (
-                    <div className="cell-muted">
-                      {fallbackNoCallMfrs.length > 0
-                        ? "Fallback calling is disabled for this manufacturer."
-                        : "Fallback unavailable — no MI phone number on file."}
+                    <div className="hint">
+                      {fallbackEligible.length > 0
+                        ? "After this window passes without an email reply, eligible manufacturers become eligible for an automated voice-agent fallback call."
+                        : "No selected manufacturers will receive an automated fallback call if the email goes unanswered."}
                     </div>
-                  )
-                )}
-                <div className="hint">
-                  {fallbackEligible.length > 0
-                    ? "After this window passes without an email reply, eligible manufacturers become eligible for an automated voice-agent fallback call."
-                    : "No selected manufacturers will receive an automated fallback call if the email goes unanswered."}
-                </div>
-              </div>
+                  </div>
+                );
+              })()}
             </div>
 
         <div className="form-foot">
@@ -521,7 +544,12 @@ const InquiryForm: FC<Props> = ({
         >
           Cancel
         </button>
-        <button type="submit" className="btn btn-primary" disabled={submitting}>
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={submitting || manufacturerIds.length === 0 || missingDrugNameFor.length > 0}
+          title={missingDrugNameFor.length > 0 ? "Enter a Drug Name for every selected manufacturer" : undefined}
+        >
           {submitting ? "Saving…" : submitLabel ?? "Create Inquiry"}
         </button>
       </div>

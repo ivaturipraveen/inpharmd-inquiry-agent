@@ -5,6 +5,10 @@ import type { ManufacturerContact } from "../types";
 interface Props {
   manufacturers: ManufacturerContact[];
   fallbackHours: number;
+  /** True when the selected manufacturers' fallback times are not all the
+   *  same — shows a generic "configured individually" message instead of a
+   *  single number that would otherwise misrepresent the other values. */
+  fallbackHoursVaries?: boolean;
   /** Shown in the modal header when the inquiry already exists (e.g. "Inquiry #5 created").
    *  Omit for the deferred-create flow where no inquiry exists yet. */
   inquiryLabel?: string;
@@ -31,6 +35,7 @@ const digitsOnly = (s: string) => s.replace(/\D+/g, "");
 const ChannelChooser: FC<Props> = ({
   manufacturers,
   fallbackHours,
+  fallbackHoursVaries = false,
   inquiryLabel,
   onSendEmail,
   onCallAgent,
@@ -199,8 +204,10 @@ const ChannelChooser: FC<Props> = ({
                     {emailCapableCount === 1 ? "manufacturer" : "manufacturers"} will be emailed
                     {emailDraftCount > 0 && (
                       <> · <strong>{emailDraftCount}</strong> will become drafts (no email on file)</>
-                    )}. Voice agent will call any that don't reply within{" "}
-                    <strong>{fallbackHours}h</strong>.
+                    )}. Voice agent will call any that don't reply
+                    {fallbackHoursVaries
+                      ? " — fallback times are configured individually per eligible manufacturer."
+                      : <> within <strong>{fallbackHours}h</strong>.</>}
                   </>
                 ) : emailTarget ? (
                   <>
@@ -217,7 +224,10 @@ const ChannelChooser: FC<Props> = ({
                   <span>SLA</span> {isMulti ? "—" : (m?.typical_response_sla ?? "—")}
                 </li>
                 <li>
-                  <span>Fallback</span> Agent call after {fallbackHours}h
+                  <span>Fallback</span>{" "}
+                  {isMulti && fallbackHoursVaries
+                    ? "Configured individually per eligible manufacturer"
+                    : `Agent call after ${fallbackHours}h`}
                 </li>
               </ul>
               <button

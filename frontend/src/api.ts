@@ -226,6 +226,7 @@ export const api = {
         medication_name?: string | null;
         pi_storage_data?: string | null;
         pi_link?: string | null;
+        fallback_after_hours?: number;
       }[];
       subject: string;
       question: string;

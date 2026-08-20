@@ -5,7 +5,7 @@ import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
-import { fmtFallbackHours } from "../utils/fallback";
+import { fmtFallbackHours, FALLBACK_PRESETS } from "../utils/fallback";
 import type {
   Inquiry,
   InquiryInput,
@@ -306,14 +306,16 @@ export default function ContactManufacturerPage() {
 
   const handleSingleCreate = useCallback(
     async (data: InquiryFormData) => {
-      if (data.manufacturer_ids.length === 1) {
+      if (data.targets.length === 1) {
+        const t = data.targets[0];
         const payload: InquiryInput = {
-          manufacturer_id: data.manufacturer_ids[0],
+          manufacturer_id: t.manufacturer_id,
           subject: data.subject,
           question: data.question,
           requester_name: data.requester_name,
           requester_email: data.requester_email,
-          fallback_after_hours: data.fallback_after_hours,
+          fallback_after_hours: t.fallback_after_hours,
+          medication_name: t.medication_name,
           ...(ctx?.uuid ? { source_inquiry_uuid: ctx.uuid } : {}),
         };
         setPendingInquiryInput(payload);
@@ -1049,12 +1051,9 @@ export default function ContactManufacturerPage() {
                       value={fallbackHours}
                       onChange={(e) => setFallbackHours(Number(e.target.value))}
                     >
-                      <option value={0}>5 min (testing)</option>
-                      <option value={12}>12 hours</option>
-                      <option value={24}>24 hours</option>
-                      <option value={48}>48 hours</option>
-                      <option value={72}>3 days</option>
-                      <option value={168}>7 days</option>
+                      {FALLBACK_PRESETS.map((p) => (
+                        <option key={p.hours} value={p.hours}>{p.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -1355,16 +1354,31 @@ export default function ContactManufacturerPage() {
       })()}
 
       {pendingBulkManualInput && (() => {
-        const mfrs = pendingBulkManualInput.manufacturer_ids
-          .map(id => mfrById[id])
+        const mfrs = pendingBulkManualInput.targets
+          .map(t => mfrById[t.manufacturer_id])
           .filter((x): x is ManufacturerContact => x != null);
+
+        // Only manufacturers where a fallback call could actually happen are
+        // "applicable" for this comparison — matches InquiryForm's own
+        // fallback-eligibility check (fallback_call_enabled && mi_phone).
+        const eligibleFallbackHours = pendingBulkManualInput.targets
+          .filter(t => {
+            const mfr = mfrById[t.manufacturer_id];
+            return !!mfr?.fallback_call_enabled && !!mfr?.mi_phone;
+          })
+          .map(t => t.fallback_after_hours);
+        const fallbackHoursVaries = new Set(eligibleFallbackHours).size > 1;
 
         const bulkDispatch = async (channel: "email" | "call" | "none") => {
           const result = await api.inquiries.bulkCreate({
-            targets: pendingBulkManualInput.manufacturer_ids.map(id => ({ manufacturer_id: id })),
+            // Each target already carries its own medication_name and
+            // fallback_after_hours — passed straight through, no remapping.
+            targets: pendingBulkManualInput.targets,
             subject: pendingBulkManualInput.subject,
             question: pendingBulkManualInput.question,
-            fallback_after_hours: pendingBulkManualInput.fallback_after_hours,
+            // Batch-level default only; every target above supplies its own
+            // explicit value, so this is effectively unused here.
+            fallback_after_hours: pendingBulkManualInput.targets[0]?.fallback_after_hours ?? 24,
             source_inquiry_uuid: ctx.uuid ?? null,
             source_excel_url: null,
             source_excel_sheet: null,
@@ -1392,7 +1406,8 @@ export default function ContactManufacturerPage() {
         return (
           <ChannelChooser
             manufacturers={mfrs}
-            fallbackHours={pendingBulkManualInput.fallback_after_hours}
+            fallbackHours={pendingBulkManualInput.targets[0]?.fallback_after_hours ?? 24}
+            fallbackHoursVaries={fallbackHoursVaries}
             onClose={closePendingBulk}
             onSendEmail={() => bulkDispatch("email")}
             onCallAgent={() => bulkDispatch("call")}

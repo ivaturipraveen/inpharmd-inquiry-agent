@@ -188,7 +188,14 @@ async def bulk_create_inquiries(
             question=payload.question,
             requester_name=requester_name,
             requester_email=requester_email,
-            fallback_after_hours=payload.fallback_after_hours,
+            # Per-target override wins when provided (manual multi-manufacturer
+            # flow); the Excel/MUE flow never sets this, so it always falls
+            # back to the batch-level value — unchanged for that flow.
+            fallback_after_hours=(
+                tgt.fallback_after_hours
+                if tgt.fallback_after_hours is not None
+                else payload.fallback_after_hours
+            ),
             source_inquiry_uuid=payload.source_inquiry_uuid,
             source_excel_url=payload.source_excel_url,
             source_excel_sheet=payload.source_excel_sheet,

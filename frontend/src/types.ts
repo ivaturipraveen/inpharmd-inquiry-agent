@@ -118,20 +118,30 @@ export interface InquiryInput {
   requester_name?: string | null;
   requester_email?: string | null;
   fallback_after_hours: number;
+  medication_name?: string | null;
   // When forwarded from the InpharmD Inquiries tab, the original platform
   // UUID — used to POST the response back to the legacy endpoint once a
   // manufacturer answers (by email or voice).
   source_inquiry_uuid?: string | null;
 }
 
-// Shape emitted by InquiryForm. Carries manufacturer_ids (array) so the
-// form supports multi-select. ContactManufacturerPage maps this to either
-// InquiryInput (single) or a bulkCreate payload (multiple).
+// One selected manufacturer's own values — mirrors the backend BulkTarget
+// shape directly so it can be passed straight into bulkCreate's targets
+// without any remapping.
+export interface InquiryFormTarget {
+  manufacturer_id: number;
+  medication_name: string | null;
+  fallback_after_hours: number;
+}
+
+// Shape emitted by InquiryForm. `targets` is the single source of truth for
+// manufacturer-specific data — always populated, length 1 for a single
+// manufacturer, length N for multiple. ContactManufacturerPage maps this to
+// either InquiryInput (single) or a bulkCreate payload (multiple).
 export interface InquiryFormData {
-  manufacturer_ids: number[];
+  targets: InquiryFormTarget[];
   subject: string;
   question: string;
   requester_name?: string | null;
   requester_email?: string | null;
-  fallback_after_hours: number;
 }

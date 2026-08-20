@@ -1,3 +1,19 @@
+// Single canonical list of fallback-time choices. Every UI that lets a user
+// pick a fallback duration (single-manufacturer Contact Manufacturer form,
+// per-manufacturer rows in the same form, the Excel/MUE bulk form) must
+// render from this list rather than defining its own options, so the set of
+// choices stays identical everywhere in the app.
+export const FALLBACK_PRESETS: { hours: number; label: string }[] = [
+  { hours: 0, label: "5 min (testing)" },
+  { hours: 12, label: "12 hours" },
+  { hours: 24, label: "24 hours" },
+  { hours: 48, label: "48 hours" },
+  { hours: 72, label: "3 days" },
+  { hours: 168, label: "7 days" },
+];
+
+export const DEFAULT_FALLBACK_HOURS = 24;
+
 /** 0 is a sentinel value meaning "5 minutes" (for manual testing). */
 export function fmtFallbackHours(h: number): string {
   if (h === 0) return "5 min";
