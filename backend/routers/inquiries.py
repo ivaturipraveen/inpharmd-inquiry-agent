@@ -589,6 +589,9 @@ def send_now(
     return _get_or_404(db, inquiry_id, current_user)
 
 
+_MANUAL_SMTP_ID = "__manual__"  # sentinel for manually-logged email responses
+
+
 @router.post("/{inquiry_id}/record-email-response", response_model=InquiryOut)
 def record_email_response(
     inquiry_id: int,
@@ -596,16 +599,122 @@ def record_email_response(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    obj = _get_or_404(db, inquiry_id, current_user)
-    obj.status = "email_responded"
-    obj.email_response = payload.response
-    obj.email_response_at = _now()
-    obj.final_answer = payload.response
-    db.commit()
-    legacy_response_service.maybe_post_for_inquiry(
-        db, obj, f"manual-email:{obj.id}:{obj.email_response_at.isoformat()}",
-        direct_response_text=payload.response,
+    # Ownership check + 404 guard.
+    _get_or_404(db, inquiry_id, current_user)
+
+    # Acquire row-level lock and refresh attributes from DB — populate_existing()
+    # ensures the in-memory object reflects the current DB state even if the
+    # session already held a pre-lock snapshot from _get_or_404 above.
+    # Mirrors cancel_scheduled_email, send_now, trigger_call in this file.
+    obj = (
+        db.query(Inquiry)
+        .options(joinedload(Inquiry.manufacturer))
+        .populate_existing()
+        .filter(Inquiry.id == inquiry_id)
+        .with_for_update()
+        .first()
     )
+
+    if obj.status == "closed":
+        raise HTTPException(status_code=409, detail="Inquiry is closed")
+
+    new_text = (payload.response or "").strip()
+
+    # Find the single manual EmailReply for this inquiry, identified by the
+    # "__manual__" sentinel in smtp_message_id. Using a non-null sentinel (rather
+    # than NULL) prevents collision with rare real SendGrid replies that arrive
+    # without a Message-ID header, and lets the existing partial unique index
+    # on (inquiry_id, smtp_message_id) enforce one manual reply per inquiry.
+    existing_manual = (
+        db.query(EmailReply)
+        .filter(
+            EmailReply.inquiry_id == inquiry_id,
+            EmailReply.direction == "inbound",
+            EmailReply.smtp_message_id == _MANUAL_SMTP_ID,
+        )
+        .first()
+    )
+
+    text_changed = (
+        new_text != (existing_manual.body or "").strip()
+        if existing_manual else True
+    )
+
+    now = _now()
+    if existing_manual:
+        existing_manual.body = new_text
+        existing_manual.sent_at = now
+        email_reply = existing_manual
+    else:
+        email_reply = EmailReply(
+            inquiry_id=inquiry_id,
+            direction="inbound",
+            sender_email=None,
+            body=new_text,
+            sent_at=now,
+            graph_message_id=None,
+            smtp_message_id=_MANUAL_SMTP_ID,
+        )
+        db.add(email_reply)
+        db.flush()  # populate email_reply.id before using it as event_key
+
+    # Update inquiry scalar fields — mirrors first-reply handling in real paths.
+    obj.status = "email_responded"
+    obj.email_response = new_text
+    obj.email_response_at = now
+    obj.final_answer = new_text
+    obj.next_retry_at = None
+    obj.call_scheduled_for = None
+
+    if text_changed:
+        # Clear the legacy POST guard only when it already points at this exact
+        # reply's event_key. If it points to a different event (real email, call)
+        # the new event_key already differs and maybe_post_for_inquiry fires
+        # without needing the guard cleared.
+        if obj.legacy_last_event_key == f"email:{email_reply.id}":
+            obj.legacy_last_event_key = None
+        # Allow Excel writeback to re-run with the corrected text.
+        # _pick_latest_excel_url always fetches the newest sibling's combined
+        # file, so only this inquiry's row is overwritten; siblings are safe.
+        obj.excel_response_posted_at = None
+
+    db.commit()
+
+    # Legacy POST via the email path — body read from EmailReply row,
+    # attachments scoped to reply_id (empty for manual entries, no files).
+    try:
+        legacy_response_service.maybe_post_for_inquiry(
+            db, obj, f"email:{email_reply.id}",
+            email_reply_id=email_reply.id,
+        )
+    except Exception:
+        log.exception(
+            "Legacy POST failed for inquiry %s (manual email response stored)",
+            inquiry_id,
+        )
+
+    # Slack — only when text changed to avoid notification spam on identical re-saves.
+    if text_changed:
+        try:
+            mfr = obj.manufacturer
+            mfr_name = mfr.manufacturer if mfr else "the manufacturer"
+            if slack_service.is_configured():
+                slack_service.notify_reply(
+                    inquiry_id=obj.id,
+                    manufacturer=mfr_name,
+                    subject=obj.subject,
+                    question=obj.question,
+                    answer=obj.final_answer or new_text,
+                    requester_name=obj.requester_name,
+                    requester_email=obj.requester_email,
+                    sender_email=None,
+                )
+        except Exception:
+            log.exception(
+                "Slack notify failed for inquiry %s (manual email response)",
+                inquiry_id,
+            )
+
     return _get_or_404(db, inquiry_id, current_user)
 
 

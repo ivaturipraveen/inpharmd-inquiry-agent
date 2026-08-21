@@ -228,9 +228,9 @@ def maybe_post_for_inquiry(
       - email_reply_id: the specific EmailReply whose exact `.body` and
         reply-scoped InquiryAttachment rows (reply_id == email_reply_id)
         should be sent. Used by every email-channel caller.
-      - direct_response_text: the exact response text for a call event (or
-        the reply-row-less manual-email endpoint). Call events NEVER carry
-        attachments — no InquiryAttachment query, no pdf_url fallback, ever.
+      - direct_response_text: the exact response text for a call event.
+        Call events NEVER carry attachments — no InquiryAttachment query,
+        no pdf_url fallback, ever.
 
     There is no fallback to `final_answer`/`email_response`/`call_summary`
     inside this function — the caller is always the authoritative source
