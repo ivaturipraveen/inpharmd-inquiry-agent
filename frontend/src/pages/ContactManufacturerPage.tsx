@@ -324,6 +324,52 @@ export default function ContactManufacturerPage() {
     );
   }, [contactedMfrMap, claimedContactedIds]);
 
+  // Single source of truth for the "Already contacted" list — merges rows
+  // matched in the current extraction with unclaimed contacted inquiries
+  // into ONE deduplicated-by-manufacturer list, so the page never renders
+  // two separately-headed "Already contacted" sections for the same MUE,
+  // and the same manufacturer can never appear twice even if it happens to
+  // match a row in more than one attachment.
+  type ContactedDisplayItem = {
+    key: string;
+    name: string;
+    medication?: string | null;
+    piStorage?: string | null;
+    inq: Inquiry;
+  };
+  const allContactedDisplayItems = useMemo((): ContactedDisplayItem[] => {
+    const byMfrId = new Map<number, ContactedDisplayItem>();
+    for (const s of attachmentExtractions) {
+      s.result?.rows.forEach((r) => {
+        if (r.matched_id != null && !byMfrId.has(r.matched_id)) {
+          const inq = contactedMfrMap.get(r.matched_id);
+          if (inq) {
+            byMfrId.set(r.matched_id, {
+              key: `mfr-${r.matched_id}`,
+              name: r.matched_name || r.raw_name,
+              medication: r.medication_name,
+              piStorage: r.pi_storage,
+              inq,
+            });
+          }
+        }
+      });
+    }
+    for (const inq of unclaimedContactedInquiries) {
+      const mfrId = inq.manufacturer_id as number;
+      if (byMfrId.has(mfrId)) continue;
+      const mfr = mfrById[mfrId];
+      byMfrId.set(mfrId, {
+        key: `mfr-${mfrId}`,
+        name: mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? `Manufacturer #${mfrId}`,
+        medication: inq.medication_name,
+        piStorage: inq.pi_storage_data,
+        inq,
+      });
+    }
+    return Array.from(byMfrId.values());
+  }, [attachmentExtractions, contactedMfrMap, unclaimedContactedInquiries, mfrById]);
+
   // Remove contacted manufacturers from the current selection whenever the
   // map updates (e.g. after the fetch completes post-extraction).
   useEffect(() => {
@@ -797,9 +843,9 @@ export default function ContactManufacturerPage() {
                         </div>
                       )}
                     </div>
-                    <div className="contacted-row-status">
+                    <div className="contacted-row-status" style={{ alignItems: "flex-start" }}>
                       {isScheduled ? (
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                           <span className="pill pill-green">Scheduled</span>
                           <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
                             {new Date(inq.email_scheduled_for!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -1000,7 +1046,7 @@ export default function ContactManufacturerPage() {
                                         return (
                                           <div className="bulk-row-mfr-meta" style={{ marginTop: 4 }}>
                                             {eligible ? (
-                                              <span className="bulk-row-fallback-control">
+                                              <span>
                                                 <span className="cell-muted">Fallback call after</span>
                                                 <select
                                                   className="filter-select mfr-target-fallback-select"
@@ -1041,50 +1087,6 @@ export default function ContactManufacturerPage() {
                                 );
                               })}
                             </div>
-
-                            {alreadyContactedRows.length > 0 && (
-                              <div className="contacted-section">
-                                <div className="contacted-section-header">
-                                  Already contacted ({alreadyContactedRows.length})
-                                </div>
-                                {alreadyContactedRows.map((r) => {
-                                  const inq = contactedMfrMap.get(r.matched_id!)!;
-                                  const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
-                                  return (
-                                    <div key={r.row_index} className="contacted-row">
-                                      <div className="contacted-row-main">
-                                        <span className="contacted-row-name">
-                                          {r.matched_name || r.raw_name}
-                                        </span>
-                                        {(r.medication_name || r.pi_storage) && (
-                                          <div className="bulk-row-product-info" style={{ marginTop: 2 }}>
-                                            {r.medication_name && (
-                                              <span className="bulk-row-product-pill">💊 {r.medication_name}</span>
-                                            )}
-                                            {r.pi_storage && (
-                                              <span className="bulk-row-product-pill">🌡 {r.pi_storage}</span>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                      <div className="contacted-row-status">
-                                        {isScheduled ? (
-                                          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                                            <span className="pill pill-green">Scheduled</span>
-                                            <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
-                                              {new Date(inq.email_scheduled_for!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                            </span>
-                                          </div>
-                                        ) : (
-                                          <StatusBadge status={inq.status} />
-                                        )}
-                                        <span className="contacted-row-id">#{inq.id}</span>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
                           </>
                         );
                       })()}
@@ -1092,38 +1094,38 @@ export default function ContactManufacturerPage() {
                   );
                 })}
 
-                {/* Already-contacted manufacturers with no matching row in
-                    this extraction (e.g. contacted via the manual flow, or
-                    no longer textually matching this Excel) — without this,
-                    they'd disappear entirely once matching completes. */}
-                {unclaimedContactedInquiries.length > 0 && (
+                {/* Single "Already contacted" section for the whole MUE —
+                    merges rows matched in this extraction with contacted
+                    manufacturers not represented by any row (manual flow,
+                    or no longer textually matching this Excel), deduplicated
+                    by manufacturer so nothing shows twice and nothing
+                    silently vanishes once matching completes. */}
+                {allContactedDisplayItems.length > 0 && (
                   <div className="contacted-section" style={{ marginTop: attachmentExtractions.some(x => x.result) ? "24px" : "0" }}>
                     <div className="contacted-section-header">
-                      Already contacted ({unclaimedContactedInquiries.length})
+                      Already contacted ({allContactedDisplayItems.length})
                     </div>
-                    {unclaimedContactedInquiries.map((inq) => {
-                      const mfr = inq.manufacturer_id != null ? mfrById[inq.manufacturer_id] : undefined;
+                    {allContactedDisplayItems.map((item) => {
+                      const inq = item.inq;
                       const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                       return (
-                        <div key={inq.id} className="contacted-row">
+                        <div key={item.key} className="contacted-row">
                           <div className="contacted-row-main">
-                            <span className="contacted-row-name">
-                              {mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? (inq.test_call_phone ? `Test Call — ${inq.test_call_phone}` : `Manufacturer #${inq.manufacturer_id}`)}
-                            </span>
-                            {(inq.medication_name || inq.pi_storage_data) && (
+                            <span className="contacted-row-name">{item.name}</span>
+                            {(item.medication || item.piStorage) && (
                               <div className="bulk-row-product-info" style={{ marginTop: 2 }}>
-                                {inq.medication_name && (
-                                  <span className="bulk-row-product-pill">💊 {inq.medication_name}</span>
+                                {item.medication && (
+                                  <span className="bulk-row-product-pill">💊 {item.medication}</span>
                                 )}
-                                {inq.pi_storage_data && (
-                                  <span className="bulk-row-product-pill">🌡 {inq.pi_storage_data}</span>
+                                {item.piStorage && (
+                                  <span className="bulk-row-product-pill">🌡 {item.piStorage}</span>
                                 )}
                               </div>
                             )}
                           </div>
-                          <div className="contacted-row-status">
+                          <div className="contacted-row-status" style={{ alignItems: "flex-start" }}>
                             {isScheduled ? (
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                                 <span className="pill pill-green">Scheduled</span>
                                 <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
                                   {new Date(inq.email_scheduled_for!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}

@@ -17,7 +17,6 @@ Run:
 from __future__ import annotations
 
 import os
-from contextlib import ExitStack
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -287,7 +286,7 @@ class TestBulkCompletionNotification:
     def test_completion_notification_carries_mue_context(self):
         db = _make_db()
         user = _make_user(db)
-        batch_id = self._make_batch(
+        self._make_batch(
             db, user, statuses=["email_sent", "email_sent"], source_inquiry_uuid="mue-uuid-1234",
         )
 
