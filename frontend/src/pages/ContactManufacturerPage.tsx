@@ -5,7 +5,7 @@ import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
-import { fmtFallbackHours, FALLBACK_PRESETS } from "../utils/fallback";
+import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
 import type {
   Inquiry,
   InquiryInput,
@@ -181,6 +181,11 @@ export default function ContactManufacturerPage() {
   const [manualOverride, setManualOverride] = useState(false);
   // selectedKeys: `${attIdx}:${rowIndex}` for every checked row across all files.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  // Per-row fallback-hours override, keyed by the same selKey(attIdx, rowIndex)
+  // as selectedKeys. A row with no entry here falls back to the batch-level
+  // `fallbackHours` below — same override-with-default semantics the backend
+  // already applies to BulkTarget.fallback_after_hours.
+  const [rowFallbackHours, setRowFallbackHours] = useState<Record<string, number>>({});
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState(PENDING_SUBJECT);
   const [question, setQuestion] = useState("");
@@ -298,6 +303,27 @@ export default function ContactManufacturerPage() {
     return m;
   }, [existingInquiries]);
 
+  // Every manufacturer_id claimed by a matched row in any attachment, across
+  // all files — used to find already-contacted manufacturers that aren't
+  // represented by any row in the current extraction (e.g. contacted via the
+  // manual flow, or no longer matching this Excel's text) so they don't
+  // silently vanish from "Already contacted" once matching finishes.
+  const claimedContactedIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const s of attachmentExtractions) {
+      s.result?.rows.forEach((r) => {
+        if (r.matched_id != null) ids.add(r.matched_id);
+      });
+    }
+    return ids;
+  }, [attachmentExtractions]);
+
+  const unclaimedContactedInquiries = useMemo(() => {
+    return Array.from(contactedMfrMap.values()).filter(
+      (inq) => inq.manufacturer_id != null && !claimedContactedIds.has(inq.manufacturer_id),
+    );
+  }, [contactedMfrMap, claimedContactedIds]);
+
   // Remove contacted manufacturers from the current selection whenever the
   // map updates (e.g. after the fetch completes post-extraction).
   useEffect(() => {
@@ -362,6 +388,7 @@ export default function ContactManufacturerPage() {
     // Re-run extraction so the newly added manufacturer appears matched.
     setAttachmentExtractions([]);
     setSelectedKeys(new Set());
+    setRowFallbackHours({});
   }, [reloadManufacturers]);
 
   const runExtractions = useCallback(async () => {
@@ -522,7 +549,7 @@ export default function ContactManufacturerPage() {
       // so each inquiry gets the correct source_excel_url for response writeback.
       const byFile: Array<{
         s: AttachmentExtractionState;
-        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null }[];
+        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number }[];
       }> = [];
 
       attachmentExtractions.forEach((s, attIdx) => {
@@ -543,6 +570,10 @@ export default function ContactManufacturerPage() {
             medication_name: r.medication_name || null,
             pi_storage_data: r.pi_storage || null,
             pi_link: r.pi_link || null,
+            // Per-row override when the user picked one; otherwise the
+            // batch-level fallbackHours applies (same default the backend
+            // already falls back to when this field is omitted).
+            fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
           }));
         if (targets.length > 0) byFile.push({ s, targets });
       });
@@ -723,6 +754,7 @@ export default function ContactManufacturerPage() {
                     setMode("single");
                     setAttachmentExtractions([]);
                     setSelectedKeys(new Set());
+                    setRowFallbackHours({});
                   }}
                   title="Pick a single manufacturer manually instead"
                 >
@@ -962,6 +994,36 @@ export default function ContactManufacturerPage() {
                                           </div>
                                         );
                                       })()}
+                                      {matched && (() => {
+                                        const eligible = !!(mfr?.fallback_call_enabled && mfr?.mi_phone);
+                                        const effectiveHours = rowFallbackHours[key] ?? fallbackHours;
+                                        return (
+                                          <div className="bulk-row-mfr-meta" style={{ marginTop: 4 }}>
+                                            {eligible ? (
+                                              <span className="bulk-row-fallback-control">
+                                                <span className="cell-muted">Fallback call after</span>
+                                                <select
+                                                  className="filter-select mfr-target-fallback-select"
+                                                  value={effectiveHours}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  onChange={(e) => {
+                                                    const hours = Number(e.target.value);
+                                                    setRowFallbackHours((prev) => ({ ...prev, [key]: hours }));
+                                                  }}
+                                                >
+                                                  {FALLBACK_PRESETS.map((p) => (
+                                                    <option key={p.hours} value={p.hours}>{p.label}</option>
+                                                  ))}
+                                                </select>
+                                              </span>
+                                            ) : (
+                                              <span className="cell-muted">
+                                                {fmtFallbackStatus(mfr?.fallback_call_enabled, effectiveHours, mfr?.mi_phone)}
+                                              </span>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
                                     </div>
                                     {!matched && (
                                       <button
@@ -1029,6 +1091,54 @@ export default function ContactManufacturerPage() {
                     </div>
                   );
                 })}
+
+                {/* Already-contacted manufacturers with no matching row in
+                    this extraction (e.g. contacted via the manual flow, or
+                    no longer textually matching this Excel) — without this,
+                    they'd disappear entirely once matching completes. */}
+                {unclaimedContactedInquiries.length > 0 && (
+                  <div className="contacted-section" style={{ marginTop: attachmentExtractions.some(x => x.result) ? "24px" : "0" }}>
+                    <div className="contacted-section-header">
+                      Already contacted ({unclaimedContactedInquiries.length})
+                    </div>
+                    {unclaimedContactedInquiries.map((inq) => {
+                      const mfr = inq.manufacturer_id != null ? mfrById[inq.manufacturer_id] : undefined;
+                      const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
+                      return (
+                        <div key={inq.id} className="contacted-row">
+                          <div className="contacted-row-main">
+                            <span className="contacted-row-name">
+                              {mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? (inq.test_call_phone ? `Test Call — ${inq.test_call_phone}` : `Manufacturer #${inq.manufacturer_id}`)}
+                            </span>
+                            {(inq.medication_name || inq.pi_storage_data) && (
+                              <div className="bulk-row-product-info" style={{ marginTop: 2 }}>
+                                {inq.medication_name && (
+                                  <span className="bulk-row-product-pill">💊 {inq.medication_name}</span>
+                                )}
+                                {inq.pi_storage_data && (
+                                  <span className="bulk-row-product-pill">🌡 {inq.pi_storage_data}</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <div className="contacted-row-status">
+                            {isScheduled ? (
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                                <span className="pill pill-green">Scheduled</span>
+                                <span className="cell-muted" style={{ fontSize: "0.72rem" }}>
+                                  {new Date(inq.email_scheduled_for!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                              </div>
+                            ) : (
+                              <StatusBadge status={inq.status} />
+                            )}
+                            <span className="contacted-row-id">#{inq.id}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
