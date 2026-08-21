@@ -82,6 +82,10 @@ const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, on
       setError("Manufacturer name is required.");
       return;
     }
+    if (form.fallback_call_enabled && !form.mi_phone?.trim()) {
+      alert("MI Phone is required when Call Fallback is enabled.");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
