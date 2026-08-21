@@ -13,10 +13,26 @@ make a REAL outbound call using whatever real credentials happen to be in
 the local .env (this is exactly how repeated test runs ended up posting
 fixture data like "Mfr0"/"GoodOne" to the team's real Slack channel).
 
-This must run before `main`/`database` are imported anywhere, so it lives
-at module level (not in a fixture) and executes at conftest import time.
+This must run before any TEST module imports `main`/`database`, so it lives
+at module level (not in a fixture) and executes at conftest import time —
+pytest guarantees this file loads before any test module in this directory.
+
+Import order below matters: `database.py`/`main.py` call `load_dotenv()` at
+their own module level, and `load_dotenv()` defaults to override=False — it
+only skips a key that's ALREADY set. If we popped these vars first and let
+a test file's `from database import ...` trigger load_dotenv() afterwards,
+dotenv would see the keys as unset and load them right back in from
+backend/.env, silently undoing the strip (this happened in production: a
+real SLACK_WEBHOOK_URL got reloaded this way and test runs kept posting to
+the real Slack channel despite this file existing). So we import
+database/main HERE first — forcing their one-time load_dotenv() to run
+under our control — and only strip the vars afterwards. Python's module
+cache then guarantees no later import in any test file re-runs load_dotenv().
 """
 import os
+
+import database  # noqa: F401  (forces load_dotenv() to run now, not later)
+import main  # noqa: F401
 
 _UNSET_FOR_TESTS = (
     # Slack — the incident this file exists to prevent.
