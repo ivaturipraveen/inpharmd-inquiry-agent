@@ -234,12 +234,13 @@ def _scan_and_send_pending_emails() -> None:
 def _notify_completed_bulk_batches() -> None:
     """One scheduler tick: for each bulk email batch not yet notified as
     complete, check whether every inquiry in it has left email_pending —
-    i.e. each has reached a final state: email_sent, or draft (a manually
-    cancelled scheduled email via cancel_scheduled_email). A cancelled email
-    must not block completion forever; it's reported in the summary instead.
-    Sends the Slack completion notice and ONLY THEN marks it notified — a
-    Slack failure leaves the row eligible for the next tick instead of being
-    lost, and the row lock prevents a duplicate send."""
+    i.e. each has reached a final state, whether that's an actual send
+    (email_sent_at set) or the email never went out (draft via
+    cancel_scheduled_email, or closed before its scheduled send fired). A
+    non-sent inquiry must not block completion forever; it's reported in the
+    summary instead. Sends the Slack completion notice and ONLY THEN marks it
+    notified — a Slack failure leaves the row eligible for the next tick
+    instead of being lost, and the row lock prevents a duplicate send."""
     db = SessionLocal()
     try:
         # Self-heal: bulk_create_inquiries may have failed to persist the
@@ -296,8 +297,13 @@ def _notify_completed_bulk_batches() -> None:
             if not members:
                 continue
 
-            cancelled = [m for m in members if m.status == "draft"]
-            sent_count = len(members) - len(cancelled)
+            # email_sent_at is only ever set at the moment of an actual send
+            # (below, and in POST /{id}/send-now) — unlike status, which can
+            # reach "closed" without an email ever going out (see
+            # close_inquiry, which sets status="closed" unconditionally).
+            cancelled = [m for m in members if m.email_sent_at is None]
+            sent_members = [m for m in members if m.email_sent_at is not None]
+            sent_count = len(sent_members)
             cancelled_items = [
                 {
                     "inquiry_id": m.id,
@@ -305,6 +311,15 @@ def _notify_completed_bulk_batches() -> None:
                     "medication_name": m.medication_name,
                 }
                 for m in cancelled
+            ]
+            sent_items = [
+                {
+                    "inquiry_id": m.id,
+                    "manufacturer": m.manufacturer.manufacturer if m.manufacturer else "Unknown",
+                    "medication_name": m.medication_name,
+                    "email_sent_at": m.email_sent_at,
+                }
+                for m in sent_members
             ]
 
             db2 = SessionLocal()
@@ -322,13 +337,16 @@ def _notify_completed_bulk_batches() -> None:
                     db2.close()
                     continue
 
-                sent = slack_service.notify_bulk_completed(
+                notified = slack_service.notify_bulk_completed(
                     batch.batch_id,
                     total_count=len(members),
                     sent_count=sent_count,
+                    sent_items=sent_items,
                     cancelled_items=cancelled_items,
+                    question=members[0].question,
+                    source_inquiry_uuid=members[0].source_inquiry_uuid,
                 )
-                if sent:
+                if notified:
                     locked.completed_notified_at = _now()
                     db2.commit()
                     log.info("Bulk batch %s marked complete-notified", batch.batch_id)

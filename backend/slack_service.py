@@ -62,7 +62,23 @@ def _post(payload: dict, *, log_context: str) -> bool:
     return True
 
 
-def notify_bulk_scheduled(batch_id: str, items: list) -> bool:
+def _mue_context_block(question: Optional[str], source_inquiry_uuid: Optional[str]) -> Optional[dict]:
+    """Same "MUE" label + shared question the Outreach tab shows for a
+    grouped MUE row (InquiriesPage.tsx) — only when the batch actually came
+    from a source MUE inquiry; manual multi-manufacturer batches have none.
+    """
+    if not source_inquiry_uuid:
+        return None
+    q = _truncate((question or "").strip(), limit=200) or "(no question text)"
+    return {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"*MUE* — {q}"},
+    }
+
+
+def notify_bulk_scheduled(
+    batch_id: str, items: list, *, question: Optional[str] = None, source_inquiry_uuid: Optional[str] = None
+) -> bool:
     """Post one Slack notification listing every inquiry scheduled together
     in one bulk_create_inquiries email dispatch.
 
@@ -84,11 +100,14 @@ def notify_bulk_scheduled(batch_id: str, items: list) -> bool:
             "type": "header",
             "text": {"type": "plain_text", "text": "\U0001F4C5 Bulk email batch scheduled", "emoji": True},
         },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{len(items)} inquir{'y' if len(items) == 1 else 'ies'} scheduled:*\n{body}"},
-        },
     ]
+    mue_block = _mue_context_block(question, source_inquiry_uuid)
+    if mue_block:
+        blocks.append(mue_block)
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"*{len(items)} inquir{'y' if len(items) == 1 else 'ies'} scheduled:*\n{body}"},
+    })
     payload = {
         "text": f"Bulk email batch scheduled ({len(items)} inquiries)",
         "blocks": blocks,
@@ -97,14 +116,24 @@ def notify_bulk_scheduled(batch_id: str, items: list) -> bool:
 
 
 def notify_bulk_completed(
-    batch_id: str, *, total_count: int, sent_count: int, cancelled_items: list
+    batch_id: str,
+    *,
+    total_count: int,
+    sent_count: int,
+    cancelled_items: list,
+    sent_items: Optional[list] = None,
+    question: Optional[str] = None,
+    source_inquiry_uuid: Optional[str] = None,
 ) -> bool:
     """Post one Slack notification summarizing a finished bulk email batch —
     every inquiry has either sent or been manually cancelled (draft).
 
+    sent_items: list of dicts with keys inquiry_id, manufacturer,
+    medication_name (optional), email_sent_at (optional).
     cancelled_items: list of dicts with keys inquiry_id, manufacturer,
     medication_name (optional).
     """
+    sent_items = sent_items or []
     cancelled_count = len(cancelled_items)
     summary = f"Bulk batch completed: {sent_count} of {total_count} emails sent successfully."
 
@@ -113,11 +142,32 @@ def notify_bulk_completed(
             "type": "header",
             "text": {"type": "plain_text", "text": "✅ Bulk email batch complete", "emoji": True},
         },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": summary},
-        },
     ]
+    mue_block = _mue_context_block(question, source_inquiry_uuid)
+    if mue_block:
+        blocks.append(mue_block)
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": summary},
+    })
+
+    if sent_items:
+        lines = []
+        for item in sent_items:
+            sent_at = item.get("email_sent_at")
+            sent_at_str = sent_at.strftime("%Y-%m-%d %H:%M UTC") if sent_at else "unknown"
+            medication = (item.get("medication_name") or "").strip() or "—"
+            lines.append(
+                f"• *#{item['inquiry_id']}* — {item['manufacturer']} — {medication} — {sent_at_str}"
+            )
+        body = _truncate("\n".join(lines))
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{len(sent_items)} email{'s' if len(sent_items) != 1 else ''} sent:*\n{body}",
+            },
+        })
 
     if cancelled_count:
         lines = [

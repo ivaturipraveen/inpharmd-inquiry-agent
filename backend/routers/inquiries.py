@@ -321,7 +321,11 @@ async def bulk_create_inquiries(
                     batch_id, len(batch_items),
                 )
             try:
-                slack_service.notify_bulk_scheduled(batch_id, batch_items)
+                slack_service.notify_bulk_scheduled(
+                    batch_id, batch_items,
+                    question=payload.question,
+                    source_inquiry_uuid=payload.source_inquiry_uuid,
+                )
             except Exception:
                 log.exception("Slack bulk-scheduled notification failed for batch %s", batch_id)
 
