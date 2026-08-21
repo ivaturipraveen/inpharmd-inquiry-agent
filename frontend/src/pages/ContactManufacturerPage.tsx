@@ -27,6 +27,9 @@ interface ForwardContext {
   submitter?: string;
   type?: string;
   attachments?: Attachment[];
+  // From InpharmD's inquiry_submitter_details.team_name, if the platform
+  // returned one for this MUE inquiry's submitter.
+  team_name?: string;
 }
 
 interface DetectedRow {
@@ -62,6 +65,12 @@ interface AttachmentExtractionState {
 }
 
 const CTX_KEY = "inpharmd:contact-manufacturer:ctx";
+
+// The backend is the single source of truth for Inquiry.subject — it always
+// overwrites it to `Drug information request [InpharmD #<id>]` once the row
+// exists. This placeholder is shown pre-creation everywhere; it is never
+// sent to the backend as a meaningful value (accepted but discarded).
+const PENDING_SUBJECT = "Drug information request [InpharmD #pending]";
 
 const readQuery = (): URLSearchParams => {
   const qs = window.location.hash.split("?")[1] ?? "";
@@ -173,8 +182,12 @@ export default function ContactManufacturerPage() {
   // selectedKeys: `${attIdx}:${rowIndex}` for every checked row across all files.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [subject, setSubject] = useState("");
+  const [subject, setSubject] = useState(PENDING_SUBJECT);
   const [question, setQuestion] = useState("");
+  // Requesting pharmacist's team/organization — shared across the Excel
+  // ("multi") flow's own bulkCreate call and, as defaultTeamName, the
+  // single-manufacturer InquiryForm below.
+  const [teamName, setTeamName] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
   const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
   const [testCountryCode, setTestCountryCode] = useState("+1");
@@ -205,10 +218,12 @@ export default function ContactManufacturerPage() {
 
   useEffect(() => {
     if (ctx) sessionStorage.removeItem(CTX_KEY);
+    // Subject is always backend-generated — never seeded from ctx.title.
+    // The original MUE title still seeds the question/details field.
     if (ctx?.title) {
-      setSubject(ctx.title);
       setQuestion(ctx.title);
     }
+    if (ctx?.team_name) setTeamName(ctx.team_name);
   }, [ctx]);
 
   useEffect(() => {
@@ -316,6 +331,7 @@ export default function ContactManufacturerPage() {
           requester_email: data.requester_email,
           fallback_after_hours: t.fallback_after_hours,
           medication_name: t.medication_name,
+          team_name: data.team_name,
           ...(ctx?.uuid ? { source_inquiry_uuid: ctx.uuid } : {}),
         };
         setPendingInquiryInput(payload);
@@ -453,12 +469,8 @@ export default function ContactManufacturerPage() {
 
   const handleBulkSubmit = async (channel: BulkChannel) => {
     if (attachmentExtractions.length === 0 || !ctx) return;
-    if (!subject.trim() || !question.trim()) {
-      setExtractError("Subject and question are required.");
-      return;
-    }
-    if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
-      setExtractError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
+    if (!question.trim()) {
+      setExtractError("Question is required.");
       return;
     }
 
@@ -551,6 +563,7 @@ export default function ContactManufacturerPage() {
           subject: subject.trim(),
           question: question.trim(),
           fallback_after_hours: fallbackHours,
+          team_name: teamName.trim() || null,
           source_inquiry_uuid: ctx.uuid,
           source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
           source_excel_sheet: s.result!.sheet_name,
@@ -1027,12 +1040,14 @@ export default function ContactManufacturerPage() {
               <div className="page-form-body">
                 <div className="form-grid">
                   <div className="field full">
-                    <label>Subject<span className="req">*</span></label>
+                    <label>
+                      Subject <span className="label-hint">system-generated</span>
+                    </label>
                     <input
                       type="text"
                       value={subject}
-                      onChange={(e) => setSubject(e.target.value)}
-                      placeholder="Subject line for every recipient"
+                      readOnly
+                      title="The subject is generated automatically from the inquiry ID and can't be edited."
                       maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
                     />
                   </div>
@@ -1042,6 +1057,15 @@ export default function ContactManufacturerPage() {
                       value={question}
                       onChange={(e) => setQuestion(e.target.value)}
                       rows={5}
+                    />
+                  </div>
+                  <div className="field full">
+                    <label>Team Name <span className="label-hint">optional</span></label>
+                    <input
+                      type="text"
+                      value={teamName}
+                      onChange={(e) => setTeamName(e.target.value)}
+                      placeholder="e.g. MedStar Health — shown in the outbound email"
                     />
                   </div>
                   <div className="field full">
@@ -1285,6 +1309,7 @@ export default function ContactManufacturerPage() {
             manufacturers={manufacturers}
             defaultSubject={subject}
             defaultQuestion={question}
+            defaultTeamName={teamName}
             variant="page"
             title="Contact Manufacturer"
             submitLabel="Create & choose channel"
@@ -1379,6 +1404,7 @@ export default function ContactManufacturerPage() {
             // Batch-level default only; every target above supplies its own
             // explicit value, so this is effectively unused here.
             fallback_after_hours: pendingBulkManualInput.targets[0]?.fallback_after_hours ?? 24,
+            team_name: pendingBulkManualInput.team_name ?? null,
             source_inquiry_uuid: ctx.uuid ?? null,
             source_excel_url: null,
             source_excel_sheet: null,

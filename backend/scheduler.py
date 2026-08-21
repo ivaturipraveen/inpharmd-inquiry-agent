@@ -201,6 +201,7 @@ def _scan_and_send_pending_emails() -> None:
                     medication_name=locked.medication_name,
                     pi_storage_data=locked.pi_storage_data,
                     pi_link=locked.pi_link,
+                    team_name=locked.team_name,
                 )
             except Exception:
                 log.exception(

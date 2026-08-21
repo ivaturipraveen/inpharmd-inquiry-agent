@@ -89,6 +89,11 @@ class Inquiry(Base):
     question = Column(Text, nullable=False)
     requester_name = Column(String(255))
     requester_email = Column(String(255))
+    # The requesting pharmacist's team/organization (e.g. "MedStar Health").
+    # For InpharmD-sourced inquiries this comes from the platform's
+    # inquiry_submitter_details.team_name; for manual inquiries the user may
+    # optionally type it in. Used in the outbound manufacturer email.
+    team_name = Column(Text)
 
     # Wait this many hours after the email is sent before falling back to a call.
     fallback_after_hours = Column(Integer, nullable=False, default=24)

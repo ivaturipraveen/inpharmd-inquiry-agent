@@ -119,6 +119,10 @@ export interface InquiryInput {
   requester_email?: string | null;
   fallback_after_hours: number;
   medication_name?: string | null;
+  // Requesting pharmacist's team/organization — shown in the outbound
+  // manufacturer email. From InpharmD's inquiry_submitter_details.team_name
+  // when forwarded, or typed in manually.
+  team_name?: string | null;
   // When forwarded from the InpharmD Inquiries tab, the original platform
   // UUID — used to POST the response back to the legacy endpoint once a
   // manufacturer answers (by email or voice).
@@ -144,4 +148,6 @@ export interface InquiryFormData {
   question: string;
   requester_name?: string | null;
   requester_email?: string | null;
+  // Same requesting team for every manufacturer in the batch — not per-target.
+  team_name?: string | null;
 }

@@ -16,6 +16,10 @@ interface Props {
   defaultManufacturerId?: number;
   defaultSubject?: string;
   defaultQuestion?: string;
+  // Pre-fills Team Name when forwarded from an InpharmD MUE inquiry
+  // (inquiry_submitter_details.team_name). Still editable; blank/omitted for
+  // a manual inquiry with no InpharmD source.
+  defaultTeamName?: string;
   // "modal" = floating dialog over a backdrop (default, used by Outreach tab).
   // "page"  = inline full-page form (used by Contact Manufacturer page).
   variant?: "modal" | "page";
@@ -34,6 +38,7 @@ const InquiryForm: FC<Props> = ({
   defaultManufacturerId,
   defaultSubject,
   defaultQuestion,
+  defaultTeamName,
   variant = "modal",
   title = "New Inquiry",
   submitLabel,
@@ -51,6 +56,7 @@ const InquiryForm: FC<Props> = ({
 
   const [subject, setSubject] = useState(defaultSubject ?? "");
   const [question, setQuestion] = useState(defaultQuestion ?? "");
+  const [teamName, setTeamName] = useState(defaultTeamName ?? "");
   const [requesterName, setRequesterName] = useState("Leah");
   const [requesterEmail, setRequesterEmail] = useState("druginfo@inpharmd.com");
   // Single source of truth for every selected manufacturer's own Drug Name +
@@ -208,14 +214,6 @@ const InquiryForm: FC<Props> = ({
       );
       return;
     }
-    if (!subject.trim()) {
-      setError("Subject is required.");
-      return;
-    }
-    if (subject.trim().length > INQUIRY_SUBJECT_MAX_LENGTH) {
-      setError(`Subject must be ${INQUIRY_SUBJECT_MAX_LENGTH} characters or fewer.`);
-      return;
-    }
     if (!question.trim()) {
       setError("Question is required.");
       return;
@@ -233,6 +231,7 @@ const InquiryForm: FC<Props> = ({
         question: question.trim(),
         requester_name: requesterName.trim() || null,
         requester_email: requesterEmail.trim() || null,
+        team_name: teamName.trim() || null,
       });
     } catch (err: any) {
       setError(err?.message ?? "Failed to save inquiry.");
@@ -445,15 +444,14 @@ const InquiryForm: FC<Props> = ({
 
               <div className="field full">
                 <label>
-                  Subject<span className="req">*</span>
+                  Subject <span className="label-hint">system-generated</span>
                 </label>
                 <input
                   type="text"
                   value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  placeholder="e.g. Stability data for Drug X after temperature excursion"
+                  readOnly
+                  title="The subject is generated automatically from the inquiry ID and can't be edited."
                   maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
-                  required
                 />
               </div>
 
@@ -490,6 +488,18 @@ const InquiryForm: FC<Props> = ({
                   value={requesterEmail}
                   onChange={(e) => setRequesterEmail(e.target.value)}
                   placeholder="Where the rep should reply / send follow-up"
+                />
+              </div>
+
+              <div className="field full">
+                <label>
+                  Team Name <span className="label-hint">optional</span>
+                </label>
+                <input
+                  type="text"
+                  value={teamName}
+                  onChange={(e) => setTeamName(e.target.value)}
+                  placeholder="e.g. MedStar Health — shown in the outbound email"
                 />
               </div>
 

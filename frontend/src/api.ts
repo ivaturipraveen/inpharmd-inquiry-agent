@@ -233,6 +233,7 @@ export const api = {
       requester_name?: string | null;
       requester_email?: string | null;
       fallback_after_hours: number;
+      team_name?: string | null;
       source_inquiry_uuid?: string | null;
       source_excel_url?: string | null;
       source_excel_sheet?: string | null;

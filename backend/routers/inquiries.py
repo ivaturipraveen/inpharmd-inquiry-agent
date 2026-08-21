@@ -22,6 +22,7 @@ from schemas import (
     BulkInquiryResult,
     CallResultPayload,
     EmailResponsePayload,
+    INQUIRY_SUBJECT_MAX_LENGTH,
     InquiryCreate,
     InquiryOut,
     InquiryUpdate,
@@ -40,6 +41,42 @@ router = APIRouter(prefix="/api/inquiries", tags=["inquiries"])
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _default_subject(inquiry_id: int) -> str:
+    """The standardized subject every inquiry gets on creation."""
+    return f"Drug information request [InpharmD #{inquiry_id}]"
+
+
+def _with_subject_tag(subject: str, inquiry_id: int) -> str:
+    """Guarantee the [InpharmD #<id>] reply-matching tag survives a user edit.
+
+    Inquiry.subject is fully user-editable after creation and is used
+    verbatim as the outbound email subject — but reply matching (imap_service
+    / graph_service / routers.email_inbound) depends on this exact tag being
+    present somewhere in the subject. If the user's edit already contains it
+    (any case), it's kept as entered; otherwise it's appended.
+
+    The edit inputs allow up to INQUIRY_SUBJECT_MAX_LENGTH characters (the
+    same limit as the `subject` column), so appending the tag to a
+    near-limit edit could push the result past that limit. When that would
+    happen, only the user-entered portion is truncated — the tag itself is
+    never shortened or dropped.
+    """
+    tag = f"[InpharmD #{inquiry_id}]"
+    subject = (subject or "").strip()
+    if tag.lower() in subject.lower():
+        return subject
+    if not subject:
+        return tag
+    combined = f"{subject} {tag}"
+    if len(combined) <= INQUIRY_SUBJECT_MAX_LENGTH:
+        return combined
+    available = INQUIRY_SUBJECT_MAX_LENGTH - len(tag) - 1  # 1 for the joining space
+    if available <= 0:
+        return tag[:INQUIRY_SUBJECT_MAX_LENGTH]
+    truncated = subject[:available].rstrip()
+    return f"{truncated} {tag}" if truncated else tag
 
 
 def _get_or_404(
@@ -134,8 +171,14 @@ def create_inquiry(
         data["requester_name"] = DEFAULT_REQUESTER_NAME
     if not (data.get("requester_email") or "").strip():
         data["requester_email"] = DEFAULT_REQUESTER_EMAIL
+    data["team_name"] = (data.get("team_name") or "").strip() or None
     obj = Inquiry(**data, status="draft", user_id=current_user.id)
     db.add(obj)
+    db.flush()
+    # Backend is the single source of truth for the outbound subject tag —
+    # discard whatever free-text subject the client sent once the real id
+    # exists, mirroring send_inquiry_email's own subject override.
+    obj.subject = _default_subject(obj.id)
     db.commit()
     return _get_or_404(db, obj.id, current_user)
 
@@ -200,6 +243,7 @@ async def bulk_create_inquiries(
             source_excel_url=payload.source_excel_url,
             source_excel_sheet=payload.source_excel_sheet,
             source_excel_row=tgt.source_excel_row,
+            team_name=(payload.team_name or "").strip() or None,
             medication_name=tgt.medication_name or None,
             pi_storage_data=tgt.pi_storage_data or None,
             pi_link=tgt.pi_link or None,
@@ -208,6 +252,9 @@ async def bulk_create_inquiries(
         )
         db.add(obj)
         db.flush()
+        # Same backend-authoritative subject override as create_inquiry —
+        # each inquiry in the batch gets its own id-specific subject.
+        obj.subject = _default_subject(obj.id)
         created_objs.append(obj)
 
     db.commit()
@@ -356,6 +403,8 @@ def update_inquiry(
 ):
     obj = _get_or_404(db, inquiry_id, current_user)
     for k, v in payload.model_dump(exclude_unset=True).items():
+        if k == "subject" and v is not None:
+            v = _with_subject_tag(v, obj.id)
         setattr(obj, k, v)
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
@@ -461,7 +510,7 @@ def edit_scheduled_email_content(
             status_code=409,
             detail="Cannot edit: inquiry is no longer in the scheduling window (it may have already been sent).",
         )
-    locked.subject = payload.subject
+    locked.subject = _with_subject_tag(payload.subject, locked.id)
     locked.question = payload.question
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
@@ -514,6 +563,7 @@ def send_now(
             medication_name=locked.medication_name,
             pi_storage_data=locked.pi_storage_data,
             pi_link=locked.pi_link,
+            team_name=locked.team_name,
         )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -730,6 +780,7 @@ async def test_call_preview(
     )
     db.add(obj)
     db.flush()
+    obj.subject = _default_subject(obj.id)
 
     try:
         resp = await call_service.place_inquiry_call(

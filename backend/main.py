@@ -140,6 +140,9 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # Slack notifications (schedule + completion).
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS bulk_batch_id VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS ix_inquiries_bulk_batch_id ON inquiries (bulk_batch_id)",
+        # Requesting pharmacist's team/organization — from InpharmD's
+        # inquiry_submitter_details.team_name, or typed in manually.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS team_name TEXT",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

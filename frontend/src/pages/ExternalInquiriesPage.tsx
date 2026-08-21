@@ -19,6 +19,7 @@ interface SubmitterDetails {
   email?: string;
   first_name?: string;
   last_name?: string;
+  team_name?: string;
   [k: string]: unknown;
 }
 
@@ -277,6 +278,7 @@ export default function ExternalInquiriesPage() {
       submitter: submitterDisplay(i),
       type: typeLabel(i),
       attachments: i.attachments,
+      team_name: i.inquiry_submitter_details?.team_name,
     });
   };
 

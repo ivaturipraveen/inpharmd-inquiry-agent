@@ -108,6 +108,9 @@ class InquiryBase(BaseModel):
     source_excel_sheet: Optional[str] = None
     source_excel_row: Optional[int] = None
     medication_name: Optional[str] = None
+    # Requesting pharmacist's team/organization — from InpharmD's
+    # inquiry_submitter_details.team_name, or typed in manually.
+    team_name: Optional[str] = None
 
 
 class InquiryCreate(InquiryBase):
@@ -140,6 +143,8 @@ class BulkInquiryCreate(BaseModel):
     source_inquiry_uuid: Optional[str] = None
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
+    # Same requesting team for every manufacturer in the batch (not per-target).
+    team_name: Optional[str] = None
     # Dispatch channel applied to every created inquiry:
     #   "email" — send email to each manufacturer (default)
     #   "call"  — place a voice-agent call to each manufacturer
@@ -165,6 +170,7 @@ class InquiryUpdate(BaseModel):
     requester_email: Optional[str] = None
     fallback_after_hours: Optional[int] = None
     medication_name: Optional[str] = None
+    team_name: Optional[str] = None
     status: Optional[InquiryStatus] = None
     email_response: Optional[str] = None
     call_transcript: Optional[str] = None

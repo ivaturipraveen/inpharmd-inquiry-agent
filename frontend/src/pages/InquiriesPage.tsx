@@ -557,7 +557,10 @@ export default function InquiriesPage() {
                           <span className="mue-badge">MUE</span>
                         </td>
                         <td className="mue-subject-cell cell-wrap">
-                          <span className="cell-primary">{sample.subject}</span>
+                          {/* Subject is now per-inquiry (unique [InpharmD #id] per
+                              child), so it can't represent the whole MUE group —
+                              show the shared original MUE title/question instead. */}
+                          <span className="cell-primary">{sample.question}</span>
                         </td>
                         <td className="mue-stats-cell">
                           {open ? (
