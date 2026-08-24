@@ -145,13 +145,17 @@ export const api = {
       request<void>(`/api/manufacturers/${id}`, { method: "DELETE" }),
   },
   inquiries: {
-    list: (params?: { status?: string; manufacturer_id?: number; source_inquiry_uuid?: string; all_users?: boolean }) => {
+    list: (params?: { status?: string; manufacturer_id?: number; source_inquiry_uuid?: string; all_users?: boolean; include_replies?: boolean }) => {
       const q = new URLSearchParams();
       if (params?.status) q.set("status", params.status);
       if (params?.manufacturer_id)
         q.set("manufacturer_id", String(params.manufacturer_id));
       if (params?.source_inquiry_uuid) q.set("source_inquiry_uuid", params.source_inquiry_uuid);
       if (params?.all_users) q.set("all_users", "true");
+      // Default true server-side — only send the param when explicitly
+      // opting out, so every other caller's request is byte-for-byte
+      // unchanged from before this field existed.
+      if (params?.include_replies === false) q.set("include_replies", "false");
       const suffix = q.toString() ? `?${q}` : "";
       return request<Inquiry[]>(`/api/inquiries${suffix}`);
     },

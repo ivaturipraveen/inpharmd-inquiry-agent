@@ -78,9 +78,13 @@ export default function InquiriesPage() {
     setLoading(true);
     setError(null);
     try {
-      const is = await api.inquiries.list(
-        activeTab === "all" ? { all_users: true } : undefined,
-      );
+      // This page never reads inbound_attachments/email_replies — clicking a
+      // row always re-fetches full detail via GET /inquiries/{id} instead
+      // (see the row onClick handlers below) — so skip eager-loading them.
+      const is = await api.inquiries.list({
+        ...(activeTab === "all" ? { all_users: true } : {}),
+        include_replies: false,
+      });
       setInquiries(is);
     } catch (err: any) {
       setError(err?.message ?? "Failed to load inquiries.");
@@ -117,7 +121,15 @@ export default function InquiriesPage() {
     if (!idStr) return;
     deepLinkAppliedRef.current = true;
     const target = inquiries.find((i) => i.id === Number(idStr));
-    if (target) setSelected(target);
+    if (!target) return;
+    // Same pattern as the row click handlers below: the list is fetched
+    // with include_replies=false, so `target` never carries email_replies/
+    // inbound_attachments. Open optimistically with the light item, then
+    // replace with the full detail fetch.
+    setSelected(target);
+    api.inquiries.get(target.id)
+      .then((fresh) => setSelected((cur) => (cur && cur.id === fresh.id ? fresh : cur)))
+      .catch(() => {/* keep cached */});
   }, [loading, inquiries, selected]);
 
   useEffect(() => {
@@ -126,11 +138,25 @@ export default function InquiriesPage() {
     return () => clearTimeout(t);
   }, [success]);
 
-  // Keep the selected inquiry in sync with the latest list (after actions)
+  // Keep the selected inquiry in sync with the latest list (after actions).
+  // The list is fetched with include_replies=false (it never renders those
+  // fields itself — see the two api.inquiries.list() calls above), so a list
+  // item never carries email_replies/inbound_attachments. Merge the fresher
+  // light fields onto the currently-selected inquiry instead of replacing it
+  // outright, so the full detail already loaded via GET /inquiries/{id}
+  // (the row click handlers below) isn't wiped out by every list refresh —
+  // e.g. the 5s in-flight poll — while the open detail modal is showing it.
+  const lastSyncedListItemRef = useRef<Inquiry | null>(null);
   useEffect(() => {
     if (!selected) return;
     const fresh = inquiries.find((i) => i.id === selected.id);
-    if (fresh && fresh !== selected) setSelected(fresh);
+    if (!fresh || fresh === lastSyncedListItemRef.current) return;
+    lastSyncedListItemRef.current = fresh;
+    setSelected((cur) =>
+      cur
+        ? { ...fresh, email_replies: cur.email_replies, inbound_attachments: cur.inbound_attachments }
+        : cur,
+    );
   }, [inquiries, selected]);
 
   // Auto-refresh while anything is in-flight (call dialing, email awaiting reply).
@@ -146,7 +172,10 @@ export default function InquiriesPage() {
   useEffect(() => {
     if (!hasInFlight) return;
     const id = setInterval(() => {
-      const params = outreachTabRef.current === "all" ? { all_users: true } : undefined;
+      const params = {
+        ...(outreachTabRef.current === "all" ? { all_users: true } : {}),
+        include_replies: false,
+      };
       api.inquiries
         .list(params)
         .then(setInquiries)

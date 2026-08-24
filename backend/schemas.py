@@ -199,7 +199,12 @@ class TestCallPreviewPayload(BaseModel):
     manufacturer_id: Optional[int] = None
 
 
-class InquiryOut(InquiryBase):
+class InquiryListOut(InquiryBase):
+    """Same fields as InquiryOut except inbound_attachments/email_replies —
+    used by the list endpoint when include_replies=false so those two
+    relationships are never touched (and therefore never lazy-loaded) on
+    the underlying ORM objects. Every other field/behavior is identical;
+    InquiryOut below simply adds the two relationship fields on top."""
     id: int
     user_id: Optional[int] = None
     created_by: Optional[str] = None   # display_name or email of the creating user
@@ -224,8 +229,6 @@ class InquiryOut(InquiryBase):
     pdf_url: Optional[str] = None
     pdf_filename: Optional[str] = None
     pdf_summary: Optional[str] = None
-    inbound_attachments: list[InquiryAttachmentOut] = []
-    email_replies: list[EmailReplyOut] = []
     legacy_response_posted_at: Optional[datetime] = None
     excel_response_url: Optional[str] = None
     excel_response_posted_at: Optional[datetime] = None
@@ -236,6 +239,11 @@ class InquiryOut(InquiryBase):
     manufacturer: Optional[ManufacturerSummary] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class InquiryOut(InquiryListOut):
+    inbound_attachments: list[InquiryAttachmentOut] = []
+    email_replies: list[EmailReplyOut] = []
 
 
 # Resolve the forward reference (BulkInquiryResult → InquiryOut) now that

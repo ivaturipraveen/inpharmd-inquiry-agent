@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -24,6 +24,7 @@ from schemas import (
     EmailResponsePayload,
     INQUIRY_SUBJECT_MAX_LENGTH,
     InquiryCreate,
+    InquiryListOut,
     InquiryOut,
     InquiryUpdate,
     ScheduledEmailContentUpdate,
@@ -101,20 +102,32 @@ def _get_or_404(
     return obj
 
 
-@router.get("", response_model=List[InquiryOut])
+@router.get("", response_model=Union[List[InquiryOut], List[InquiryListOut]])
 def list_inquiries(
     status: Optional[str] = Query(None),
     manufacturer_id: Optional[int] = Query(None),
     source_inquiry_uuid: Optional[str] = Query(None),
     all_users: bool = Query(False, description="Return inquiries from all users (not just the caller's own)."),
+    include_replies: bool = Query(
+        True,
+        description=(
+            "Eager-load inbound_attachments/email_replies (+ their attachments). "
+            "Default true preserves existing behavior for every current caller "
+            "(e.g. the Emails tab, which reads reply content straight off this "
+            "list). Callers that never read those fields — e.g. the Outreach "
+            "tab, which always re-fetches full detail via GET /{id} on click — "
+            "should pass false to avoid loading/serializing them for every row."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    q = db.query(Inquiry).options(
-        joinedload(Inquiry.manufacturer),
-        selectinload(Inquiry.inbound_attachments),
-        selectinload(Inquiry.email_replies).selectinload(EmailReply.attachments),
-    )
+    q = db.query(Inquiry).options(joinedload(Inquiry.manufacturer))
+    if include_replies:
+        q = q.options(
+            selectinload(Inquiry.inbound_attachments),
+            selectinload(Inquiry.email_replies).selectinload(EmailReply.attachments),
+        )
     if not all_users:
         q = q.filter(Inquiry.user_id == current_user.id)
     if status:
@@ -125,6 +138,12 @@ def list_inquiries(
         q = q.filter(Inquiry.source_inquiry_uuid == source_inquiry_uuid)
     inquiries = q.order_by(Inquiry.created_at.desc()).all()
 
+    # include_replies picks which schema does the ORM→Pydantic conversion.
+    # InquiryListOut simply doesn't declare inbound_attachments/email_replies,
+    # so model_validate() never touches (and therefore never lazy-loads) those
+    # relationships on the ORM objects when they weren't eager-loaded above.
+    out_schema = InquiryOut if include_replies else InquiryListOut
+
     # Attach creator display names when returning all-user results so the
     # frontend can show "by <name>" without a separate user lookup.
     if all_users:
@@ -132,14 +151,14 @@ def list_inquiries(
         users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
         result = []
         for inq in inquiries:
-            out = InquiryOut.model_validate(inq)
+            out = out_schema.model_validate(inq)
             u = users.get(inq.user_id)
             if u:
                 out.created_by = u.display_name or u.email
             result.append(out)
         return result
 
-    return inquiries
+    return [out_schema.model_validate(inq) for inq in inquiries]
 
 
 @router.get("/{inquiry_id}", response_model=InquiryOut)
