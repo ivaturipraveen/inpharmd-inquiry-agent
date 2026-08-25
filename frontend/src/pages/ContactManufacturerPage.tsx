@@ -109,7 +109,8 @@ const readContext = (): ForwardContext | null => {
     const attName = params.get("att_name");
     if (attUrl && attName) attachments.push({ id: 0, file_name: attName, doc_url: attUrl });
   }
-  return { uuid, title, attachments };
+  const team_name = params.get("team_name") ?? undefined;
+  return { uuid, title, attachments, ...(team_name ? { team_name } : {}) };
 };
 
 const goTo = (hash: string) => {
@@ -264,7 +265,7 @@ export default function ContactManufacturerPage() {
   const loadExistingInquiries = useCallback(() => {
     if (!ctx?.uuid) return;
     api.inquiries
-      .list({ source_inquiry_uuid: ctx.uuid })
+      .list({ source_inquiry_uuid: ctx.uuid, all_users: true })
       .then(setExistingInquiries)
       .catch(() => {});
   }, [ctx?.uuid]);
@@ -1596,6 +1597,7 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   const qs = new URLSearchParams();
   if (ctx.uuid) qs.set("uuid", ctx.uuid);
   if (ctx.title) qs.set("title", ctx.title);
+  if (ctx.team_name) qs.set("team_name", ctx.team_name);
   // Encode ALL extractable attachments in the URL (indexed: att_url_0, att_url_1, …)
   // so readContext can reconstruct them on page refresh when sessionStorage is gone.
   const extractables = (ctx.attachments ?? []).filter(isExtractable);
