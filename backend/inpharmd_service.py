@@ -34,6 +34,18 @@ DEFAULT_BASE_URL = "https://staging-mercer-inpharmd.herokuapp.com"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 LIST_TIMEOUT_SECONDS = 60.0
 MAX_RETRIES = 2
+# Lightweight single-page fetch (external_inquiries.py's unfiltered-browsing
+# path) uses a shorter timeout and fewer retries than the heavy 5000-record
+# full-list fetch above — that one genuinely needs headroom for a cold
+# Heroku dyno serving a ~4MB payload; a ~20-row page doesn't, and every page
+# click now hits staging live (no cache), so a hanging request here ties up
+# a backend thread for every in-flight browse instead of just the first
+# fetch in a 5-minute window. Worst case: ~20s + 1s backoff + ~20s ≈ 41s,
+# vs. the full-fetch path's ~60s×3 + backoffs ≈ 184s. Does not change
+# DEFAULT_TIMEOUT_SECONDS/LIST_TIMEOUT_SECONDS/MAX_RETRIES or any existing
+# caller — see `timeout`/`max_retries` params on list_inquiries()/_call().
+PAGE_LIST_TIMEOUT_SECONDS = 20.0
+PAGE_LIST_MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = (1.0, 3.0)  # one entry per retry attempt
 RETRY_STATUSES = {502, 503, 504}
 
@@ -64,6 +76,7 @@ def _call(
     data: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    max_retries: int = MAX_RETRIES,
 ) -> Any:
     url = f"{_base_url()}{path}"
     safe_params = dict(params or {})
@@ -71,10 +84,10 @@ def _call(
     if "access_token" in safe_params:
         tok = str(safe_params["access_token"])
         safe_params["access_token"] = tok[:6] + "…" if len(tok) > 6 else "…"
-    log.info("→ %s %s params=%s timeout=%.0fs", method, url, safe_params, timeout)
+    log.info("→ %s %s params=%s timeout=%.0fs max_retries=%d", method, url, safe_params, timeout, max_retries)
 
     last_exc: Optional[InpharmdAPIError] = None
-    for attempt in range(MAX_RETRIES + 1):
+    for attempt in range(max_retries + 1):
         started = time.monotonic()
         try:
             with httpx.Client(timeout=timeout) as client:
@@ -89,13 +102,13 @@ def _call(
             duration_ms = (time.monotonic() - started) * 1000
             log.warning(
                 "⌛ %s %s timeout after %.0fms (attempt %d/%d): %s",
-                method, url, duration_ms, attempt + 1, MAX_RETRIES + 1, e,
+                method, url, duration_ms, attempt + 1, max_retries + 1, e,
             )
             last_exc = InpharmdAPIError(
                 status_code=504,
                 message=f"Staging timed out after {duration_ms:.0f}ms (Heroku may be cold-starting). {e}",
             )
-            if attempt < MAX_RETRIES:
+            if attempt < max_retries:
                 time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
                 continue
             raise last_exc
@@ -103,12 +116,12 @@ def _call(
             duration_ms = (time.monotonic() - started) * 1000
             log.error(
                 "✗ %s %s network error after %.0fms (attempt %d/%d): %s",
-                method, url, duration_ms, attempt + 1, MAX_RETRIES + 1, e,
+                method, url, duration_ms, attempt + 1, max_retries + 1, e,
             )
             last_exc = InpharmdAPIError(
                 status_code=502, message=f"Network error talking to staging InpharmD: {e}"
             )
-            if attempt < MAX_RETRIES:
+            if attempt < max_retries:
                 time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
                 continue
             raise last_exc
@@ -119,10 +132,10 @@ def _call(
             method, url, res.status_code, duration_ms, attempt + 1, _short(res.text),
         )
 
-        if res.status_code in RETRY_STATUSES and attempt < MAX_RETRIES:
+        if res.status_code in RETRY_STATUSES and attempt < max_retries:
             log.warning(
                 "↻ %s %s got %s — retrying (attempt %d/%d)",
-                method, url, res.status_code, attempt + 2, MAX_RETRIES + 1,
+                method, url, res.status_code, attempt + 2, max_retries + 1,
             )
             time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
             continue
@@ -193,14 +206,26 @@ def resend_otp(email_token: str) -> Dict[str, Any]:
     )
 
 
-def list_inquiries(access_token: str, **extra_params: Any) -> Any:
+def list_inquiries(
+    access_token: str,
+    *,
+    timeout: float = LIST_TIMEOUT_SECONDS,
+    max_retries: int = MAX_RETRIES,
+    **extra_params: Any,
+) -> Any:
     params = {"access_token": access_token, **{k: v for k, v in extra_params.items() if v is not None}}
     # Open Medication Use Evaluation (MUE) inquiries with submitter attachments.
     # Response shape (per swagger):
     #   { data: [ { inquiry_uuid, title, inquiry_submitter, inquiry_types[],
     #               attachments: [{id, file_name, doc_url}],
     #               inquiry_submitter_details: {…} } ] }
-    return _call("GET", "/api/v2/inquiries/open_mue_inquiries", params=params, timeout=LIST_TIMEOUT_SECONDS)
+    # Defaults preserve exact prior behavior for every existing caller (the
+    # 5000-row full-list fetch); external_inquiries.py's unfiltered-page
+    # path passes PAGE_LIST_TIMEOUT_SECONDS/PAGE_LIST_MAX_RETRIES explicitly.
+    return _call(
+        "GET", "/api/v2/inquiries/open_mue_inquiries", params=params,
+        timeout=timeout, max_retries=max_retries,
+    )
 
 
 def get_inquiry_submitter_details(access_token: str, inquiry_id: str) -> Any:

@@ -115,6 +115,16 @@ export default function ExternalInquiriesPage() {
   // Sequence counter — incremented on every load call so a stale response
   // from a previous in-flight request is silently discarded.
   const loadSeqRef = useRef(0);
+  // The in-flight request's AbortController, if any — aborted whenever a
+  // newer load() supersedes it (rapid pagination/filter changes), so a
+  // superseded page/filter request stops consuming backend/staging
+  // resources instead of just having its result silently discarded by
+  // loadSeqRef above. The two mechanisms are complementary, not
+  // redundant: abort stops wasted work; loadSeqRef is the correctness
+  // backstop that still holds even if a response manages to arrive
+  // despite the abort (e.g. it was already in flight past the point
+  // where abort takes effect).
+  const abortRef = useRef<AbortController | null>(null);
 
   // Debounce search: commit to API 400 ms after the user stops typing, and
   // reset to page 1 so the new filter always starts from the beginning.
@@ -136,27 +146,48 @@ export default function ExternalInquiriesPage() {
     attachOnly: boolean,
     forceFresh: boolean,
   ) => {
+    // Cancel whatever request is still in flight before starting a new
+    // one — rapid pagination/filter changes must not leave superseded
+    // requests running to completion against our backend and staging.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const seq = ++loadSeqRef.current;
     setLoading(true);
     setError(null);
     setStagingMeta(null);
     try {
-      const { data, meta } = await api.externalInquiries.list({
-        page: pageNum,
-        per_page: PER_PAGE,
-        search: searchQ || undefined,
-        inquiry_type: typeQ || undefined,
-        with_attachments: attachOnly || undefined,
-        fresh: forceFresh,
-      });
+      const { data, meta } = await api.externalInquiries.list(
+        {
+          page: pageNum,
+          per_page: PER_PAGE,
+          search: searchQ || undefined,
+          inquiry_type: typeQ || undefined,
+          with_attachments: attachOnly || undefined,
+          fresh: forceFresh,
+        },
+        { signal: controller.signal },
+      );
       if (seq !== loadSeqRef.current) return; // superseded by a newer load
       setRaw(data);
       setMeta(meta);
       if (data?.meta && typeof data.meta.total_pages === "number") {
         setStagingMeta(data.meta as StagingMeta);
+        // Stay in sync with what the server actually served — the filtered
+        // path clamps out-of-range pages server-side, and the unfiltered
+        // path's dataset can change between live requests (no stable
+        // snapshot), so the page we asked for isn't guaranteed to be the
+        // page we got back. Trusting meta.page (rather than only comparing
+        // against total_pages) keeps the pager correct for both paths and
+        // both causes.
+        if (typeof data.meta.page === "number" && data.meta.page !== pageNum) {
+          setPage(data.meta.page);
+        }
       }
       setLastLoadedAt(Date.now());
     } catch (err: any) {
+      if (err?.name === "AbortError") return; // cancelled by a newer load — not a real error
       if (seq !== loadSeqRef.current) return;
       setError(err?.message ?? "Failed to load inquiries from InpharmD.");
     } finally {
@@ -167,6 +198,19 @@ export default function ExternalInquiriesPage() {
   useEffect(() => {
     load(page, search, typeFilter, withAttachmentsOnly, false);
   }, [load, page, search, typeFilter, withAttachmentsOnly]);
+
+  // Abort whatever request is still in flight if the page unmounts (e.g.
+  // the user switches to a different tab) — otherwise it runs to
+  // completion against our backend and staging for nothing, same waste
+  // the supersede-on-newer-load abort above prevents for rapid
+  // pagination/filter changes. Empty deps: this must only run its cleanup
+  // on actual unmount, never between renders, so it can't abort a request
+  // that a subsequent load() call just started.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Close the row menu when clicking outside, on scroll, or on resize.
   useEffect(() => {
@@ -291,10 +335,10 @@ export default function ExternalInquiriesPage() {
 
       {/* Headline stats */}
       <div className="ext-stats">
-        <StatTile label="Total inquiries" value={stagingMeta?.total_entries ?? stats.total} tone="neutral" icon="list" />
-        <StatTile label="With attachments" value={stats.withDocs} tone="info" icon="paperclip" />
-        <StatTile label="Attachments" value={stats.totalAttachments} tone="neutral" icon="paperclip" />
-        <StatTile label="Submitters" value={stats.submitters} tone="info" icon="dot" />
+        <StatTile label="Total inquiries" value={stagingMeta?.total_entries ?? stats.total} tone="neutral" icon="list" loading={loading} />
+        <StatTile label="With attachments" value={stats.withDocs} tone="info" icon="paperclip" loading={loading} />
+        <StatTile label="Attachments" value={stats.totalAttachments} tone="neutral" icon="paperclip" loading={loading} />
+        <StatTile label="Submitters" value={stats.submitters} tone="info" icon="dot" loading={loading} />
       </div>
 
       {/* By-type chip filters */}
@@ -818,9 +862,14 @@ interface StatTileProps {
   value: number;
   tone: "good" | "warn" | "bad" | "info" | "neutral";
   icon: IconKey;
+  // While a request is in flight, `value` (when it falls back to the
+  // page-scoped `stats.*`) still reflects the *previous* response's data —
+  // real numbers, just for the wrong page/filter. Showing a placeholder
+  // instead avoids presenting stale counts as if they were current.
+  loading?: boolean;
 }
 
-const StatTile = ({ label, value, tone, icon }: StatTileProps) => (
+const StatTile = ({ label, value, tone, icon, loading }: StatTileProps) => (
   <div className={`ext-stat ext-stat-${tone}`}>
     <div className="ext-stat-head">
       <div className="ext-stat-label">{label}</div>
@@ -828,7 +877,7 @@ const StatTile = ({ label, value, tone, icon }: StatTileProps) => (
         <StatIcon name={icon} />
       </div>
     </div>
-    <div className="ext-stat-value">{value.toLocaleString()}</div>
+    <div className="ext-stat-value">{loading ? "—" : value.toLocaleString()}</div>
   </div>
 );
 

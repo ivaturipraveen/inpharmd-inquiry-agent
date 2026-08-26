@@ -4,21 +4,34 @@ Frontend talks to /api/external/inquiries (and /…/{id}) using the
 X-Session-Token header; the backend looks up the user, pulls their
 staging access_token from the DB, and forwards the request upstream.
 
-Cache strategy (in-process, see `cache_service.py`):
-- Full list key: `external:full:<user_id>` — entire dataset from staging,
-  fetched once with a large per_page and cached for 5 min (INPHARMD_LIST_TTL_SECONDS).
-  Filtering and pagination are applied in-process against this cached list so
-  that search / type / attachment filters work across the full dataset, not just
-  the current page.
-- Detail key: `external:detail:<user_id>:<id>` — single inquiry, 10 min TTL.
-- `?fresh=true` invalidates the full-list cache and re-fetches from staging.
-- Stale fallback: if staging is unreachable and a stale full-list entry exists,
-  filtering + pagination still work against the stale data.
+The list endpoint has TWO independent, isolated data paths — deliberately
+not sharing a cache, so their freshness semantics stay distinct:
 
-Every list response carries:
-- `X-Cache: HIT | MISS | STALE`
-- `X-Cache-Age: <seconds>` (HIT/STALE only)
-- `X-Upstream-Error: <reason>` (STALE only)
+1. Unfiltered browsing (no search / inquiry_type / with_attachments): the
+   staging `open_mue_inquiries` endpoint has real server-side pagination
+   (`page`/`per_page`, verified against its Rails source), so this path
+   fetches exactly the requested page directly from staging on every call.
+   No cache is read or written here — this path never touches the full-list
+   cache below. `fresh` has no effect on this path: every request is already
+   live and uncached, every time. No `X-Cache`/`X-Cache-Age` headers are set
+   for this path (there is no cache state to report).
+
+2. Search / inquiry_type / with_attachments filtering: unchanged from
+   before this path split existed. Cache strategy (in-process, see
+   `cache_service.py`):
+   - Full list key: `external:full:<user_id>` — entire dataset from staging,
+     fetched once with a large per_page and cached for 5 min
+     (INPHARMD_LIST_TTL_SECONDS). Filtering and pagination are applied
+     in-process against this cached list so filters work across the full
+     dataset, not just the current page.
+   - `?fresh=true` invalidates the full-list cache and re-fetches from staging.
+   - Stale fallback: if staging is unreachable and a stale full-list entry
+     exists, filtering + pagination still work against the stale data.
+   - Response carries `X-Cache: HIT | MISS | STALE`, `X-Cache-Age: <seconds>`
+     (HIT/STALE only), `X-Upstream-Error: <reason>` (STALE only).
+
+Detail key: `external:detail:<user_id>:<id>` — single inquiry, 10 min TTL,
+unaffected by the list-path split above.
 """
 from __future__ import annotations
 
@@ -133,6 +146,57 @@ def _type_code(item: dict) -> str:
     return "PT"
 
 
+def _list_unfiltered_page(token: str, page: int, per_page: int) -> dict:
+    """Fetch exactly the requested page from staging — no cache, no
+    full-dataset fetch. Only valid when no search/type/attachment filter is
+    active (the caller checks this); staging has no server-side support for
+    those, which is why filtered requests use the separate full-fetch path
+    in list_external_inquiries instead."""
+    try:
+        data = inpharmd_service.list_inquiries(
+            token, page=page, per_page=per_page,
+            timeout=inpharmd_service.PAGE_LIST_TIMEOUT_SECONDS,
+            max_retries=inpharmd_service.PAGE_LIST_MAX_RETRIES,
+        )
+    except inpharmd_service.InpharmdAPIError as e:
+        log.error("external.list (unfiltered) upstream error status=%s body=%s", e.status_code, e.body)
+        if e.status_code in (401, 403):
+            raise HTTPException(status_code=401, detail="Staging access token expired. Please log in again.")
+        raise HTTPException(status_code=502, detail=f"Staging error {e.status_code}: {e.message}")
+
+    if isinstance(data, dict):
+        items = data.get("data") or []
+        staging_meta = data.get("meta") or {}
+    else:
+        items = data if isinstance(data, list) else []
+        staging_meta = {}
+
+    total_pages = staging_meta.get("total_pages", 1)
+    reported_page = staging_meta.get("page", page)
+    # Staging echoes back whatever page was requested without clamping it
+    # against total_pages (verified against its Rails source — .paginate()
+    # doesn't reject/adjust an out-of-range page, it just returns no rows).
+    # Since this path has no stable snapshot — every page is a fresh live
+    # query — the dataset can legitimately shrink between two page requests
+    # in the same browsing session, making a previously-valid page number
+    # invalid. Clamp our own reported meta.page the same way the filtered
+    # path already does, so the frontend's page-state sync (which trusts
+    # meta.page) can self-correct on the next render instead of leaving the
+    # pager pointed at a page that no longer exists.
+    if isinstance(total_pages, int) and total_pages > 0:
+        reported_page = min(reported_page, total_pages)
+
+    return {
+        "data": items,
+        "meta": {
+            "page": reported_page,
+            "per_page": staging_meta.get("per_page", per_page),
+            "total_entries": staging_meta.get("total_entries", len(items)),
+            "total_pages": total_pages,
+        },
+    }
+
+
 @router.get("")
 def list_external_inquiries(
     response: Response,
@@ -149,6 +213,10 @@ def list_external_inquiries(
         "with_attachments=%s fresh=%s",
         current.id, page, per_page, search, inquiry_type, with_attachments, fresh,
     )
+
+    is_unfiltered = not search and not inquiry_type and not with_attachments
+    if is_unfiltered:
+        return _list_unfiltered_page(current.staging_token, page, per_page)
 
     key = _full_list_cache_key(current.id)
 

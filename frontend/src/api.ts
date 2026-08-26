@@ -290,14 +290,17 @@ export const api = {
     // upstream schema isn't fully nailed down on our side yet.
     // Returns the data PLUS cache metadata so the UI can show
     // "Loaded from cache N min ago" / upstream error info.
-    list: (params?: {
-      page?: number;
-      per_page?: number;
-      search?: string;
-      inquiry_type?: string;
-      with_attachments?: boolean;
-      fresh?: boolean;
-    }) => {
+    list: (
+      params?: {
+        page?: number;
+        per_page?: number;
+        search?: string;
+        inquiry_type?: string;
+        with_attachments?: boolean;
+        fresh?: boolean;
+      },
+      init?: RequestInit,
+    ) => {
       const q = new URLSearchParams();
       if (params?.page) q.set("page", String(params.page));
       if (params?.per_page) q.set("per_page", String(params.per_page));
@@ -306,7 +309,7 @@ export const api = {
       if (params?.with_attachments) q.set("with_attachments", "true");
       if (params?.fresh) q.set("fresh", "true");
       const suffix = q.toString() ? `?${q}` : "";
-      return requestWithMeta<any>(`/api/external/inquiries${suffix}`);
+      return requestWithMeta<any>(`/api/external/inquiries${suffix}`, init);
     },
     get: (id: string | number, fresh = false) => {
       const suffix = fresh ? "?fresh=true" : "";
