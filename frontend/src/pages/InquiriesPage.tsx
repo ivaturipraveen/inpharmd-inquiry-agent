@@ -481,7 +481,10 @@ export default function InquiriesPage() {
                       >
                         <td className="cell-muted">#{i.id}</td>
                         <td className="cell-wrap">
-                          <div className="cell-primary">{i.subject}</div>
+                          {/* subject is the [InpharmD #id]-tagged outbound email
+                              subject, not meant for display — show the actual
+                              question instead, matching the MUE group row below. */}
+                          <div className="cell-primary">{i.question}</div>
                         </td>
                         <td>
                           {i.is_test_call ? (
