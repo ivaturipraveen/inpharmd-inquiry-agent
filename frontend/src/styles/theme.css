@@ -2561,6 +2561,16 @@ pre.raw-json {
   text-align: center;
   margin-top: 6px;
 }
+.channel-attention {
+  background: var(--amber-soft);
+  border: 1px solid #fde68a;
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-top: 14px;
+}
+.channel-attention .channel-meta {
+  margin-top: 6px;
+}
 
 @media (max-width: 980px) {
   .channel-grid {

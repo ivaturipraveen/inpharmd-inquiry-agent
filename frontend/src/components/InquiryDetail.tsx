@@ -3,6 +3,7 @@ import StatusBadge from "./StatusBadge";
 import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
 import { fmtFallbackStatus } from "../utils/fallback";
+import { resolvePreferredChannel, isEmailReachable, isCallReachable, isWebFormReachable } from "../utils/channelResolution";
 
 interface Props {
   inquiry: Inquiry;
@@ -50,15 +51,29 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const m = inquiry.manufacturer;
   const isTestCall = inquiry.is_test_call ?? false;
 
+  // The manufacturer's preferred_channel is the source of truth for which
+  // action a draft should offer — never "whichever contact fields happen to
+  // be populated". Only relevant to draft-status gating below; every other
+  // status (email_sent, needs_attention, call_completed) already reflects a
+  // channel that was actually dispatched earlier and is left untouched.
+  const preferredChannel = resolvePreferredChannel(m);
+  const emailReachable = isEmailReachable(m);
+  const callReachable = isCallReachable(m);
+  const webFormReachable = isWebFormReachable(m);
+
   const callInFlight = inquiry.status === "call_pending";
   const isDraft = inquiry.status === "draft";
   const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
   // Test call inquiries must never trigger a production manufacturer call.
+  // For a draft, only offer "Trigger Call" when the manufacturer's
+  // preferred channel is actually Call — otherwise a Web-Form- or
+  // Email-preferred manufacturer would still show a live call action.
   const canTriggerCall =
     !isTestCall &&
     (callInFlight ||
-      ["email_sent", "draft", "needs_attention"].includes(inquiry.status) ||
+      (isDraft && preferredChannel === "call") ||
+      ["email_sent", "needs_attention"].includes(inquiry.status) ||
       (inquiry.status === "call_completed" &&
         inquiry.call_provider_status !== "answered" &&
         inquiry.call_provider_status !== "follow_up_via_email"));
@@ -463,15 +478,17 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 </>
               ) : (
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => run(() => onAction("sendEmail"))}
-                  >
-                    Send Email
-                  </button>
-                  {inquiry.manufacturer?.mi_web_form_url && (
+                  {preferredChannel === "email" && emailReachable && (
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => run(() => onAction("sendEmail"))}
+                    >
+                      Send Email
+                    </button>
+                  )}
+                  {preferredChannel === "webform" && webFormReachable && (
                     <button
                       className="btn btn-ghost"
                       type="button"
@@ -482,6 +499,11 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     >
                       Open Web Form
                     </button>
+                  )}
+                  {preferredChannel === "call" && callReachable && (
+                    <span className="cell-muted" style={{ alignSelf: "center" }}>
+                      This manufacturer prefers Call — use "Trigger Call Now" below.
+                    </span>
                   )}
                   <button
                     className="btn btn-ghost"
@@ -495,6 +517,27 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                   >
                     Edit
                   </button>
+                </div>
+              )}
+              {!editingDraft && preferredChannel === "email" && !emailReachable && (
+                <div className="cell-muted" style={{ marginTop: 8 }}>
+                  Preferred channel is Email, but no email address is on file — cannot send.
+                </div>
+              )}
+              {!editingDraft && preferredChannel === "call" && !callReachable && (
+                <div className="cell-muted" style={{ marginTop: 8 }}>
+                  Preferred channel is Call, but no phone number is on file — cannot call.
+                </div>
+              )}
+              {!editingDraft && preferredChannel === "webform" && !webFormReachable && (
+                <div className="cell-muted" style={{ marginTop: 8 }}>
+                  Preferred channel is Web Form, but no web form URL is on file.
+                </div>
+              )}
+              {!editingDraft && preferredChannel === "unsupported" && (
+                <div className="cell-muted" style={{ marginTop: 8 }}>
+                  {m?.manufacturer ?? "This manufacturer"} has no supported outreach method in
+                  this app{m?.preferred_channel ? ` (preferred: ${m.preferred_channel})` : " (no preferred channel set)"}.
                 </div>
               )}
             </div>

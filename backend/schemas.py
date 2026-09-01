@@ -61,6 +61,7 @@ InquiryStatus = Literal[
 class ManufacturerSummary(BaseModel):
     id: int
     manufacturer: str
+    preferred_channel: Optional[str] = None
     official_mi_email: Optional[str] = None
     team_verified_email: Optional[str] = None
     mi_phone: Optional[str] = None

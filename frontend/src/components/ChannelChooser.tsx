@@ -1,5 +1,6 @@
 import { FC, useEffect, useState } from "react";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
+import { bucketByPreferredChannel } from "../utils/channelResolution";
 import type { ManufacturerContact } from "../types";
 
 interface Props {
@@ -36,34 +37,57 @@ const ChannelChooser: FC<Props> = ({
   const m = manufacturers[0];
   const isMulti = manufacturers.length > 1;
 
-  const emailTarget = m?.official_mi_email || m?.team_verified_email;
-  const phoneTarget = m?.mi_phone;
+  // Single source of truth for channel eligibility: each manufacturer's own
+  // preferred_channel decides which one card applies to them — never "every
+  // card whose contact field happens to be populated". A manufacturer with
+  // preferred_channel="Phone" who also has an email on file is NOT counted
+  // as email-eligible.
+  const buckets = bucketByPreferredChannel(manufacturers);
+
+  const emailEligibleCount = buckets.email.length;
+  const callEligibleCount = buckets.call.length;
   const inHours = isWithinBusinessHoursNow(m?.mi_phone_hours);
   const outOfHours = inHours === false;
 
-  const emailCapableCount = isMulti
-    ? manufacturers.filter(x => x.official_mi_email || x.team_verified_email).length
-    : 0;
-  const callCapableCount = isMulti
-    ? manufacturers.filter(x => x.mi_phone).length
-    : 0;
-  const emailDraftCount = isMulti ? manufacturers.length - emailCapableCount : 0;
-  const callDraftCount = isMulti ? manufacturers.length - callCapableCount : 0;
-
-  // Every manufacturer with a web form URL. Kept per-manufacturer (not
-  // deduped) so each can be listed and opened individually — most browsers
-  // block every window.open() after the first one triggered by a single
-  // click, so a bulk "open all" button can silently drop later tabs.
-  const webFormManufacturers = manufacturers.filter(
-    (x): x is ManufacturerContact & { mi_web_form_url: string } => !!x.mi_web_form_url,
-  );
+  // Every manufacturer whose preferred channel is Web Form AND who has a
+  // URL on file. Kept per-manufacturer (not deduped) so each can be listed
+  // and opened individually — most browsers block every window.open() after
+  // the first one triggered by a single click, so a bulk "open all" button
+  // can silently drop later tabs.
+  const webFormManufacturers = buckets.webform as (ManufacturerContact & { mi_web_form_url: string })[];
   const webFormCapableCount = webFormManufacturers.length;
   const webFormUrls = Array.from(new Set(webFormManufacturers.map(x => x.mi_web_form_url)));
   const webFormLabel = webFormCapableCount === 1 ? "Open Web Form" : "Open Web Forms";
 
+  // Manufacturers whose preferred channel is a supported one but the
+  // required contact field is missing, or whose preferred channel has no
+  // outreach mechanism in this app at all. Never silently offered another
+  // channel — surfaced explicitly instead (see the "needs attention" block
+  // in the render below).
+  const attentionItems: { name: string; reason: string }[] = [
+    ...buckets.emailUnreachable.map(x => ({
+      name: x.manufacturer,
+      reason: "prefers Email but has no email address on file",
+    })),
+    ...buckets.callUnreachable.map(x => ({
+      name: x.manufacturer,
+      reason: "prefers Call but has no phone number on file",
+    })),
+    ...buckets.webformUnreachable.map(x => ({
+      name: x.manufacturer,
+      reason: "prefers Web Form but has no web form URL on file",
+    })),
+    ...buckets.unsupported.map(x => ({
+      name: x.manufacturer,
+      reason: x.preferred_channel
+        ? `has no supported outreach method in this app (preferred: ${x.preferred_channel})`
+        : "has no preferred channel set on file",
+    })),
+  ];
+
   const callDisabled = isMulti
-    ? callCapableCount === 0 || busy !== null
-    : !phoneTarget || busy !== null || outOfHours;
+    ? callEligibleCount === 0 || busy !== null
+    : callEligibleCount === 0 || busy !== null || outOfHours;
 
   useEffect(() => {
     if (!error) return;
@@ -151,8 +175,8 @@ const ChannelChooser: FC<Props> = ({
           {error && <div className="error-banner">{error}</div>}
 
           <div className="channel-grid">
-            {/* Email card */}
-            <div className={`channel-card ${(isMulti ? emailCapableCount === 0 : !emailTarget) ? "channel-disabled" : ""}`}>
+            {/* Email card — only manufacturers whose preferred_channel is Email */}
+            <div className={`channel-card ${emailEligibleCount === 0 ? "channel-disabled" : ""}`}>
               <div className="channel-icon channel-icon-email">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="3" y="5" width="18" height="14" rx="2" />
@@ -162,24 +186,26 @@ const ChannelChooser: FC<Props> = ({
               <div className="channel-title">Send Email</div>
               <div className="channel-sub">
                 {isMulti ? (
+                  emailEligibleCount > 0 ? (
+                    <>
+                      <strong>{emailEligibleCount}</strong>{" "}
+                      {emailEligibleCount === 1 ? "manufacturer prefers" : "manufacturers prefer"} Email
+                      and will be emailed. Voice agent will call any that don't reply
+                      {fallbackHoursVaries
+                        ? " — fallback times are configured individually per eligible manufacturer."
+                        : <> within <strong>{fallbackHours}h</strong>.</>}
+                    </>
+                  ) : (
+                    "None of the selected manufacturers prefer Email."
+                  )
+                ) : emailEligibleCount > 0 ? (
                   <>
-                    <strong>{emailCapableCount}</strong>{" "}
-                    {emailCapableCount === 1 ? "manufacturer" : "manufacturers"} will be emailed
-                    {emailDraftCount > 0 && (
-                      <> · <strong>{emailDraftCount}</strong> will become drafts (no email on file)</>
-                    )}. Voice agent will call any that don't reply
-                    {fallbackHoursVaries
-                      ? " — fallback times are configured individually per eligible manufacturer."
-                      : <> within <strong>{fallbackHours}h</strong>.</>}
-                  </>
-                ) : emailTarget ? (
-                  <>
-                    We'll send to <strong>{emailTarget}</strong> and wait{" "}
+                    We'll send to <strong>{m?.official_mi_email || m?.team_verified_email}</strong> and wait{" "}
                     <strong>{fallbackHours}h</strong> for a reply before the
                     voice agent calls.
                   </>
                 ) : (
-                  "No email on file for this manufacturer."
+                  "This manufacturer's preferred channel is not Email."
                 )}
               </div>
               <ul className="channel-meta">
@@ -196,15 +222,15 @@ const ChannelChooser: FC<Props> = ({
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={(isMulti ? emailCapableCount === 0 : !emailTarget) || busy !== null}
+                disabled={emailEligibleCount === 0 || busy !== null}
                 onClick={handleEmail}
               >
                 {busy === "email" ? "Sending…" : "Send Email"}
               </button>
             </div>
 
-            {/* Call card */}
-            <div className={`channel-card ${(isMulti ? callCapableCount === 0 : !phoneTarget) ? "channel-disabled" : ""}`}>
+            {/* Call card — only manufacturers whose preferred_channel is Phone */}
+            <div className={`channel-card ${callEligibleCount === 0 ? "channel-disabled" : ""}`}>
               <div className="channel-icon channel-icon-call">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
@@ -213,26 +239,28 @@ const ChannelChooser: FC<Props> = ({
               <div className="channel-title">Call Agent Now</div>
               <div className="channel-sub">
                 {isMulti ? (
+                  callEligibleCount > 0 ? (
+                    <>
+                      <strong>{callEligibleCount}</strong>{" "}
+                      {callEligibleCount === 1 ? "manufacturer prefers" : "manufacturers prefer"} Call
+                      and will be called.
+                    </>
+                  ) : (
+                    "None of the selected manufacturers prefer Call."
+                  )
+                ) : callEligibleCount > 0 ? (
                   <>
-                    <strong>{callCapableCount}</strong>{" "}
-                    {callCapableCount === 1 ? "manufacturer" : "manufacturers"} will be called
-                    {callDraftCount > 0 && (
-                      <> · <strong>{callDraftCount}</strong> will become drafts (no phone on file)</>
-                    )}.
-                  </>
-                ) : phoneTarget ? (
-                  <>
-                    Voice agent will dial <strong>{phoneTarget}</strong> and ask
+                    Voice agent will dial <strong>{m?.mi_phone}</strong> and ask
                     the question on your behalf.
                   </>
                 ) : (
-                  "No phone number on file for this manufacturer."
+                  "This manufacturer's preferred channel is not Call."
                 )}
               </div>
               <ul className="channel-meta">
                 {isMulti ? (
                   <li>
-                    <span>Callable</span> {callCapableCount} of {manufacturers.length} have a phone
+                    <span>Preferred Call</span> {callEligibleCount} of {manufacturers.length}
                   </li>
                 ) : (
                   <>
@@ -321,6 +349,19 @@ const ChannelChooser: FC<Props> = ({
               </div>
             )}
           </div>
+
+          {attentionItems.length > 0 && (
+            <div className="channel-attention">
+              <div className="detail-label">Needs attention</div>
+              <ul className="channel-meta">
+                {attentionItems.map((item, idx) => (
+                  <li key={idx}>
+                    <strong>{item.name}</strong> {item.reason}.
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <div className="channel-foot">
             Not sure? You can also save it as a draft and decide later from the

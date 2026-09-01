@@ -5,6 +5,7 @@ import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
+import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable } from "../utils/channelResolution";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
 import type {
   Inquiry,
@@ -141,18 +142,7 @@ const confidenceTone = (c: DetectedRow["confidence"]): string => {
 };
 
 type Mode = "single" | "multi";
-type BulkChannel = "email" | "call" | "test_call";
-
-
-const COUNTRY_CODES: { code: string; label: string }[] = [
-  { code: "+1", label: "+1 US / CA" },
-  { code: "+91", label: "+91 IN" },
-  { code: "+44", label: "+44 UK" },
-  { code: "+61", label: "+61 AU" },
-  { code: "+49", label: "+49 DE" },
-];
-
-const digitsOnly = (s: string) => s.replace(/\D+/g, "");
+type BulkChannel = "email" | "call";
 
 // selectedKeys format: `${attIdx}:${rowIndex}` — namespaces row indices across files.
 const selKey = (attIdx: number, rowIndex: number) => `${attIdx}:${rowIndex}`;
@@ -196,8 +186,6 @@ export default function ContactManufacturerPage() {
   const [teamName, setTeamName] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
   const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
-  const [testCountryCode, setTestCountryCode] = useState("+1");
-  const [testLocal, setTestLocal] = useState("");
 
 
   const reloadManufacturers = useCallback(() => {
@@ -548,41 +536,6 @@ export default function ContactManufacturerPage() {
       return;
     }
 
-    // Test call is entirely separate from the bulk dispatch flow —
-    // no manufacturers are selected, no inquiries are created.
-    if (channel === "test_call") {
-      const digits = digitsOnly(testLocal);
-      if (digits.length < 7) {
-        setExtractError("Enter a valid phone number for the test call (at least 7 digits).");
-        return;
-      }
-      const phoneNumber = `${testCountryCode}${digits}`;
-      // Match the entered number against known manufacturer phones (exact match).
-      const matchedMfr = manufacturers.find(
-        (m) => m.mi_phone && digitsOnly(m.mi_phone) === digits
-      );
-      setSubmitting("test_call");
-      setExtractError(null);
-      try {
-        await api.inquiries.testCallPreview({
-          phone_number: phoneNumber,
-          subject: subject.trim(),
-          question: question.trim(),
-          manufacturer_id: matchedMfr?.id ?? null,
-        });
-        setBanner(
-          matchedMfr
-            ? `Test call dialing ${phoneNumber} with ${matchedMfr.manufacturer} context.`
-            : `Test call dialing ${phoneNumber}.`
-        );
-      } catch (e: any) {
-        setExtractError(e?.message ?? "Test call failed.");
-      } finally {
-        setSubmitting(null);
-      }
-      return;
-    }
-
     if (selectedKeys.size === 0) {
       setExtractError("Pick at least one manufacturer.");
       return;
@@ -606,8 +559,8 @@ export default function ContactManufacturerPage() {
             if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
             const m = mfrById[r.matched_id];
             if (m) {
-              if (channel === "email") return !!(m.official_mi_email || m.team_verified_email);
-              if (channel === "call") return !!m.mi_phone;
+              if (channel === "email") return resolvePreferredChannel(m) === "email" && isEmailReachable(m);
+              if (channel === "call") return resolvePreferredChannel(m) === "call" && isCallReachable(m);
             }
             return true;
           })
@@ -1202,29 +1155,84 @@ export default function ContactManufacturerPage() {
               const allSelectedRows = attachmentExtractions.flatMap((s, attIdx) =>
                 (s.result?.rows ?? []).filter((r) => selectedKeys.has(selKey(attIdx, r.row_index)) && r.matched_id != null),
               );
-              const reachableByEmail = allSelectedRows.filter((r) => {
-                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-                return !!(m?.official_mi_email || m?.team_verified_email);
-              }).length;
-              const phoneRows = allSelectedRows.filter((r) => {
-                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-                return !!m?.mi_phone;
-              });
-              const reachableByPhone = phoneRows.length;
-              const fallbackEligibleCount = allSelectedRows.filter((r) => {
-                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-                return !!(m?.fallback_call_enabled && m?.mi_phone);
-              }).length;
-              const outOfHoursNow = phoneRows.filter((r) => {
-                const m = r.matched_id ? mfrById[r.matched_id] : undefined;
-                return isWithinBusinessHoursNow(m?.mi_phone_hours) === false;
-              }).length;
-              const callableNow = reachableByPhone - outOfHoursNow;
               const total = allSelectedRows.length;
               const noneSelected = total === 0;
-              const testDigits = digitsOnly(testLocal);
-              const testValid = testDigits.length >= 7;
               const anyBusy = submitting !== null;
+
+              // One manufacturer per selected row (rows, not manufacturers —
+              // matches bulkCreate's one-Inquiry-per-row semantics). Each
+              // row's eligibility is driven by its manufacturer's own
+              // preferred_channel, never by which contact fields happen to
+              // be populated.
+              const rowManufacturers = allSelectedRows
+                .map((r) => (r.matched_id ? mfrById[r.matched_id] : undefined))
+                .filter((m): m is ManufacturerContact => !!m);
+              const buckets = bucketByPreferredChannel(rowManufacturers);
+
+              const reachableByEmail = buckets.email.length;
+              const fallbackEligibleCount = buckets.email.filter((m) => m.fallback_call_enabled && m.mi_phone).length;
+
+              // Effective fallback hours actually used per email-eligible,
+              // fallback-eligible row — respects each row's own override
+              // (rowFallbackHours) instead of always showing the batch
+              // default, matching what bulkCreate actually dispatches with.
+              const fallbackEligibleHours = attachmentExtractions.flatMap((s, attIdx) =>
+                (s.result?.rows ?? [])
+                  .filter((r) => selectedKeys.has(selKey(attIdx, r.row_index)) && r.matched_id != null)
+                  .filter((r) => {
+                    const mfr = mfrById[r.matched_id as number];
+                    return (
+                      !!mfr &&
+                      resolvePreferredChannel(mfr) === "email" &&
+                      isEmailReachable(mfr) &&
+                      mfr.fallback_call_enabled &&
+                      mfr.mi_phone
+                    );
+                  })
+                  .map((r) => rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours),
+              );
+              const fallbackHoursVary = new Set(fallbackEligibleHours).size > 1;
+              const effectiveFallbackHours = fallbackEligibleHours[0] ?? fallbackHours;
+
+              const outOfHoursNow = buckets.call.filter(
+                (m) => isWithinBusinessHoursNow(m.mi_phone_hours) === false,
+              ).length;
+              const callableNow = buckets.call.length - outOfHoursNow;
+
+              // Web form: dedupe by manufacturer (not by row) — a manufacturer
+              // referenced by several selected rows should still only count,
+              // list, and open once.
+              const webFormManufacturers = Array.from(
+                new Map(buckets.webform.map((m) => [m.id, m] as const)).values(),
+              ) as (ManufacturerContact & { mi_web_form_url: string })[];
+              const reachableByWebForm = webFormManufacturers.length;
+              const webFormUrls = Array.from(
+                new Set(webFormManufacturers.map((m) => m.mi_web_form_url)),
+              );
+              const webFormLabel = reachableByWebForm === 1 ? "Open Web Form" : "Open Web Forms";
+              const handleOpenWebForms = () => {
+                webFormUrls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
+              };
+
+              // Manufacturers whose preferred channel is supported but
+              // unreachable, or whose preferred channel has no outreach
+              // mechanism in this app — deduped by manufacturer so the same
+              // one doesn't repeat once per selected row.
+              const attentionItems = Array.from(
+                new Map(
+                  [
+                    ...buckets.emailUnreachable.map((m) => [m.id, { name: m.manufacturer, reason: "prefers Email but has no email address on file" }] as const),
+                    ...buckets.callUnreachable.map((m) => [m.id, { name: m.manufacturer, reason: "prefers Call but has no phone number on file" }] as const),
+                    ...buckets.webformUnreachable.map((m) => [m.id, { name: m.manufacturer, reason: "prefers Web Form but has no web form URL on file" }] as const),
+                    ...buckets.unsupported.map((m) => [m.id, {
+                      name: m.manufacturer,
+                      reason: m.preferred_channel
+                        ? `has no supported outreach method in this app (preferred: ${m.preferred_channel})`
+                        : "has no preferred channel set on file",
+                    }] as const),
+                  ],
+                ).values(),
+              );
 
               return (
                 <div className="page-form">
@@ -1248,27 +1256,40 @@ export default function ContactManufacturerPage() {
                         </div>
                         <div className="channel-title">Send Email</div>
                         <div className="channel-sub">
-                          Email all {total} selected manufacturer{total === 1 ? "" : "s"}.
-                          {fallbackEligibleCount > 0 && (
+                          {reachableByEmail > 0 ? (
                             <>
-                              {" "}Voice agent will call{" "}
-                              {fallbackEligibleCount < total
-                                ? <>{fallbackEligibleCount} of {total} that don't</>
-                                : <>any that don't</>}{" "}
-                              reply within{" "}
-                              <strong>{fmtFallbackHours(fallbackHours)}</strong>.
+                              <strong>{reachableByEmail}</strong> of {total} selected{" "}
+                              {reachableByEmail === 1 ? "manufacturer prefers" : "manufacturers prefer"} Email
+                              and will be emailed.
+                              {fallbackEligibleCount > 0 && (
+                                <>
+                                  {" "}Voice agent will call{" "}
+                                  {fallbackEligibleCount < reachableByEmail
+                                    ? <>{fallbackEligibleCount} of {reachableByEmail} that don't</>
+                                    : <>any that don't</>}{" "}
+                                  reply{" "}
+                                  {fallbackHoursVary
+                                    ? "within their individually configured time."
+                                    : <>within <strong>{fmtFallbackHours(effectiveFallbackHours)}</strong>.</>}
+                                </>
+                              )}
                             </>
+                          ) : (
+                            "None of the selected manufacturers prefer Email."
                           )}
                         </div>
                         <ul className="channel-meta">
                           <li>
-                            <span>Reachable</span> {reachableByEmail} of {total} have email
+                            <span>Preferred Email</span> {reachableByEmail} of {total}
                           </li>
                           {fallbackEligibleCount > 0 && (
                             <li>
-                              <span>Fallback</span> agent call after {fmtFallbackHours(fallbackHours)}
-                              {fallbackEligibleCount < total && (
-                                <span className="cell-muted"> · {fallbackEligibleCount} of {total} eligible</span>
+                              <span>Fallback</span>{" "}
+                              {fallbackHoursVary
+                                ? "Configured individually per eligible manufacturer"
+                                : `agent call after ${fmtFallbackHours(effectiveFallbackHours)}`}
+                              {fallbackEligibleCount < reachableByEmail && (
+                                <span className="cell-muted"> · {fallbackEligibleCount} of {reachableByEmail} eligible</span>
                               )}
                             </li>
                           )}
@@ -1279,7 +1300,7 @@ export default function ContactManufacturerPage() {
                           disabled={noneSelected || reachableByEmail === 0 || anyBusy}
                           onClick={() => handleBulkSubmit("email")}
                         >
-                          {submitting === "email" ? "Sending…" : `Send Email (${reachableByEmail || total})`}
+                          {submitting === "email" ? "Sending…" : `Send Email (${reachableByEmail})`}
                         </button>
                       </div>
 
@@ -1298,13 +1319,8 @@ export default function ContactManufacturerPage() {
                         </div>
                         <ul className="channel-meta">
                           <li>
-                            <span>Callable now</span>{" "}
-                            {callableNow} of {total}
-                            {reachableByPhone < total && (
-                              <span className="cell-muted">
-                                {" "}· {total - reachableByPhone} no phone
-                              </span>
-                            )}
+                            <span>Preferred Call</span>{" "}
+                            {callableNow} of {buckets.call.length} callable now
                             {outOfHoursNow > 0 && (
                               <span className="bulk-row-warn">
                                 {" "}· {outOfHoursNow} outside hours
@@ -1320,10 +1336,10 @@ export default function ContactManufacturerPage() {
                           type="button"
                           disabled={noneSelected || callableNow === 0 || anyBusy}
                           title={
-                            callableNow === 0 && reachableByPhone > 0
+                            callableNow === 0 && buckets.call.length > 0
                               ? "All selected manufacturers are outside business hours right now."
                               : callableNow === 0
-                              ? "No selected manufacturers have a phone number on file."
+                              ? "No selected manufacturers prefer Call."
                               : undefined
                           }
                           onClick={() => handleBulkSubmit("call")}
@@ -1336,62 +1352,70 @@ export default function ContactManufacturerPage() {
                         </button>
                       </div>
 
-                      {/* Test Call card */}
-                      <div className="channel-card channel-card-test">
+                      {/* Web Form card */}
+                      <div className={`channel-card ${reachableByWebForm === 0 ? "channel-disabled" : ""}`}>
                         <div className="channel-icon channel-icon-test">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 2v4" /><path d="M12 18v4" />
-                            <path d="M4.93 4.93l2.83 2.83" /><path d="M16.24 16.24l2.83 2.83" />
-                            <path d="M2 12h4" /><path d="M18 12h4" />
-                            <path d="M4.93 19.07l2.83-2.83" /><path d="M16.24 7.76l2.83-2.83" />
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <path d="M14 2v6h6" />
+                            <path d="M9 15h6" />
+                            <path d="M9 11h6" />
                           </svg>
                         </div>
-                        <div className="channel-title">Test Call</div>
+                        <div className="channel-title">{webFormLabel}</div>
                         <div className="channel-sub">
-                          Dial <strong>your own number</strong> with the first
-                          selected manufacturer's context. Lets you hear the
-                          script before contacting any real MI desk —{" "}
-                          <strong>no manufacturer is called</strong>. The
-                          transcript is saved in Outreach when the call ends.
+                          Open the medical information request form for each
+                          selected manufacturer whose preferred channel is Web
+                          Form — you'll complete and submit it manually.{" "}
+                          <strong>No inquiry is created</strong> and nothing is
+                          submitted automatically.
                         </div>
-                        <div className="phone-input-row">
-                          <select
-                            className="phone-cc-select"
-                            value={testCountryCode}
-                            onChange={(e) => setTestCountryCode(e.target.value)}
-                            disabled={anyBusy}
-                            aria-label="Country code"
-                          >
-                            {COUNTRY_CODES.map((c) => (
-                              <option key={c.code} value={c.code}>{c.label}</option>
-                            ))}
-                          </select>
-                          <input
-                            type="tel"
-                            inputMode="numeric"
-                            className="channel-test-input"
-                            placeholder="phone number"
-                            value={testLocal}
-                            onChange={(e) => setTestLocal(e.target.value)}
-                            disabled={anyBusy}
-                          />
-                        </div>
-                        <div className="channel-test-hint">
-                          Dialing:{" "}
-                          <strong>
-                            {testValid ? `${testCountryCode}${testDigits}` : "—"}
-                          </strong>
-                        </div>
+                        <ul className="channel-meta">
+                          <li>
+                            <span>Preferred Web Form</span> {reachableByWebForm} of {total}
+                          </li>
+                        </ul>
                         <button
                           className="btn btn-primary"
                           type="button"
-                          disabled={noneSelected || !testValid || anyBusy}
-                          onClick={() => handleBulkSubmit("test_call")}
+                          disabled={noneSelected || reachableByWebForm === 0 || anyBusy}
+                          onClick={handleOpenWebForms}
                         >
-                          {submitting === "test_call" ? "Dialing…" : "Call My Number"}
+                          {webFormLabel}
                         </button>
+                        {reachableByWebForm > 1 && (
+                          <ul className="channel-meta channel-webform-list">
+                            <li className="cell-muted">
+                              Your browser may block opening more than one tab
+                              at once — open any that didn't open individually:
+                            </li>
+                            {webFormManufacturers.map((wm) => (
+                              <li key={wm.id}>
+                                <a
+                                  href={wm.mi_web_form_url as string}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  {wm.manufacturer}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     </div>
+                    {attentionItems.length > 0 && (
+                      <div className="channel-attention">
+                        <div className="detail-label">Needs attention</div>
+                        <ul className="channel-meta">
+                          {attentionItems.map((item, idx) => (
+                            <li key={idx}>
+                              <strong>{item.name}</strong> {item.reason}.
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                   <div className="page-form-footer">
                     <button
@@ -1495,10 +1519,23 @@ export default function ContactManufacturerPage() {
         const fallbackHoursVaries = new Set(eligibleFallbackHours).size > 1;
 
         const bulkDispatch = async (channel: "email" | "call" | "none") => {
+          // For an actual dispatch (not "save as draft"), only include
+          // targets whose manufacturer's preferred_channel resolves to this
+          // channel and has the required contact info — mirrors the Excel
+          // bulk flow's handleBulkSubmit. "none" (Save as Draft) keeps every
+          // selected target, unfiltered, as before.
+          const targets = pendingBulkManualInput.targets.filter((t) => {
+            if (channel === "none") return true;
+            const mfr = mfrById[t.manufacturer_id];
+            if (!mfr) return true;
+            if (channel === "email") return resolvePreferredChannel(mfr) === "email" && isEmailReachable(mfr);
+            if (channel === "call") return resolvePreferredChannel(mfr) === "call" && isCallReachable(mfr);
+            return true;
+          });
           const result = await api.inquiries.bulkCreate({
             // Each target already carries its own medication_name and
             // fallback_after_hours — passed straight through, no remapping.
-            targets: pendingBulkManualInput.targets,
+            targets,
             subject: pendingBulkManualInput.subject,
             question: pendingBulkManualInput.question,
             // Batch-level default only; every target above supplies its own

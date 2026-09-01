@@ -43,6 +43,7 @@ export type InquiryStatus =
 export interface ManufacturerSummary {
   id: number;
   manufacturer: string;
+  preferred_channel?: string | null;
   official_mi_email?: string | null;
   team_verified_email?: string | null;
   mi_phone?: string | null;
