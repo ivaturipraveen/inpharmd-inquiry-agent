@@ -46,6 +46,7 @@ export interface ManufacturerSummary {
   official_mi_email?: string | null;
   team_verified_email?: string | null;
   mi_phone?: string | null;
+  mi_web_form_url?: string | null;
   typical_response_sla?: string | null;
   fallback_call_enabled?: boolean;
 }

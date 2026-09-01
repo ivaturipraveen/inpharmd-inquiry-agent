@@ -64,6 +64,7 @@ class ManufacturerSummary(BaseModel):
     official_mi_email: Optional[str] = None
     team_verified_email: Optional[str] = None
     mi_phone: Optional[str] = None
+    mi_web_form_url: Optional[str] = None
     typical_response_sla: Optional[str] = None
     fallback_call_enabled: bool = False
     model_config = ConfigDict(from_attributes=True)

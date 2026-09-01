@@ -14,23 +14,11 @@ interface Props {
   inquiryLabel?: string;
   onSendEmail: () => Promise<void>;
   onCallAgent: () => Promise<void>;
-  /** Called with the full E.164 number. Should call testCallPreview — no inquiry is created. */
-  onTestCall: (phone: string) => Promise<void>;
   /** Called when user explicitly clicks "Save as Draft". Creates the inquiry. */
   onSaveDraft: () => Promise<void>;
   /** Called when user dismisses via ×, Escape, or backdrop. Nothing is created. */
   onClose: () => void;
 }
-
-const COUNTRY_CODES = [
-  { code: "+1", label: "+1 US / CA" },
-  { code: "+91", label: "+91 IN" },
-  { code: "+44", label: "+44 UK" },
-  { code: "+61", label: "+61 AU" },
-  { code: "+49", label: "+49 DE" },
-];
-
-const digitsOnly = (s: string) => s.replace(/\D+/g, "");
 
 const ChannelChooser: FC<Props> = ({
   manufacturers,
@@ -39,15 +27,11 @@ const ChannelChooser: FC<Props> = ({
   inquiryLabel,
   onSendEmail,
   onCallAgent,
-  onTestCall,
   onSaveDraft,
   onClose,
 }) => {
-  const [busy, setBusy] = useState<"email" | "call" | "draft" | "test" | null>(null);
+  const [busy, setBusy] = useState<"email" | "call" | "draft" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [countryCode, setCountryCode] = useState("+1");
-  const [testLocal, setTestLocal] = useState("");
-  const [testDialedTo, setTestDialedTo] = useState<string | null>(null);
 
   const m = manufacturers[0];
   const isMulti = manufacturers.length > 1;
@@ -66,26 +50,26 @@ const ChannelChooser: FC<Props> = ({
   const emailDraftCount = isMulti ? manufacturers.length - emailCapableCount : 0;
   const callDraftCount = isMulti ? manufacturers.length - callCapableCount : 0;
 
+  // Every manufacturer with a web form URL. Kept per-manufacturer (not
+  // deduped) so each can be listed and opened individually — most browsers
+  // block every window.open() after the first one triggered by a single
+  // click, so a bulk "open all" button can silently drop later tabs.
+  const webFormManufacturers = manufacturers.filter(
+    (x): x is ManufacturerContact & { mi_web_form_url: string } => !!x.mi_web_form_url,
+  );
+  const webFormCapableCount = webFormManufacturers.length;
+  const webFormUrls = Array.from(new Set(webFormManufacturers.map(x => x.mi_web_form_url)));
+  const webFormLabel = webFormCapableCount === 1 ? "Open Web Form" : "Open Web Forms";
+
   const callDisabled = isMulti
     ? callCapableCount === 0 || busy !== null
     : !phoneTarget || busy !== null || outOfHours;
-
-  const testDigits = digitsOnly(testLocal);
-  const fullTestNumber = `${countryCode}${testDigits}`;
-  const testValid =
-    testDigits.length >= 7 && fullTestNumber.replace("+", "").length <= 15;
 
   useEffect(() => {
     if (!error) return;
     const t = setTimeout(() => setError(null), 6000);
     return () => clearTimeout(t);
   }, [error]);
-
-  useEffect(() => {
-    if (!testDialedTo) return;
-    const t = setTimeout(() => setTestDialedTo(null), 6000);
-    return () => clearTimeout(t);
-  }, [testDialedTo]);
 
   // Escape key closes without creating anything.
   useEffect(() => {
@@ -125,22 +109,8 @@ const ChannelChooser: FC<Props> = ({
     }
   };
 
-  const handleTestCall = async () => {
-    if (!testValid) {
-      setError("Enter a valid phone number (at least 7 digits).");
-      return;
-    }
-    setBusy("test");
-    setError(null);
-    setTestDialedTo(null);
-    try {
-      await onTestCall(fullTestNumber);
-      setTestDialedTo(fullTestNumber);
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to place test call.");
-    } finally {
-      setBusy(null);
-    }
+  const handleOpenWebForm = () => {
+    webFormUrls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
   };
 
   const handleSaveDraft = async () => {
@@ -179,13 +149,6 @@ const ChannelChooser: FC<Props> = ({
 
         <div className="modal-body">
           {error && <div className="error-banner">{error}</div>}
-          {testDialedTo && (
-            <div className="success-banner">
-              ✓ Test call dialing <strong>{testDialedTo}</strong> — your phone
-              should ring shortly. You can now choose Send Email or Call Agent
-              Now to actually contact the manufacturer.
-            </div>
-          )}
 
           <div className="channel-grid">
             {/* Email card */}
@@ -296,7 +259,7 @@ const ChannelChooser: FC<Props> = ({
                 disabled={callDisabled}
                 title={
                   !isMulti && outOfHours
-                    ? `Outside ${m?.manufacturer ?? "manufacturer"} business hours (${m?.mi_phone_hours ?? "unknown"}). Use Test Call to verify the agent, or wait until in-hours.`
+                    ? `Outside ${m?.manufacturer ?? "manufacturer"} business hours (${m?.mi_phone_hours ?? "unknown"}). Wait until in-hours to call.`
                     : undefined
                 }
                 onClick={handleCall}
@@ -305,63 +268,58 @@ const ChannelChooser: FC<Props> = ({
               </button>
             </div>
 
-            {/* Test Call card */}
-            <div className="channel-card channel-card-test">
-              <div className="channel-icon channel-icon-test">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2v4" />
-                  <path d="M12 18v4" />
-                  <path d="M4.93 4.93l2.83 2.83" />
-                  <path d="M16.24 16.24l2.83 2.83" />
-                  <path d="M2 12h4" />
-                  <path d="M18 12h4" />
-                  <path d="M4.93 19.07l2.83-2.83" />
-                  <path d="M16.24 7.76l2.83-2.83" />
-                </svg>
-              </div>
-              <div className="channel-title">Test Call</div>
-              <div className="channel-sub">
-                Dial <strong>your own number</strong> with this inquiry's
-                question and manufacturer context. Hear exactly how the agent
-                would speak to a real MI desk — no status changes, no
-                business-hours check.
-              </div>
-              <div className="phone-input-row">
-                <select
-                  className="phone-cc-select"
-                  value={countryCode}
-                  onChange={(e) => setCountryCode(e.target.value)}
+            {/* Web Form card */}
+            {webFormCapableCount > 0 && (
+              <div className="channel-card">
+                <div className="channel-icon channel-icon-test">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <path d="M14 2v6h6" />
+                    <path d="M9 15h6" />
+                    <path d="M9 11h6" />
+                  </svg>
+                </div>
+                <div className="channel-title">{webFormLabel}</div>
+                <div className="channel-sub">
+                  {isMulti ? (
+                    <>
+                      <strong>{webFormCapableCount}</strong>{" "}
+                      {webFormCapableCount === 1 ? "manufacturer has" : "manufacturers have"} a
+                      web form available.
+                    </>
+                  ) : (
+                    "Open this manufacturer's medical information request form to submit this inquiry."
+                  )}
+                </div>
+                <button
+                  className="btn btn-primary"
+                  type="button"
                   disabled={busy !== null}
-                  aria-label="Country code"
+                  onClick={handleOpenWebForm}
                 >
-                  {COUNTRY_CODES.map((c) => (
-                    <option key={c.code} value={c.code}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="tel"
-                  inputMode="numeric"
-                  className="channel-test-input"
-                  placeholder="phone number"
-                  value={testLocal}
-                  onChange={(e) => setTestLocal(e.target.value)}
-                  disabled={busy !== null}
-                />
+                  {webFormLabel}
+                </button>
+                {isMulti && webFormCapableCount > 1 && (
+                  <ul className="channel-meta channel-webform-list">
+                    <li className="cell-muted">
+                      Your browser may block opening more than one tab at
+                      once — open any that didn't open individually:
+                    </li>
+                    {webFormManufacturers.map((wm) => (
+                      <li key={wm.id}>
+                        <a
+                          href={wm.mi_web_form_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {wm.manufacturer}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              <div className="channel-test-hint">
-                Dialing: <strong>{testValid ? fullTestNumber : "—"}</strong>
-              </div>
-              <button
-                className="btn btn-primary"
-                type="button"
-                disabled={busy !== null || !testValid}
-                onClick={handleTestCall}
-              >
-                {busy === "test" ? "Dialing…" : "Call My Number"}
-              </button>
-            </div>
+            )}
           </div>
 
           <div className="channel-foot">
@@ -371,20 +329,12 @@ const ChannelChooser: FC<Props> = ({
         </div>
 
         <div className="modal-footer">
-          {testDialedTo ? (
-            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
-              Done
-            </button>
-          ) : (
-            <>
-              <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
-                Cancel
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={handleSaveDraft} disabled={busy !== null}>
-                {busy === "draft" ? "Saving…" : "Save as Draft"}
-              </button>
-            </>
-          )}
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={handleSaveDraft} disabled={busy !== null}>
+            {busy === "draft" ? "Saving…" : "Save as Draft"}
+          </button>
         </div>
       </div>
     </div>

@@ -1468,19 +1468,6 @@ export default function ContactManufacturerPage() {
               closePending();
               goTo("inquiries");
             }}
-            onTestCall={async (phone) => {
-              await api.inquiries.testCallPreview({
-                phone_number: phone,
-                subject: pendingInquiryInput.subject,
-                question: pendingInquiryInput.question,
-                manufacturer_id: pendingInquiryInput.manufacturer_id,
-              });
-              setBanner(
-                mfr
-                  ? `Test call dialing ${phone} with ${mfr.manufacturer} context.`
-                  : `Test call dialing ${phone}.`,
-              );
-            }}
             onSaveDraft={async () => {
               await getOrCreateId();
               setBanner("Inquiry saved as draft.");
@@ -1550,19 +1537,6 @@ export default function ContactManufacturerPage() {
             onClose={closePendingBulk}
             onSendEmail={() => bulkDispatch("email")}
             onCallAgent={() => bulkDispatch("call")}
-            onTestCall={async (phone) => {
-              await api.inquiries.testCallPreview({
-                phone_number: phone,
-                subject: pendingBulkManualInput.subject,
-                question: pendingBulkManualInput.question,
-                manufacturer_id: mfrs[0]?.id ?? null,
-              });
-              setBanner(
-                mfrs[0]
-                  ? `Test call dialing ${phone} with ${mfrs[0].manufacturer} context.`
-                  : `Test call dialing ${phone}.`,
-              );
-            }}
             onSaveDraft={() => bulkDispatch("none")}
           />
         );

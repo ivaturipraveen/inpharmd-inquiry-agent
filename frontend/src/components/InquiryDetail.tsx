@@ -471,6 +471,18 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                   >
                     Send Email
                   </button>
+                  {inquiry.manufacturer?.mi_web_form_url && (
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        window.open(inquiry.manufacturer!.mi_web_form_url!, "_blank", "noopener,noreferrer")
+                      }
+                    >
+                      Open Web Form
+                    </button>
+                  )}
                   <button
                     className="btn btn-ghost"
                     type="button"
