@@ -5,6 +5,7 @@ Usage:
     python seed.py --force    # wipe and reload
 """
 import argparse
+import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -14,8 +15,46 @@ import openpyxl
 from database import Base, SessionLocal, engine
 from models import ManufacturerContact
 
-EXCEL_PATH = Path(__file__).resolve().parents[1] / "Manufacturer_MI_Contact_Database (1).xlsx"
+WORKBOOK_NAME = "Manufacturer_MI_Contact_Database (1).xlsx"
 SHEET = "Manufacturer Contacts"
+
+
+def resolve_excel_path() -> Path:
+    """Locate the seed workbook, checked in order:
+
+      1. $SEED_EXCEL_PATH — explicit override
+      2. next to this file
+      3. the repository root — where the workbook actually lives, and what
+         works for a local run or a Render deploy (rootDir=backend, but the
+         whole repo is checked out)
+
+    Heroku is the case that needs the override: its monorepo buildpack
+    promotes $APP_BASE to the build root and discards everything above it, so
+    the repo-root copy is NOT in the slug and `heroku run python seed.py`
+    cannot find it. Seed from a local checkout with DATABASE_URL pointed at
+    the target database instead, or set SEED_EXCEL_PATH.
+    """
+    override = (os.getenv("SEED_EXCEL_PATH") or "").strip()
+    if override:
+        p = Path(override).expanduser()
+        if not p.is_file():
+            raise SystemExit(f"SEED_EXCEL_PATH={p} — no such file.")
+        return p
+
+    here = Path(__file__).resolve()
+    searched = [here.parent / WORKBOOK_NAME, here.parents[1] / WORKBOOK_NAME]
+    for candidate in searched:
+        if candidate.is_file():
+            return candidate
+
+    raise SystemExit(
+        f"Could not find {WORKBOOK_NAME!r}. Looked in:\n"
+        + "".join(f"  {c.parent}\n" for c in searched)
+        + "If this is a Heroku dyno, the workbook is not in the slug — the "
+        "monorepo buildpack keeps only $APP_BASE. Run this script from a "
+        "local checkout with DATABASE_URL pointed at the target database, or "
+        "set SEED_EXCEL_PATH to a readable copy."
+    )
 
 COLUMN_MAP = {
     1: "manufacturer",
@@ -65,8 +104,8 @@ def to_date(value):
     return None
 
 
-def load_rows():
-    wb = openpyxl.load_workbook(EXCEL_PATH, data_only=True)
+def load_rows(excel_path: Path):
+    wb = openpyxl.load_workbook(excel_path, data_only=True)
     ws = wb[SHEET]
     rows = list(ws.iter_rows(values_only=True))
     for raw in rows[1:]:
@@ -87,6 +126,11 @@ def main():
     parser.add_argument("--force", action="store_true", help="Wipe table before seeding")
     args = parser.parse_args()
 
+    # Resolve the workbook first — a missing file should fail before we touch
+    # the database, not after creating tables.
+    excel_path = resolve_excel_path()
+    print(f"Seeding from {excel_path}")
+
     Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as db:
@@ -100,7 +144,7 @@ def main():
             print("Cleared existing rows.")
 
         inserted = 0
-        for rec in load_rows():
+        for rec in load_rows(excel_path):
             db.add(ManufacturerContact(**rec))
             inserted += 1
         db.commit()
