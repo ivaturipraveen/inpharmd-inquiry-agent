@@ -159,8 +159,31 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
             logging.getLogger("startup").warning("Migration step failed (%s): %s", sql, e)
 
 
+def _validate_required_config():
+    """Fail the boot on configuration that would otherwise fail silently.
+
+    INPHARMD_API_BASE_URL decides which InpharmD platform users log in
+    against AND where manufacturer answers get posted back. It has no
+    default (see inpharmd_service._base_url), so a missing value must stop
+    the service rather than let it come up and route real clinical answers
+    somewhere unintended. Checked here, at startup, so a bad deploy shows up
+    in the deploy log immediately instead of at the first user action.
+
+    Mirrors database.py, which raises on a missing DATABASE_URL at import.
+    """
+    import inpharmd_service
+
+    try:
+        base = inpharmd_service._base_url()
+    except inpharmd_service.InpharmdConfigError as e:
+        raise RuntimeError(f"Refusing to start: {e}") from e
+
+    logging.getLogger("startup").info("InpharmD platform base URL: %s", base)
+
+
 @app.on_event("startup")
 def on_startup():
+    _validate_required_config()
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     scheduler.start_scheduler()

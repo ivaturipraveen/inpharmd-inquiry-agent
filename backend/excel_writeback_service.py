@@ -109,7 +109,14 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
     """POST the updated workbook URL to the v2 open_mue_inquiries/{uuid}/sheet
     endpoint. Auth is the per-user staging access_token (query param), payload
     is multipart form with a single `s3_url` field — matches the API doc."""
-    base = inpharmd_service._base_url().rstrip("/")
+    try:
+        # Inside the try: _base_url() raises InpharmdConfigError when
+        # INPHARMD_API_BASE_URL is unset, and this function must return a bool
+        # rather than propagate.
+        base = inpharmd_service._base_url()
+    except inpharmd_service.InpharmdConfigError as e:
+        log.error("excel_writeback: v2 sheet POST skipped — %s", e)
+        return False
     url = base + V2_SHEET_PATH_TEMPLATE.format(uuid=inquiry_uuid)
     params = {"access_token": access_token}
     # multipart form (files={} alone would make this an empty multipart;

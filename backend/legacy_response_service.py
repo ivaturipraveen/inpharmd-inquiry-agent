@@ -15,9 +15,11 @@ Endpoint (Rails on Heroku):
                                      bytes downloaded from S3 and sent directly)
 
 The base URL is the SAME as the rest of the InpharmD APIs — we reuse
-`INPHARMD_API_BASE_URL` (defined in inpharmd_service) so there's a single
-knob for switching environments. Only the X-Api-Key is new and lives in
-LEGACY_RESPONSE_API_KEY.
+`INPHARMD_API_BASE_URL` (resolved by inpharmd_service._base_url) so there's a
+single knob for switching environments. That variable is required and has no
+default: if it is missing, posting is skipped with a logged warning rather
+than falling back to some other environment. Only the X-Api-Key is new and
+lives in LEGACY_RESPONSE_API_KEY.
 """
 from __future__ import annotations
 
@@ -50,7 +52,15 @@ def _config() -> tuple[str, Optional[str]]:
 
 
 def is_configured() -> bool:
-    url, key = _config()
+    """True when both the platform base URL and the API key are usable.
+
+    Returns False rather than raising when INPHARMD_API_BASE_URL is unset, so
+    callers can treat "not configured" uniformly.
+    """
+    try:
+        url, key = _config()
+    except inpharmd_service.InpharmdConfigError:
+        return False
     return bool(url and key)
 
 
@@ -100,7 +110,16 @@ def post_response(
     Returns True on 2xx, False otherwise. Never raises — failures are
     logged and the inquiry flow continues.
     """
-    url, key = _config()
+    try:
+        url, key = _config()
+    except inpharmd_service.InpharmdConfigError as e:
+        # Honour this function's "never raises" contract: a missing platform
+        # base URL means we cannot know where to post, so skip and let the
+        # inquiry flow continue.
+        log.warning(
+            "Legacy response post skipped: %s (uuid=%s)", e, inquiry_uuid
+        )
+        return False
     if not key:
         log.warning(
             "Legacy response post skipped: LEGACY_RESPONSE_API_KEY not set "

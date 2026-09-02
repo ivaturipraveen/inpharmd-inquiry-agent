@@ -1,8 +1,9 @@
 """Thin client for the upstream InpharmD platform API.
 
-We talk to the staging instance at `INPHARMD_API_BASE_URL` (defaults to the
-public staging host). Every request is logged with method, URL, status,
-and duration so the user can trace what we sent and what came back.
+The instance we talk to is set by `INPHARMD_API_BASE_URL`, which is
+**required and has no default** — see `_base_url()` for why. Every request is
+logged with method, URL, status, and duration so the user can trace what we
+sent and what came back.
 
 Three endpoints in scope today:
 
@@ -25,8 +26,6 @@ import httpx
 
 log = logging.getLogger("inquiry.inpharmd")
 
-
-DEFAULT_BASE_URL = "https://staging-mercer-inpharmd.herokuapp.com"
 
 # Heroku free-tier can take a long time to wake up + the inquiries list
 # is ~4MB. Different timeouts per endpoint, with retries on transient
@@ -51,7 +50,56 @@ RETRY_STATUSES = {502, 503, 504}
 
 
 def _base_url() -> str:
-    return os.getenv("INPHARMD_API_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    """Resolve the InpharmD platform base URL. Environment-only, no default.
+
+    This single value decides two different things at once: which platform
+    instance users authenticate against, and where manufacturer answers get
+    written back to — `legacy_response_service` and `excel_writeback_service`
+    both resolve their URLs through this function.
+
+    It deliberately has NO fallback. It used to default to the staging host,
+    which meant an unset or misspelled variable silently routed production
+    traffic — real clinical answers included — into staging, succeeding at
+    every layer with no error raised anywhere. A loud failure is the only safe
+    behaviour for a value that can send data to the wrong environment.
+    """
+    raw = (os.getenv("INPHARMD_API_BASE_URL") or "").strip()
+    if not raw:
+        raise InpharmdConfigError(
+            "INPHARMD_API_BASE_URL is not set. Point it at the InpharmD "
+            "platform for this environment (e.g. https://<platform-host>) in "
+            "backend/.env locally, or in the service's config/environment "
+            "variables when deployed. There is no default on purpose."
+        )
+    if not raw.startswith(("http://", "https://")):
+        raise InpharmdConfigError(
+            f"INPHARMD_API_BASE_URL must start with http:// or https:// "
+            f"(got {raw!r})."
+        )
+    return raw.rstrip("/")
+
+
+def is_configured() -> bool:
+    """True when `INPHARMD_API_BASE_URL` is set and well-formed.
+
+    For callers that need to degrade rather than raise. Anything that actually
+    talks to the platform should just call `_base_url()` and let the
+    `InpharmdConfigError` surface.
+    """
+    try:
+        _base_url()
+        return True
+    except InpharmdConfigError:
+        return False
+
+
+class InpharmdConfigError(RuntimeError):
+    """`INPHARMD_API_BASE_URL` is missing or malformed.
+
+    A configuration fault, not an upstream failure — deliberately not an
+    `InpharmdAPIError`, so it is never mistaken for something a retry could
+    fix.
+    """
 
 
 class InpharmdAPIError(Exception):
