@@ -134,6 +134,17 @@ class Inquiry(Base):
     # call could sneak in before the row is moved to needs_attention.
     call_outcome_unknown_until = Column(DateTime(timezone=True), nullable=True)
 
+    # Write-once: set the moment the manufacturer is FIRST actually contacted
+    # (real email send, or an initial call placement) — never at draft/create/
+    # schedule time, and never overwritten by a later fallback call or retry.
+    # This is the start of the 48-hour no-response window, independent of
+    # which channel or how many retries/fallbacks happen afterward.
+    first_contacted_at = Column(DateTime(timezone=True), nullable=True)
+    # Set only immediately after a confirmed successful "no response after
+    # 48h" Slack post — mirrors BulkEmailBatch.completed_notified_at's
+    # send-first-then-mark invariant so the notification fires exactly once.
+    no_response_notified_at = Column(DateTime(timezone=True), nullable=True)
+
     # True for inquiries created by the Test Call flow. These must never enter
     # the production manufacturer workflow: no retries, no Slack, no legacy POST.
     is_test_call = Column(Boolean, nullable=False, default=False, server_default="false")

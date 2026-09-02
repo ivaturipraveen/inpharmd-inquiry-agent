@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from typing import Optional
 
 import httpx
@@ -188,6 +189,68 @@ def notify_bulk_completed(
         "blocks": blocks,
     }
     return _post(payload, log_context=f"bulk-completed card for batch {batch_id}")
+
+
+def notify_no_response(
+    inquiry_id: int,
+    *,
+    manufacturer: str,
+    medication_name: Optional[str],
+    contact_method: str,
+    first_contacted_at: datetime,
+    fallback_attempted: bool,
+    status_reason: str,
+) -> bool:
+    """Post a one-time notice that 48+ hours have passed since a manufacturer
+    was first contacted with no meaningful response and no further automated
+    outreach pending. Caller (scheduler._notify_no_response) is responsible
+    for the once-only guard — this function only sends."""
+    inquiry_url = _inquiry_url(inquiry_id)
+    label = f"Inquiry #{inquiry_id} — {manufacturer}"
+    title = f"<{inquiry_url}|{label}>" if inquiry_url else f"*{label}*"
+    contacted_str = first_contacted_at.strftime("%Y-%m-%d %H:%M UTC")
+
+    fields = [
+        {"type": "mrkdwn", "text": f"*Manufacturer:*\n{manufacturer}"},
+        {"type": "mrkdwn", "text": f"*Medication:*\n{medication_name or '—'}"},
+        {"type": "mrkdwn", "text": f"*Initial contact:*\n{contact_method} at {contacted_str}"},
+        {"type": "mrkdwn", "text": f"*Fallback call attempted:*\n{'Yes' if fallback_attempted else 'No'}"},
+    ]
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "⏰ No manufacturer response after 48 hours", "emoji": True},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": title},
+        },
+        {
+            "type": "section",
+            "fields": fields,
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Status*\n{status_reason}"},
+        },
+    ]
+    if inquiry_url:
+        blocks.append({
+            "type": "actions",
+            "elements": [{
+                "type": "button",
+                "text": {"type": "plain_text", "text": "View inquiry", "emoji": True},
+                "url": inquiry_url,
+                "style": "primary",
+            }],
+        })
+
+    payload = {
+        "text": f"No response from {manufacturer} 48h after contact (Inquiry #{inquiry_id})",
+        "blocks": blocks,
+    }
+    return _post(payload, log_context=f"no-response card for inquiry {inquiry_id}")
 
 
 def _requester_line(name: Optional[str], email: Optional[str]) -> str:

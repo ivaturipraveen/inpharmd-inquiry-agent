@@ -386,6 +386,8 @@ async def bulk_create_inquiries(
                 sib.call_conversation_id = conv_id
                 sib.call_provider_status = provider_status
                 sib.next_retry_at = None
+                if sib.first_contacted_at is None:
+                    sib.first_contacted_at = now
             dispatched += 1  # unique calls placed, not inquiries stamped
         db.commit()
 
@@ -579,6 +581,8 @@ def send_now(
     locked.email_sent_at = now
     locked.email_message_id = message_id
     locked.email_scheduled_for = None
+    if locked.first_contacted_at is None:
+        locked.first_contacted_at = now
     if mfr.fallback_call_enabled and mfr.mi_phone:
         fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
         locked.call_scheduled_for = now + fallback_delta
@@ -848,13 +852,19 @@ async def trigger_call(
     # only ever matches status == "email_sent", so once this manual call is
     # placed the fallback job can never pick this inquiry up again, even if
     # a fallback was already scheduled.
+    now = _now()
     locked.status = "call_pending"
-    locked.call_scheduled_for = _now()
+    locked.call_scheduled_for = now
     locked.call_conversation_id = (
         resp.get("conversation_id") or resp.get("conversationId")
     )
     locked.call_provider_status = resp.get("status") or "initiated"
     locked.next_retry_at = None  # manual trigger cancels any pending auto-retry
+    # Only the manufacturer's actual first contact counts — if email was
+    # already sent, that (not this call) was first contact, so this is a
+    # no-op guard, not an overwrite.
+    if locked.first_contacted_at is None:
+        locked.first_contacted_at = now
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

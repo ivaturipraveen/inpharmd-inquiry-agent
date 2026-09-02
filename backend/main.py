@@ -143,6 +143,10 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # Requesting pharmacist's team/organization — from InpharmD's
         # inquiry_submitter_details.team_name, or typed in manually.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS team_name TEXT",
+        # Write-once first-contact timestamp + once-only "no response after
+        # 48h" Slack notification guard — see models.py for exact semantics.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS first_contacted_at TIMESTAMPTZ",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS no_response_notified_at TIMESTAMPTZ",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

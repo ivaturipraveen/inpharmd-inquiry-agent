@@ -32,6 +32,13 @@ _TICK_SECONDS = int(os.getenv("INQUIRY_RETRY_TICK_SECONDS", "60"))
 # Exposed here so routers can import it rather than reading the env var themselves.
 EMAIL_SCHEDULE_DELAY_MINUTES = int(os.getenv("EMAIL_SCHEDULE_DELAY_MINUTES", "30"))
 
+# How often to scan for "no response after 48h" candidates (seconds). A
+# 48-hour-granularity check doesn't need the 60s cadence the other jobs use.
+_NO_RESPONSE_TICK_SECONDS = int(os.getenv("NO_RESPONSE_TICK_SECONDS", "1800"))
+# How long after first_contacted_at, with no response and no automated
+# outreach pending, before the Slack notice fires.
+NO_RESPONSE_ALERT_HOURS = int(os.getenv("NO_RESPONSE_ALERT_HOURS", "48"))
+
 _scheduler: Optional[BackgroundScheduler] = None
 
 
@@ -217,6 +224,8 @@ def _scan_and_send_pending_emails() -> None:
             locked.email_sent_at = sent_at
             locked.email_message_id = message_id
             locked.email_scheduled_for = None
+            if locked.first_contacted_at is None:
+                locked.first_contacted_at = sent_at
             if mfr.fallback_call_enabled and mfr.mi_phone:
                 fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
                 locked.call_scheduled_for = sent_at + fallback_delta
@@ -553,6 +562,134 @@ def _resolve_ambiguous_call_timeouts() -> None:
         db.close()
 
 
+def _no_response_eligible(obj: Inquiry) -> bool:
+    """True when an inquiry is in a terminal-for-automation state: no further
+    automated outreach attempt (fallback call, retry) will ever happen for
+    it. Kept as its own function so the initial scan and the per-row locked
+    re-check use byte-identical logic — see the module docstring in
+    slack_service.notify_no_response for the Slack-message side of this.
+
+    final_answer is deliberately NOT checked for needs_attention: every
+    needs_attention-setting site in this codebase (agent_tools.submit_answer,
+    this module's fallback/retry-exhaustion paths, the post-call webhook's
+    fallback-voicemail branch) represents a failure/no-answer/exhausted
+    condition, never a real reply — but submit_answer legitimately stores a
+    placeholder like "Call ended without an answer (voicemail)" in
+    final_answer for exactly these outcomes, so treating a non-null
+    final_answer as "answered" here would wrongly suppress the notification
+    for the majority of real no-response calls. final_answer only remains a
+    valid discriminator for the email_sent branch, since every path that
+    sets final_answer for an email reply also transitions status to
+    email_responded in the same operation (record_email_response,
+    graph_service, email_inbound) — a row still sitting in email_sent with a
+    non-null final_answer would indicate something else entirely, not a
+    reply, but excluding it here is the conservative, correct choice."""
+    if obj.status == "needs_attention":
+        return True
+    if obj.status == "email_sent" and obj.call_scheduled_for is None and obj.final_answer is None:
+        return True
+    return False
+
+
+def _notify_no_response() -> None:
+    """One scheduler tick: Slack-notify once per inquiry that has had zero
+    manufacturer response NO_RESPONSE_ALERT_HOURS after first_contacted_at,
+    with no automated outreach attempt still pending (fallback call or call
+    retry). call_completed is intentionally never eligible here, even with
+    no final_answer — see routers/webhooks.py's own denylist for why a
+    completed call with no captured answer isn't treated as proof of
+    silence. Mirrors _notify_completed_bulk_batches' send-first-then-mark
+    idempotency pattern exactly."""
+    cutoff = _now() - timedelta(hours=NO_RESPONSE_ALERT_HOURS)
+
+    db = SessionLocal()
+    try:
+        candidates = (
+            db.query(Inquiry)
+            .filter(
+                Inquiry.no_response_notified_at.is_(None),
+                Inquiry.is_test_call.isnot(True),
+                Inquiry.first_contacted_at.isnot(None),
+                Inquiry.first_contacted_at <= cutoff,
+                or_(
+                    Inquiry.status == "needs_attention",
+                    and_(
+                        Inquiry.status == "email_sent",
+                        Inquiry.call_scheduled_for.is_(None),
+                        Inquiry.final_answer.is_(None),
+                    ),
+                ),
+            )
+            .all()
+        )
+    except Exception:
+        log.exception("No-response scan query failed")
+        return
+    finally:
+        db.close()
+
+    if not candidates:
+        return
+
+    log.info("No-response scan: %s candidate(s)", len(candidates))
+
+    for obj in candidates:
+        db2 = SessionLocal()
+        try:
+            locked = (
+                db2.query(Inquiry)
+                .options(joinedload(Inquiry.manufacturer))
+                .filter(
+                    Inquiry.id == obj.id,
+                    Inquiry.no_response_notified_at.is_(None),
+                    Inquiry.is_test_call.isnot(True),
+                    Inquiry.first_contacted_at.isnot(None),
+                    Inquiry.first_contacted_at <= _now() - timedelta(hours=NO_RESPONSE_ALERT_HOURS),
+                )
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            # _no_response_eligible() is the single authoritative check for
+            # status + final_answer nuance (see its docstring) — not
+            # duplicated in this query's WHERE clause.
+            if not locked or not _no_response_eligible(locked):
+                db2.close()
+                continue
+
+            mfr = locked.manufacturer
+            fallback_attempted = bool(locked.email_sent_at and locked.call_conversation_id)
+            contact_method = "Email" if locked.email_sent_at else "Call"
+            if locked.status == "needs_attention":
+                status_reason = (
+                    "Fallback call after email received no answer"
+                    if fallback_attempted
+                    else "Call retries exhausted with no answer"
+                )
+            else:
+                status_reason = "Email sent, no reply, no fallback call configured"
+
+            sent = slack_service.notify_no_response(
+                locked.id,
+                manufacturer=mfr.manufacturer if mfr else "Unknown manufacturer",
+                medication_name=locked.medication_name,
+                contact_method=contact_method,
+                first_contacted_at=locked.first_contacted_at,
+                fallback_attempted=fallback_attempted,
+                status_reason=status_reason,
+            )
+            if sent:
+                locked.no_response_notified_at = _now()
+                db2.commit()
+                log.info("No-response Slack notice sent for inquiry %s", locked.id)
+            else:
+                db2.rollback()
+        except Exception:
+            log.exception("Unexpected error during no-response notify for inquiry %s; rolling back", obj.id)
+            db2.rollback()
+        finally:
+            db2.close()
+
+
 def _scan_and_retry() -> None:
     """One scheduler tick: place retries for everything that's due."""
     _resolve_ambiguous_call_timeouts()
@@ -637,12 +774,22 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        _notify_no_response,
+        "interval",
+        seconds=_NO_RESPONSE_TICK_SECONDS,
+        id="no_response_notify",
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
     log.info(
-        "Schedulers started (retry every %ss, email poll every %ss, scheduled send every %ss)",
+        "Schedulers started (retry every %ss, email poll every %ss, scheduled send every %ss, "
+        "no-response scan every %ss)",
         _TICK_SECONDS,
         _poll_seconds,
         _email_send_seconds,
+        _NO_RESPONSE_TICK_SECONDS,
     )
 
 
