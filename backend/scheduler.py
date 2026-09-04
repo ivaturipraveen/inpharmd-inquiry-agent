@@ -16,7 +16,7 @@ from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import and_, or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session, joinedload
 
 import call_service
 import slack_service
@@ -38,6 +38,27 @@ _NO_RESPONSE_TICK_SECONDS = int(os.getenv("NO_RESPONSE_TICK_SECONDS", "1800"))
 # How long after first_contacted_at, with no response and no automated
 # outreach pending, before the Slack notice fires.
 NO_RESPONSE_ALERT_HOURS = int(os.getenv("NO_RESPONSE_ALERT_HOURS", "48"))
+
+# Stuck-call reconciliation (see _reconcile_stuck_calls). A call_pending
+# inquiry with no confirming webhook is otherwise stuck forever — this job
+# polls ElevenLabs directly using call_conversation_id to recover.
+CALL_RECONCILE_TICK_SECONDS = int(os.getenv("CALL_RECONCILE_TICK_SECONDS", "300"))
+CALL_STUCK_THRESHOLD_MINUTES = int(os.getenv("CALL_STUCK_THRESHOLD_MINUTES", "10"))
+CALL_RECONCILE_MAX_AGE_HOURS = int(os.getenv("CALL_RECONCILE_MAX_AGE_HOURS", "24"))
+CALL_RECONCILE_BATCH_SIZE = int(os.getenv("CALL_RECONCILE_BATCH_SIZE", "25"))
+# Exponential backoff for consecutive provider-poll failures (timeout,
+# network error, invalid response) — NOT applied when the provider
+# successfully confirms the call is still in progress, which keeps the full
+# 5-minute cadence instead.
+_CALL_RECONCILE_BACKOFF_BASE_MINUTES = 5
+_CALL_RECONCILE_BACKOFF_CAP_MINUTES = 180
+CALL_UNRESOLVED_MESSAGE = (
+    "Call outcome could not be confirmed automatically after 24 hours — please verify manually."
+)
+CALL_NOT_FOUND_MESSAGE = (
+    "Call outcome could not be confirmed — the call provider has no record of this "
+    "conversation. Please verify manually."
+)
 
 _scheduler: Optional[BackgroundScheduler] = None
 
@@ -109,6 +130,8 @@ def _place_retry(db, obj: Inquiry) -> None:
         log.exception("Retry call for inquiry %s failed at place_call: %s", obj.id, e)
         return
 
+    import call_log_service
+
     obj.retry_count = (obj.retry_count or 0) + 1
     obj.status = "call_pending"
     obj.call_scheduled_for = _now()
@@ -116,7 +139,14 @@ def _place_retry(db, obj: Inquiry) -> None:
         resp.get("conversation_id") or resp.get("conversationId")
     )
     obj.call_provider_status = "initiated"
+    obj.call_completed_at = None  # this retry is a NEW call; any prior completion no longer applies
     obj.next_retry_at = None  # cleared; will be re-set when the new call finishes if it also fails
+    call_log_service.start_call_log(
+        db, obj,
+        conversation_id=obj.call_conversation_id,
+        provider_status=obj.call_provider_status,
+        started_at=obj.call_scheduled_for,
+    )
     log.info(
         "Auto-retry #%s placed for inquiry %s (conv %s)",
         obj.retry_count,
@@ -494,11 +524,20 @@ def _scan_and_trigger_fallback_calls() -> None:
                 db2.close()
                 continue
 
+            import call_log_service
+
             locked.status = "call_pending"
             locked.call_scheduled_for = _now()
             locked.call_conversation_id = resp.get("conversation_id") or resp.get("conversationId")
             locked.call_provider_status = resp.get("status") or "initiated"
+            locked.call_completed_at = None
             locked.next_retry_at = None
+            call_log_service.start_call_log(
+                db2, locked,
+                conversation_id=locked.call_conversation_id,
+                provider_status=locked.call_provider_status,
+                started_at=locked.call_scheduled_for,
+            )
             db2.commit()
             log.info("Fallback call placed for inquiry %s (conv %s)", locked.id, locked.call_conversation_id)
         except Exception:
@@ -690,6 +729,254 @@ def _notify_no_response() -> None:
             db2.close()
 
 
+def _reconcile_stuck_calls() -> None:
+    """One scheduler tick: recover inquiries stuck in call_pending when the
+    ElevenLabs post-call webhook was never received.
+
+    Two phases, both capped at CALL_RECONCILE_BATCH_SIZE combined, both
+    ordered oldest-call_scheduled_for-first so a large backlog drains
+    fairly across ticks rather than starving newer rows (or vice versa):
+
+    Phase 1 — rows already past the 24h ceiling: force-resolved to
+    needs_attention immediately, with NO ElevenLabs call. This is the same
+    code path regardless of whether a row got here through a long run of
+    persisted backoff failures, or was already >24h old the moment this
+    feature was deployed — there is no special-casing between "backlog" and
+    "aged out organically", by design.
+
+    Phase 2 — rows past the 10-minute stuck threshold but not yet at the
+    ceiling: poll call_service.get_conversation_status_sync(). A confirmed
+    still-in-progress result keeps the full 5-minute cadence; anything else
+    that isn't a definite outcome (timeout, network error, invalid
+    response) increments a persisted failure counter and backs off
+    exponentially (5, 10, 20, 40, 80, 160, capped at 180 min) — persisted on
+    the row itself (call_reconcile_failure_count /
+    call_reconcile_next_attempt_at), not in memory, so progress survives a
+    scheduler/server restart.
+    """
+    from call_outcome_service import apply_call_outcome
+    import call_log_service
+
+    now = _now()
+    ceiling_cutoff = now - timedelta(hours=CALL_RECONCILE_MAX_AGE_HOURS)
+    stuck_cutoff = now - timedelta(minutes=CALL_STUCK_THRESHOLD_MINUTES)
+
+    def _force_unresolved(db_: Session, locked: Inquiry, message: str) -> None:
+        # A closed inquiry stays closed — an unresolved follow-up call must
+        # never reopen it into needs_attention. final_answer is still
+        # recorded (only as a fallback — see the `or` below — so an
+        # existing real answer from before the inquiry was closed is never
+        # overwritten) and reconciliation tracking is still cleared either
+        # way, matching the same pattern used everywhere else in this
+        # feature (apply_call_outcome, routers.inquiries, agent_tools).
+        if locked.status != "closed":
+            locked.status = "needs_attention"
+        locked.final_answer = locked.final_answer or message
+        locked.call_reconcile_failure_count = 0
+        locked.call_reconcile_next_attempt_at = None
+        # Marks the CallLog for this specific call resolved too, with no
+        # fabricated transcript/summary — otherwise it would stay "open"
+        # forever and could be mismatched onto by a later, genuinely new
+        # follow-up call's completion write.
+        call_log_service.force_close_call_log(db_, locked)
+
+    # ---- Phase 1: past the 24h ceiling — no polling, ever. ----
+    db = SessionLocal()
+    try:
+        ceiling_ids = [
+            r[0]
+            for r in db.query(Inquiry.id)
+            .filter(
+                # "closed" is included alongside "call_pending" because a
+                # follow-up call placed on a closed inquiry deliberately
+                # never changes status away from "closed" (see
+                # routers.inquiries.trigger_call) — without it here, such a
+                # call would never be eligible for reconciliation at all if
+                # its webhook is missed. call_completed_at IS NULL is what
+                # actually identifies an outstanding call now that
+                # trigger_call clears it on every new placement (including
+                # follow-up calls, which previously left a prior call's
+                # stale completion timestamp in place).
+                Inquiry.status.in_(("call_pending", "closed")),
+                Inquiry.call_conversation_id.isnot(None),
+                Inquiry.call_completed_at.is_(None),
+                Inquiry.is_test_call.isnot(True),
+                Inquiry.call_scheduled_for <= ceiling_cutoff,
+            )
+            .order_by(Inquiry.call_scheduled_for.asc())
+            .limit(CALL_RECONCILE_BATCH_SIZE)
+            .all()
+        ]
+    except Exception:
+        log.exception("Call-reconciliation ceiling-candidate query failed")
+        return
+    finally:
+        db.close()
+
+    resolved_count = 0
+    for inquiry_id in ceiling_ids:
+        db2 = SessionLocal()
+        try:
+            locked = (
+                db2.query(Inquiry)
+                .filter(
+                    Inquiry.id == inquiry_id,
+                    Inquiry.status.in_(("call_pending", "closed")),
+                    Inquiry.call_scheduled_for <= ceiling_cutoff,
+                )
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if not locked or locked.call_completed_at is not None:
+                db2.close()
+                continue
+            _force_unresolved(db2, locked, CALL_UNRESOLVED_MESSAGE)
+            db2.commit()
+            resolved_count += 1
+            log.warning(
+                "Inquiry %s: call_pending exceeded the %sh reconciliation ceiling with no "
+                "confirmed outcome; marked needs_attention (no ElevenLabs call made)",
+                inquiry_id, CALL_RECONCILE_MAX_AGE_HOURS,
+            )
+        except Exception:
+            log.exception("Failed to force-resolve ceiling inquiry %s", inquiry_id)
+            db2.rollback()
+        finally:
+            db2.close()
+
+    remaining_capacity = CALL_RECONCILE_BATCH_SIZE - resolved_count
+    if remaining_capacity <= 0:
+        return
+
+    # ---- Phase 2: due for a genuine reconciliation poll. ----
+    db = SessionLocal()
+    try:
+        poll_ids = [
+            r[0]
+            for r in db.query(Inquiry.id)
+            .filter(
+                # See the matching comment in Phase 1 above — "closed" covers
+                # follow-up calls placed on closed inquiries.
+                Inquiry.status.in_(("call_pending", "closed")),
+                Inquiry.call_conversation_id.isnot(None),
+                Inquiry.call_completed_at.is_(None),
+                Inquiry.is_test_call.isnot(True),
+                Inquiry.call_scheduled_for <= stuck_cutoff,
+                Inquiry.call_scheduled_for > ceiling_cutoff,
+                or_(
+                    Inquiry.call_reconcile_next_attempt_at.is_(None),
+                    Inquiry.call_reconcile_next_attempt_at <= now,
+                ),
+            )
+            .order_by(Inquiry.call_scheduled_for.asc())
+            .limit(remaining_capacity)
+            .all()
+        ]
+    except Exception:
+        log.exception("Call-reconciliation poll-candidate query failed")
+        return
+    finally:
+        db.close()
+
+    if not poll_ids:
+        return
+
+    log.info("Call reconciliation: %s candidate(s) to poll", len(poll_ids))
+
+    for inquiry_id in poll_ids:
+        db2 = SessionLocal()
+        try:
+            locked = (
+                db2.query(Inquiry)
+                .options(joinedload(Inquiry.manufacturer))
+                .filter(Inquiry.id == inquiry_id, Inquiry.status.in_(("call_pending", "closed")))
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if not locked or not locked.call_conversation_id or locked.call_completed_at is not None:
+                db2.close()
+                continue
+
+            # Re-check the ceiling under lock — time may have advanced past
+            # it since the outer query ran (or another tick's phase 1 missed
+            # it due to the batch cap). Done as a query-level comparison
+            # (matching every other datetime check in this module) rather
+            # than a raw Python comparison against the already-fetched
+            # attribute, since SQLite (tests) round-trips
+            # DateTime(timezone=True) as tz-naive and a direct Python
+            # comparison against an aware `_now()` would raise.
+            past_ceiling = (
+                db2.query(Inquiry.id)
+                .filter(
+                    Inquiry.id == inquiry_id,
+                    Inquiry.call_scheduled_for <= _now() - timedelta(hours=CALL_RECONCILE_MAX_AGE_HOURS),
+                )
+                .first()
+                is not None
+            )
+            if past_ceiling:
+                _force_unresolved(db2, locked, CALL_UNRESOLVED_MESSAGE)
+                db2.commit()
+                db2.close()
+                continue
+
+            conversation_id = locked.call_conversation_id
+            result = call_service.get_conversation_status_sync(conversation_id)
+
+            if result.outcome == call_service.CallPollOutcome.STILL_IN_PROGRESS:
+                # Provider successfully reached and confirmed ongoing — keep
+                # the full cadence, reset any prior failure streak.
+                locked.call_reconcile_failure_count = 0
+                locked.call_reconcile_next_attempt_at = _now() + timedelta(
+                    minutes=_CALL_RECONCILE_BACKOFF_BASE_MINUTES
+                )
+                log.info("Inquiry %s: ElevenLabs confirmed call still in progress", inquiry_id)
+
+            elif result.outcome == call_service.CallPollOutcome.POLL_FAILED:
+                # Could NOT confirm anything — distinct from STILL_IN_PROGRESS.
+                # Exponential backoff, persisted so it survives a restart.
+                locked.call_reconcile_failure_count = (locked.call_reconcile_failure_count or 0) + 1
+                delay_minutes = min(
+                    _CALL_RECONCILE_BACKOFF_BASE_MINUTES * (2 ** (locked.call_reconcile_failure_count - 1)),
+                    _CALL_RECONCILE_BACKOFF_CAP_MINUTES,
+                )
+                locked.call_reconcile_next_attempt_at = _now() + timedelta(minutes=delay_minutes)
+                log.warning(
+                    "Inquiry %s: could not reach/interpret ElevenLabs (%s); next attempt in %s min "
+                    "(consecutive failure #%s)",
+                    inquiry_id, result.fail_reason, delay_minutes, locked.call_reconcile_failure_count,
+                )
+
+            elif result.outcome == call_service.CallPollOutcome.NOT_FOUND:
+                # Never fabricate a result — explicit, distinct message from
+                # a real voicemail/no-answer outcome.
+                _force_unresolved(db2, locked, CALL_NOT_FOUND_MESSAGE)
+                log.warning(
+                    "Inquiry %s: conversation %s not found at provider; marked needs_attention",
+                    inquiry_id, conversation_id,
+                )
+
+            elif result.outcome == call_service.CallPollOutcome.TERMINAL:
+                apply_call_outcome(
+                    db2, locked,
+                    provider_status=result.provider_status,
+                    summary=result.summary,
+                    transcript=result.transcript,
+                    conversation_id=conversation_id,
+                )
+                log.info(
+                    "Inquiry %s: resolved via reconciliation poll (provider_status=%s)",
+                    inquiry_id, result.provider_status,
+                )
+
+            db2.commit()
+        except Exception:
+            log.exception("Reconciliation poll failed for inquiry %s", inquiry_id)
+            db2.rollback()
+        finally:
+            db2.close()
+
+
 def _scan_and_retry() -> None:
     """One scheduler tick: place retries for everything that's due."""
     _resolve_ambiguous_call_timeouts()
@@ -718,6 +1005,15 @@ def schedule_retry_after_failure(db, obj: Inquiry, delay_minutes: int = 2) -> No
     # Test calls must never enter the retry/needs_attention workflow.
     if getattr(obj, "is_test_call", False):
         log.info("Inquiry %s is a test call; skipping retry scheduling", obj.id)
+        return
+
+    # A closed inquiry must never be silently reopened by an automatic
+    # retry — a follow-up call on a closed inquiry is a one-off manual
+    # action, not the start of a retry loop. Called from both
+    # routers/agent_tools.py (submit_answer) and routers/webhooks.py
+    # (post-call webhook), so guarding here covers both call sites.
+    if obj.status == "closed":
+        log.info("Inquiry %s is closed; not scheduling an automatic retry", obj.id)
         return
 
     if obj.retry_count >= obj.max_retries:
@@ -782,14 +1078,23 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        _reconcile_stuck_calls,
+        "interval",
+        seconds=CALL_RECONCILE_TICK_SECONDS,
+        id="call_reconciliation",
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
     log.info(
         "Schedulers started (retry every %ss, email poll every %ss, scheduled send every %ss, "
-        "no-response scan every %ss)",
+        "no-response scan every %ss, call reconciliation every %ss)",
         _TICK_SECONDS,
         _poll_seconds,
         _email_send_seconds,
         _NO_RESPONSE_TICK_SECONDS,
+        CALL_RECONCILE_TICK_SECONDS,
     )
 
 

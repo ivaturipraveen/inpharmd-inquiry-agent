@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+import call_log_service
 import call_service
 import email_service
 import legacy_response_service
@@ -22,6 +23,7 @@ from schemas import (
     BulkInquiryResult,
     CallResultPayload,
     EmailResponsePayload,
+    FollowupEmailPayload,
     INQUIRY_SUBJECT_MAX_LENGTH,
     InquiryCreate,
     InquiryOut,
@@ -79,6 +81,23 @@ def _with_subject_tag(subject: str, inquiry_id: int) -> str:
     return f"{truncated} {tag}" if truncated else tag
 
 
+def _call_in_flight(obj: Inquiry) -> bool:
+    """True when the most recently placed call for this inquiry hasn't
+    finished yet — deliberately independent of `status`, so it still works
+    when status is intentionally left as "closed" (a follow-up call on a
+    closed inquiry never changes status, so status alone can't be used to
+    detect a duplicate in-flight call there). Reuses two fields already
+    stamped by every call-placement site (trigger_call, the bulk-call
+    branch, fallback placement, retries) and every completion site (the
+    post-call webhook, submit_answer): call_scheduled_for is re-stamped to
+    "now" at every placement; call_completed_at is set only when a call
+    actually finishes. If completion is missing or predates the most recent
+    placement, that call is still outstanding. No new column needed."""
+    if obj.call_conversation_id is None or obj.call_scheduled_for is None:
+        return False
+    return obj.call_completed_at is None or obj.call_completed_at < obj.call_scheduled_for
+
+
 def _get_or_404(
     db: Session, inquiry_id: int, current_user: Optional[User] = None
 ) -> Inquiry:
@@ -90,6 +109,7 @@ def _get_or_404(
             joinedload(Inquiry.manufacturer),
             selectinload(Inquiry.inbound_attachments),
             selectinload(Inquiry.email_replies).selectinload(EmailReply.attachments),
+            selectinload(Inquiry.call_logs),
         )
         .filter(Inquiry.id == inquiry_id)
     )
@@ -114,6 +134,7 @@ def list_inquiries(
         joinedload(Inquiry.manufacturer),
         selectinload(Inquiry.inbound_attachments),
         selectinload(Inquiry.email_replies).selectinload(EmailReply.attachments),
+        selectinload(Inquiry.call_logs),
     )
     if not all_users:
         q = q.filter(Inquiry.user_id == current_user.id)
@@ -388,6 +409,15 @@ async def bulk_create_inquiries(
                 sib.next_retry_at = None
                 if sib.first_contacted_at is None:
                     sib.first_contacted_at = now
+                # One CallLog row per sibling inquiry, even though they all
+                # share the same physical call/conversation_id — each
+                # sibling is its own Inquiry row with its own Timeline.
+                call_log_service.start_call_log(
+                    db, sib,
+                    conversation_id=conv_id,
+                    provider_status=provider_status,
+                    started_at=now,
+                )
             dispatched += 1  # unique calls placed, not inquiries stamped
         db.commit()
 
@@ -722,6 +752,72 @@ def record_email_response(
     return _get_or_404(db, inquiry_id, current_user)
 
 
+@router.post("/{inquiry_id}/send-followup-email", response_model=InquiryOut)
+def send_followup_email(
+    inquiry_id: int,
+    payload: FollowupEmailPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Send an additional, manually-drafted email for this inquiry —
+    available regardless of status (including closed/completed), unlike
+    send_email/send_now which model the one-time original dispatch and are
+    intentionally left unchanged. Reuses the exact same send mechanism
+    (email_service.send_inquiry_email) and the inquiry's existing, already
+    reply-matching-tagged subject, so replies continue to be found the same
+    way they always have. Does not touch status, email_sent_at, or
+    email_message_id — those continue to represent the original send.
+    Recorded as an outbound EmailReply so the popup's email thread shows a
+    real history of every follow-up, distinct from manufacturer replies."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+    to_email = mfr.official_mi_email or mfr.team_verified_email
+    if not to_email:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{mfr.manufacturer} has no email address on file",
+        )
+
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="Follow-up message cannot be empty")
+
+    try:
+        message_id = email_service.send_inquiry_email(
+            inquiry_id=obj.id,
+            manufacturer_name=mfr.manufacturer,
+            to_email=to_email,
+            subject=obj.subject,
+            question=body,
+            requester_name=obj.requester_name,
+            requester_email=obj.requester_email,
+            medication_name=obj.medication_name,
+            pi_storage_data=obj.pi_storage_data,
+            pi_link=obj.pi_link,
+            team_name=obj.team_name,
+            is_followup=True,
+        )
+    except email_service.EmailConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Email send failed: {e}")
+
+    db.add(
+        EmailReply(
+            inquiry_id=obj.id,
+            direction="outbound",
+            sender_email=None,
+            body=body,
+            sent_at=_now(),
+            smtp_message_id=message_id or None,
+        )
+    )
+    db.commit()
+    return _get_or_404(db, inquiry_id, current_user)
+
+
 @router.post("/{inquiry_id}/business-hours")
 def business_hours_check(
     inquiry_id: int,
@@ -761,25 +857,18 @@ async def trigger_call(
             status_code=409,
             detail="Cannot trigger a production call on a test call inquiry.",
         )
-    if obj.status == "closed":
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot trigger call — inquiry is closed.",
-        )
-    if obj.status == "call_pending":
+    # Deliberately no "status == closed" guard: a follow-up call must remain
+    # possible for a closed inquiry (see status-preservation handling below,
+    # where `locked.status` is left untouched when it's already "closed").
+    if _call_in_flight(obj):
         raise HTTPException(
             status_code=409,
             detail="A call is already in progress for this inquiry. Wait for it to complete before placing another.",
         )
-    # Keyed on the provider outcome + completion timestamp directly, not on
-    # `status == "call_completed"` — protects against the case where the
-    # post-call webhook has recorded a successful answer but the status
-    # field hasn't been synchronized yet.
-    if obj.call_provider_status == "answered" and obj.call_completed_at is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="This inquiry already has a successfully completed call. Reopen it before retrying.",
-        )
+    # Deliberately no "already successfully answered" guard: a follow-up
+    # call must remain possible even after a completed, answered call (e.g.
+    # the user has a further question) — the in-flight check above is the
+    # only duplicate-prevention needed.
 
     # Manual call placement is intentionally independent of the email/fallback
     # workflow — an inquiry that already has an email sent or a fallback call
@@ -815,16 +904,13 @@ async def trigger_call(
     if locked is None:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     # Re-check the guards on the now-locked row in case state changed between the
-    # initial read and the lock acquisition.
-    if locked.status in ("closed", "call_pending"):
+    # initial read and the lock acquisition. Uses the same status-independent
+    # in-flight check as above, so this still catches a concurrent duplicate
+    # even when status is (and remains) "closed".
+    if _call_in_flight(locked):
         raise HTTPException(
             status_code=409,
-            detail=f"Inquiry state changed to '{locked.status}' before the call could be placed.",
-        )
-    if locked.call_provider_status == "answered" and locked.call_completed_at is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Inquiry already has a successfully completed call. Reopen it before retrying.",
+            detail="A call is already in progress for this inquiry. Wait for it to complete before placing another.",
         )
 
     try:
@@ -853,18 +939,40 @@ async def trigger_call(
     # placed the fallback job can never pick this inquiry up again, even if
     # a fallback was already scheduled.
     now = _now()
-    locked.status = "call_pending"
+    # A closed inquiry stays closed — a follow-up call must never silently
+    # reopen it. call_scheduled_for/call_conversation_id/call_provider_status
+    # are still updated unconditionally below, both so the post-call webhook
+    # can find and record against this row, and so _call_in_flight() (which
+    # doesn't look at status at all) correctly detects this call as
+    # in-progress even while status stays "closed".
+    if locked.status != "closed":
+        locked.status = "call_pending"
     locked.call_scheduled_for = now
     locked.call_conversation_id = (
         resp.get("conversation_id") or resp.get("conversationId")
     )
     locked.call_provider_status = resp.get("status") or "initiated"
+    # Cleared on every new placement, not just the first — call_completed_at
+    # otherwise keeps holding the PRIOR call's completion timestamp for a
+    # follow-up call (status intentionally doesn't change for a closed
+    # inquiry, so it can't be used to tell "new call placed" apart from
+    # "old call already resolved"). Left stale, this new call's own webhook
+    # would be misread as a duplicate/already-resolved delivery by both
+    # routers.webhooks' guard and scheduler._reconcile_stuck_calls, and
+    # silently ignored.
+    locked.call_completed_at = None
     locked.next_retry_at = None  # manual trigger cancels any pending auto-retry
     # Only the manufacturer's actual first contact counts — if email was
     # already sent, that (not this call) was first contact, so this is a
     # no-op guard, not an overwrite.
     if locked.first_contacted_at is None:
         locked.first_contacted_at = now
+    call_log_service.start_call_log(
+        db, locked,
+        conversation_id=locked.call_conversation_id,
+        provider_status=locked.call_provider_status,
+        started_at=locked.call_scheduled_for,
+    )
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -936,6 +1044,12 @@ async def test_call_preview(
         )
     obj.call_conversation_id = conv_id
     obj.call_provider_status = resp.get("status") or "initiated"
+    call_log_service.start_call_log(
+        db, obj,
+        conversation_id=conv_id,
+        provider_status=obj.call_provider_status,
+        started_at=_now(),
+    )
     db.commit()
 
     return _get_or_404(db, obj.id, current_user)
@@ -1046,14 +1160,40 @@ def record_call_result(
 ):
     """Manual entry point: lets a human (or another integration) attach the
     call result without going through the ElevenLabs webhook."""
-    obj = _get_or_404(db, inquiry_id, current_user)
-    obj.status = "call_completed"
-    obj.call_completed_at = _now()
+    _get_or_404(db, inquiry_id, current_user)  # ownership/404 check
+    # Row lock: a manual entry can race with the webhook or the stuck-call
+    # reconciliation job resolving the same inquiry concurrently. Unlike
+    # those two automated writers, manual entry deliberately does NOT skip
+    # on obj.call_completed_at IS NOT NULL — a human explicitly recording a
+    # result is an intentional override, not a race, and is allowed to
+    # supersede an automated one.
+    obj = (
+        db.query(Inquiry)
+        .filter(Inquiry.id == inquiry_id)
+        .with_for_update()
+        .first()
+    )
+    # Same closed-inquiry status preservation as trigger_call/webhooks —
+    # a manually-recorded result for a closed inquiry's follow-up call
+    # must not reopen it.
+    if obj.status != "closed":
+        obj.status = "call_completed"
+    now = _now()
+    obj.call_completed_at = now
     if payload.transcript is not None:
         obj.call_transcript = payload.transcript
     if payload.summary is not None:
         obj.call_summary = payload.summary
         obj.final_answer = payload.summary
+    call_log_service.record_manual_result(
+        db, obj,
+        transcript=payload.transcript,
+        summary=payload.summary,
+        completed_at=now,
+    )
+    # Resolved — no longer eligible for stuck-call reconciliation polling.
+    obj.call_reconcile_failure_count = 0
+    obj.call_reconcile_next_attempt_at = None
     db.commit()
     if not obj.is_test_call:
         legacy_response_service.maybe_post_for_inquiry(
@@ -1072,6 +1212,11 @@ def close_inquiry(
     obj = _get_or_404(db, inquiry_id, current_user)
     obj.status = "closed"
     obj.email_scheduled_for = None  # cancel any pending schedule
+    # Write-once — closing an already-closed inquiry (should not normally
+    # happen; the frontend hides the button once closed) must not move the
+    # timestamp forward.
+    if obj.closed_at is None:
+        obj.closed_at = _now()
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

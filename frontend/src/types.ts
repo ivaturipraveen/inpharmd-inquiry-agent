@@ -72,6 +72,18 @@ export interface EmailReply {
   attachments: InquiryAttachment[];
 }
 
+export interface CallLog {
+  id: number;
+  conversation_id?: string | null;
+  is_test_call?: boolean;
+  started_at: string;
+  completed_at?: string | null;
+  resolved_at?: string | null;
+  provider_status?: string | null;
+  transcript?: string | null;
+  summary?: string | null;
+}
+
 export interface Inquiry {
   id: number;
   manufacturer_id: number | null;
@@ -102,6 +114,7 @@ export interface Inquiry {
   pdf_summary?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  closed_at?: string | null;
   manufacturer?: ManufacturerSummary | null;
   medication_name?: string | null;
   pi_storage_data?: string | null;
@@ -109,6 +122,7 @@ export interface Inquiry {
   source_inquiry_uuid?: string | null;
   inbound_attachments?: InquiryAttachment[] | null;
   email_replies?: EmailReply[] | null;
+  call_logs?: CallLog[] | null;
   // Populated only in all-users list: display name or email of the creator.
   created_by?: string | null;
 }

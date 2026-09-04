@@ -203,9 +203,11 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
         _mark_read(token, mailbox, msg["id"])
         return None
-    if obj.status == "closed":
-        _mark_read(token, mailbox, msg["id"])
-        return None
+    # Deliberately no "status == closed" skip here: routers.inquiries.
+    # send_followup_email reuses this same subject tag for follow-up emails
+    # sent on closed inquiries, so a manufacturer's reply to one must still
+    # be captured (see the closed-status guard below instead, which records
+    # the reply without reopening the inquiry).
 
     # Dedup by Graph message ID — prevents the same email from being processed
     # twice across process restarts or concurrent deploys.
@@ -317,7 +319,13 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     if is_first_reply:
         obj.email_response = reply_text
         obj.email_response_at = email_reply.sent_at
-        obj.status = "email_responded"
+        # A closed inquiry stays closed — a reply to a follow-up email sent
+        # after closing must not silently reopen it. email_response/
+        # email_response_at/final_answer are still recorded normally above
+        # and below regardless of status, matching the same pattern used for
+        # follow-up calls (routers.agent_tools, call_outcome_service).
+        if obj.status != "closed":
+            obj.status = "email_responded"
         obj.next_retry_at = None
         obj.call_scheduled_for = None
         obj.final_answer = reply or pdf_summary or ""

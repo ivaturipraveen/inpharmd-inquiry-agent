@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session, joinedload
 
 import legacy_response_service
 import summary_service
+from call_outcome_service import apply_call_outcome
 from database import get_db
-from models import Inquiry, UnmatchedCallWebhook
-from scheduler import schedule_retry_after_failure
+from models import CallLog, Inquiry, UnmatchedCallWebhook
 
 log = logging.getLogger("inquiry.webhooks")
 
@@ -139,6 +139,51 @@ async def elevenlabs_post_call(
         log.error("Unmatched ElevenLabs post-call webhook persisted for review (conversation_id=%s)", convo_id)
         return {"matched": False, "conversation_id": convo_id}
 
+    # Re-fetch with a row lock before mutating — so a concurrent reconciliation
+    # poll or manual call-result entry for the same inquiry can't race with
+    # this webhook (see call_outcome_service.apply_call_outcome, used by all
+    # three writers).
+    locked = (
+        db.query(Inquiry)
+        .options(joinedload(Inquiry.manufacturer))
+        .filter(Inquiry.id == obj.id)
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        # Row was deleted between the initial match and the lock — extremely
+        # unlikely, but don't crash on it.
+        return {"matched": False, "conversation_id": convo_id}
+    obj = locked
+
+    # Matched by the incoming conversation_id, not obj.call_completed_at —
+    # that Inquiry-level field is also set by submit_answer's mid-call
+    # partial result, which must NOT block this webhook from still filling
+    # in the fuller transcript for the SAME call. CallLog.resolved_at is set
+    # only by a terminal writer (this webhook, reconciliation, or manual
+    # entry), never by submit_answer, so it precisely distinguishes "this
+    # call's webhook already fired" from "the agent already reported an
+    # in-call answer but the real webhook hasn't arrived yet".
+    existing_log = (
+        db.query(CallLog)
+        .filter(CallLog.inquiry_id == obj.id, CallLog.conversation_id == convo_id)
+        .with_for_update()
+        .first()
+    )
+    already_resolved = (
+        (existing_log is not None and existing_log.resolved_at is not None)
+        # Defensive fallback for a row with no CallLog counterpart at all
+        # (shouldn't happen once the one-time backfill migration has run) —
+        # never overwrite a confirmed result blindly.
+        or (existing_log is None and obj.call_completed_at is not None)
+    )
+    if already_resolved:
+        log.info(
+            "Inquiry %s already has a recorded call result; ignoring duplicate/late webhook (conversation_id=%s)",
+            obj.id, convo_id,
+        )
+        return {"matched": True, "conversation_id": convo_id, "already_resolved": True}
+
     if matched_via_inquiry_id:
         log.warning(
             "Inquiry %s matched via inquiry_id fallback, not call_conversation_id "
@@ -146,55 +191,32 @@ async def elevenlabs_post_call(
             obj.id, obj.call_conversation_id, convo_id,
         )
         obj.call_conversation_id = obj.call_conversation_id or convo_id
-    obj.call_outcome_unknown_until = None
 
     summary = _extract_summary(body)
     transcript = _extract_transcript(body)
 
-    from datetime import datetime, timezone
-    obj.call_completed_at = datetime.now(timezone.utc)
-    if summary:
-        obj.call_summary = summary
-        # Only overwrite final_answer if submit_answer didn't already set a structured one
-        if not obj.final_answer:
-            obj.final_answer = summary
-    if transcript:
-        obj.call_transcript = transcript
-
     # ElevenLabs payload may include duration / status — treat short/no-answer calls as voicemail
-    provider_status = body.get("status") or "completed"
+    raw_provider_status = body.get("status") or "completed"
     duration = (
         body.get("duration_seconds")
         or (body.get("data") or {}).get("duration_seconds")
         or 0
     )
-    # If submit_answer already set a meaningful provider_status, don't overwrite it
-    if not obj.call_provider_status or obj.call_provider_status == "initiated":
-        if duration and duration < 8:
-            obj.call_provider_status = "no_answer"
-        else:
-            obj.call_provider_status = provider_status
+    provider_status = "no_answer" if duration and duration < 8 else raw_provider_status
 
-    # If submit_answer ran, status is already set; otherwise mark call_completed.
-    # needs_attention is included so a webhook that arrives after
-    # _resolve_ambiguous_call_timeouts gave up waiting still lands the real result
-    # instead of leaving the inquiry stuck awaiting manual follow-up.
-    if obj.status in ("call_pending", "needs_attention"):
-        obj.status = "call_completed"
+    # Core outcome — committed immediately, before the optional LLM-extraction
+    # step below, so a failure there can never discard the confirmed result
+    # ElevenLabs just gave us.
+    apply_call_outcome(
+        db, obj,
+        provider_status=provider_status, summary=summary, transcript=transcript,
+        conversation_id=convo_id,
+    )
+    db.commit()
 
-    # Fallback calls (email_sent_at is set) are one-shot: the system already tried email
-    # then a call. On voicemail/no_answer, always go directly to needs_attention regardless
-    # of whether ElevenLabs included a summary in the payload (decoupled from call_summary).
-    # For normal non-fallback calls, only schedule a retry when submit_answer hasn't already
-    # captured a real answer (indicated by call_summary being empty).
-    if obj.call_provider_status in ("voicemail", "no_answer"):
-        if obj.email_sent_at:
-            obj.status = "needs_attention"
-            obj.next_retry_at = None
-        elif not obj.call_summary:
-            schedule_retry_after_failure(db, obj, delay_minutes=2)
-
-    # If we have a transcript but no clean answer yet, try LLM extraction
+    # If we have a transcript but no clean answer yet, try LLM extraction.
+    # Best-effort only: any failure here (config, API error, timeout, etc.)
+    # must never roll back or discard the core result committed above.
     if obj.call_transcript and not obj.final_answer and summary_service.is_configured():
         try:
             extracted = summary_service.extract_answer_from_transcript(
@@ -204,11 +226,13 @@ async def elevenlabs_post_call(
             )
             obj.call_summary = obj.call_summary or extracted
             obj.final_answer = extracted
-        except summary_service.SummaryConfigError as e:
-            # Soft-fail: leave transcript as-is, user can extract manually later
-            pass
-
-    db.commit()
+            db.commit()
+        except Exception:
+            log.exception(
+                "LLM answer extraction failed for inquiry %s (core call result already saved)",
+                obj.id,
+            )
+            db.rollback()
 
     # Test calls must not trigger downstream manufacturer workflows.
     # Transcript and status are still written above so the call is viewable in Outreach.
@@ -229,10 +253,14 @@ async def elevenlabs_post_call(
     # else with a final_answer posts. The post-call webhook may set provider_status
     # to ElevenLabs' own string (e.g. "done"/"success") when submit_answer didn't
     # run, so an allowlist would miss those legitimate answers.
+    # "closed" is included alongside "call_completed" because apply_call_outcome
+    # deliberately leaves status at "closed" for a follow-up call on a closed
+    # inquiry (see call_outcome_service) — without it, a genuinely answered
+    # follow-up call would satisfy every other condition here yet never notify.
     _NO_ANSWER = ("voicemail", "no_answer", "wrong_number", "call_back_later", "follow_up_via_email", "initiated")
     if (
         not is_test
-        and obj.status == "call_completed"
+        and obj.status in ("call_completed", "closed")
         and obj.final_answer
         and (obj.call_provider_status or "") not in _NO_ANSWER
     ):

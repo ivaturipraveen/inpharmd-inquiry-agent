@@ -58,6 +58,7 @@ def _build_body(
     pi_storage_data: Optional[str] = None,
     pi_link: Optional[str] = None,
     team_name: Optional[str] = None,
+    is_followup: bool = False,
 ) -> tuple[str, str]:
     """Return (plain_text, html) tuple for the email body.
 
@@ -67,21 +68,30 @@ def _build_body(
     `team_name`, and `medication_name` (rendered as a "Drug Name:" line
     above QUESTION when present). Kept as parameters so no call site needs
     to change.
+
+    is_followup=True swaps only the greeting sentence and the body label —
+    everything else (signature, drug-name line, HTML structure) is
+    identical. Exists so a manual follow-up email (see
+    routers.inquiries.send_followup_email) doesn't read as a brand-new
+    "drug information request" with the follow-up text mislabeled as the
+    original QUESTION. Default False keeps every existing caller's output
+    byte-for-byte unchanged.
     """
     import html as html_lib
 
     team = (team_name or "").strip() or None
     drug_name = (medication_name or "").strip() or None
 
-    greeting_plain = (
-        f"Hello, this is a drug information request from a pharmacist at {team}."
-        if team
-        else "Hello, this is a drug information request from a pharmacist."
-    )
+    if is_followup:
+        greeting_lead = "Hello, this is a follow-up regarding a drug information request from a pharmacist"
+        body_label = "FOLLOW-UP MESSAGE"
+    else:
+        greeting_lead = "Hello, this is a drug information request from a pharmacist"
+        body_label = "QUESTION"
+
+    greeting_plain = f"{greeting_lead} at {team}." if team else f"{greeting_lead}."
     greeting_html = (
-        f"<p>Hello, this is a drug information request from a pharmacist at {html_lib.escape(team)}.</p>"
-        if team
-        else "<p>Hello, this is a drug information request from a pharmacist.</p>"
+        f"<p>{greeting_lead} at {html_lib.escape(team)}.</p>" if team else f"<p>{greeting_lead}.</p>"
     )
 
     sig_lines_plain = ["Requested by:", "Leah Mueller, PharmD", "Pharmacist"]
@@ -102,7 +112,7 @@ def _build_body(
     plain = f"""\
 {greeting_plain}
 
-{drug_name_line_plain}QUESTION:
+{drug_name_line_plain}{body_label}:
 {question}
 
 {signature_plain}
@@ -111,7 +121,7 @@ def _build_body(
     html = f"""\
 <html><body style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6;">
 {greeting_html}
-{drug_name_line_html}<p><strong>QUESTION:</strong></p>
+{drug_name_line_html}<p><strong>{body_label}:</strong></p>
 <p>{html_lib.escape(question).replace(chr(10), '<br>')}</p>
 {signature_html}
 </body></html>
@@ -132,11 +142,17 @@ def send_inquiry_email(
     pi_storage_data: Optional[str] = None,
     pi_link: Optional[str] = None,
     team_name: Optional[str] = None,
+    is_followup: bool = False,
 ) -> str:
     """Send the inquiry email via the SendGrid API.
 
     Returns SendGrid's X-Message-Id header (used to correlate replies / events).
     Replies are routed back to EMAIL_FROM so IMAP polling can capture them.
+
+    is_followup=True renders `question` as a follow-up message rather than
+    the original inquiry (see _build_body) — used by
+    routers.inquiries.send_followup_email. Default False, unchanged for
+    every other existing caller.
     """
     cfg = SendGridConfig.from_env()
 
@@ -156,6 +172,7 @@ def send_inquiry_email(
         pi_storage_data=pi_storage_data,
         pi_link=pi_link,
         team_name=team_name,
+        is_followup=is_followup,
     )
 
     payload = {

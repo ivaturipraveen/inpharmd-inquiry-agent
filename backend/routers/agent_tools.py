@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
+import call_log_service
 import legacy_response_service
 from database import get_db
 from models import Inquiry
@@ -107,33 +108,49 @@ def submit_answer(
     if summary:
         obj.call_summary = summary
 
+    call_log_service.record_submit_answer_result(
+        db, obj,
+        provider_status=payload.outcome,
+        summary=summary,
+        completed_at=now,
+    )
+
     # Mirrors exactly what gets assigned to obj.final_answer for the two
     # outcomes that trigger a legacy post below — kept as its own variable
     # (not read back from obj.final_answer) so it can never pick up stale
     # content from an earlier, unrelated event.
     legacy_response_text: Optional[str] = None
 
+    # Closed stays closed — a follow-up call's outcome must not silently
+    # reopen an inquiry the user deliberately closed. final_answer/summary
+    # are still recorded normally below regardless of status.
+    was_closed = obj.status == "closed"
+
     if payload.outcome == "answered":
-        obj.status = "call_completed"
+        if not was_closed:
+            obj.status = "call_completed"
         if summary:
             obj.final_answer = summary
             legacy_response_text = summary
     elif payload.outcome == "follow_up_via_email":
         # Rep will email — keep status as call_completed but flag it in summary
-        obj.status = "call_completed"
+        if not was_closed:
+            obj.status = "call_completed"
         followup_note = f"Rep promised to follow up via email to {obj.requester_email or 'requester'}."
         obj.final_answer = f"{summary}\n\n{followup_note}" if summary else followup_note
         legacy_response_text = f"{summary}\n\n{followup_note}" if summary else followup_note
     elif payload.outcome in ("voicemail", "wrong_number", "no_answer", "call_back_later"):
         # Call attempted but no useful info
-        obj.status = "call_completed"
+        if not was_closed:
+            obj.status = "call_completed"
         obj.final_answer = summary or f"Call ended without an answer ({payload.outcome})."
         # Auto-retry only on voicemail / no_answer (transient failures).
         # wrong_number and call_back_later are deliberate human signals — don't auto-retry.
         if payload.outcome in ("voicemail", "no_answer"):
             if obj.email_sent_at:
                 # Fallback call — one-shot, don't retry
-                obj.status = "needs_attention"
+                if not was_closed:
+                    obj.status = "needs_attention"
                 obj.next_retry_at = None
             else:
                 schedule_retry_after_failure(db, obj, delay_minutes=2)

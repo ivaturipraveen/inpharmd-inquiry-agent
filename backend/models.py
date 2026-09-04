@@ -144,6 +144,21 @@ class Inquiry(Base):
     # 48h" Slack post — mirrors BulkEmailBatch.completed_notified_at's
     # send-first-then-mark invariant so the notification fires exactly once.
     no_response_notified_at = Column(DateTime(timezone=True), nullable=True)
+    # Write-once: set the moment close_inquiry actually closes this inquiry
+    # (the only code path that ever sets status="closed"). Never touched by
+    # any follow-up email/call action, which is what lets the Timeline place
+    # "Closed" in its correct chronological position even when a follow-up
+    # happens afterward. Legacy rows closed before this column existed are
+    # backfilled once from updated_at (see main.py's _ensure_columns).
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Stuck-call reconciliation tracking (see scheduler._reconcile_stuck_calls).
+    # Persisted (not in-memory) so backoff progress survives scheduler/server
+    # restarts. Both reset to 0/NULL the moment a row leaves call_pending via
+    # any path (webhook, reconciliation, or manual entry) — no stale
+    # reconciliation metadata lingers on a resolved inquiry.
+    call_reconcile_failure_count = Column(Integer, nullable=False, default=0, server_default="0")
+    call_reconcile_next_attempt_at = Column(DateTime(timezone=True), nullable=True)
 
     # True for inquiries created by the Test Call flow. These must never enter
     # the production manufacturer workflow: no retries, no Slack, no legacy POST.
@@ -205,6 +220,12 @@ class Inquiry(Base):
         cascade="all, delete-orphan",
         order_by="EmailReply.sent_at",
     )
+    call_logs = relationship(
+        "CallLog",
+        back_populates="inquiry",
+        cascade="all, delete-orphan",
+        order_by="CallLog.started_at",
+    )
 
     manufacturer = relationship("ManufacturerContact", back_populates="inquiries")
 
@@ -232,6 +253,46 @@ class EmailReply(Base):
         back_populates="reply",
         order_by="InquiryAttachment.display_order",
     )
+
+
+class CallLog(Base):
+    """One row per physical call placed for an inquiry — the initial call,
+    every auto-retry, every fallback call, and every follow-up call each get
+    their own row, so none of them overwrite each other's transcript/summary
+    the way the single-row Inquiry.call_* columns do. Those Inquiry.call_*
+    columns are kept unchanged (still "the most recent call") for backward
+    compatibility with existing code that reads them; CallLog is a purely
+    additive, append-only ledger alongside them.
+
+    completed_at is set by EITHER submit_answer (the agent's live, possibly
+    partial mid-call result) or the post-call webhook/reconciliation/manual
+    entry. resolved_at is set ONLY by the latter group — the "no further
+    update expected for this call" marker — specifically so a post-call
+    webhook carrying the full transcript is never mistaken for a duplicate
+    delivery just because submit_answer already ran first (see
+    call_log_service.find_call_log_for_completion and routers.webhooks).
+    """
+
+    __tablename__ = "call_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    inquiry_id = Column(
+        Integer,
+        ForeignKey("inquiries.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(String(128), index=True, nullable=True)
+    is_test_call = Column(Boolean, nullable=False, default=False, server_default="false")
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    provider_status = Column(String(64), nullable=True)
+    transcript = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    inquiry = relationship("Inquiry", back_populates="call_logs")
 
 
 class InquiryAttachment(Base):

@@ -1,4 +1,4 @@
-import { FC, useEffect, useState } from "react";
+import { FC, ReactNode, useEffect, useState } from "react";
 import StatusBadge from "./StatusBadge";
 import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
@@ -25,6 +25,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [editingDraft, setEditingDraft] = useState(false);
   const [editSubject, setEditSubject] = useState("");
   const [editQuestion, setEditQuestion] = useState("");
+  const [followupBody, setFollowupBody] = useState("");
 
   // When opened via a Slack "View transcript" deep-link (#inquiries?id=N&focus=transcript)
   // scroll the transcript into view after the modal renders.
@@ -61,23 +62,37 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const callReachable = isCallReachable(m);
   const webFormReachable = isWebFormReachable(m);
 
-  const callInFlight = inquiry.status === "call_pending";
+  // Mirrors backend routers.inquiries._call_in_flight exactly (not just
+  // status === "call_pending") — a follow-up call placed on a closed
+  // inquiry deliberately never changes status, so status alone can't tell
+  // "call in progress" apart from "call already resolved" there. The
+  // call_completed_at < call_scheduled_for fallback (rather than a plain
+  // null check) also covers rows placed before trigger_call started
+  // clearing call_completed_at on every new placement.
+  const callInFlight = !!(
+    inquiry.call_conversation_id &&
+    inquiry.call_scheduled_for &&
+    (!inquiry.call_completed_at ||
+      new Date(inquiry.call_completed_at).getTime() < new Date(inquiry.call_scheduled_for).getTime())
+  );
   const isDraft = inquiry.status === "draft";
   const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
-  // Test call inquiries must never trigger a production manufacturer call.
-  // For a draft, only offer "Trigger Call" when the manufacturer's
-  // preferred channel is actually Call — otherwise a Web-Form- or
-  // Email-preferred manufacturer would still show a live call action.
-  const canTriggerCall =
-    !isTestCall &&
-    (callInFlight ||
-      (isDraft && preferredChannel === "call") ||
-      ["email_sent", "needs_attention"].includes(inquiry.status) ||
-      (inquiry.status === "call_completed" &&
-        inquiry.call_provider_status !== "answered" &&
-        inquiry.call_provider_status !== "follow_up_via_email"));
-  const canRecordCall = inquiry.status === "call_pending" || inquiry.status === "needs_attention";
+  // The user can always call the manufacturer again, regardless of status —
+  // including closed/completed. The only real blockers are: no phone number
+  // on file, a call already in progress, and test-call inquiries (which must
+  // never place a production call). The backend enforces the same three
+  // conditions server-side (trigger_call's _call_in_flight check, missing-
+  // phone 400, is_test_call 409) — this mirrors, not replaces, that.
+  const canTriggerCall = !isTestCall && !callInFlight && callReachable;
+  // Statuses where the inquiry is already resolved one way or another —
+  // calling from here is unambiguously a follow-up, not part of the
+  // original dispatch/retry flow, so the button is labeled accordingly.
+  const isResolvedStatus = ["closed", "email_responded", "call_completed"].includes(inquiry.status);
+  // callInFlight is included so the manual recovery form still appears for
+  // a closed inquiry's follow-up call that's stuck (e.g. a missed webhook
+  // still awaiting reconciliation) — status alone stays "closed" there.
+  const canRecordCall = inquiry.status === "call_pending" || inquiry.status === "needs_attention" || callInFlight;
   const canClose = !["closed"].includes(inquiry.status);
 
   const retryCount = inquiry.retry_count ?? 0;
@@ -85,6 +100,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const nextRetry = inquiry.next_retry_at ? new Date(inquiry.next_retry_at) : null;
   const retryButtonLabel = callInFlight
     ? "Call in progress…"
+    : isResolvedStatus
+    ? "Call Now"
     : inquiry.status === "needs_attention"
     ? "Retry Call Manually"
     : retryCount > 0
@@ -231,13 +248,19 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Manufacturer Email Thread — all inbound replies in chronological order.
-              Only rendered when email_replies data is available (new records).
-              The Final Answer box above is untouched. */}
-          {(inquiry.email_replies?.length ?? 0) > 0 && (
+          {/* Email Thread — inbound manufacturer replies AND outbound
+              follow-up emails, in chronological order, visually
+              distinguished by direction. Only rendered when email_replies
+              data is available. The Final Answer box above is untouched. */}
+          {(inquiry.email_replies?.length ?? 0) > 0 && (() => {
+            let inboundCount = 0;
+            return (
             <div className="detail-section">
-              <div className="detail-label">Manufacturer Email Thread</div>
-              {inquiry.email_replies!.map((reply, idx) => (
+              <div className="detail-label">Email Thread</div>
+              {inquiry.email_replies!.map((reply, idx) => {
+                const isOutbound = reply.direction === "outbound";
+                if (!isOutbound) inboundCount += 1;
+                return (
                 <div
                   key={reply.id}
                   style={{
@@ -247,8 +270,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                   }}
                 >
                   <div style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 6, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--brand-orange)" }}>
-                      Reply {idx + 1}
+                    <span style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: isOutbound ? "var(--muted)" : "var(--brand-orange)" }}>
+                      {isOutbound ? "You (follow-up)" : `Reply ${inboundCount}`}
                     </span>
                     {reply.sender_email && (
                       <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>{reply.sender_email}</span>
@@ -288,9 +311,11 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
-          )}
+            );
+          })()}
 
           {(inquiry.requester_name || inquiry.requester_email) && (
             <div className="detail-section detail-meta-row">
@@ -313,108 +338,208 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Timeline */}
-          <div className="detail-section">
-            <div className="detail-label">Timeline</div>
-            <ol className="timeline">
-              <li className="timeline-item done">
-                <div className="timeline-dot" />
-                <div>
-                  <div className="timeline-title">Inquiry created</div>
-                  <div className="timeline-meta">{fmtDate(inquiry.created_at)}</div>
-                </div>
-              </li>
+          {/* Timeline — built as a data array and sorted by real timestamp so
+              it stays genuinely chronological now that follow-up emails and
+              follow-up calls can happen at any point, including after the
+              inquiry is closed. Every existing entry's condition, title,
+              meta text, and body content is unchanged from before — only
+              its position among the others is now computed instead of
+              fixed. Entries with no real timestamp (shouldn't normally
+              happen) sort last, same as the old fixed order. */}
+          {(() => {
+            const toMs = (s?: string | null): number | null => {
+              if (!s) return null;
+              const t = new Date(s).getTime();
+              return Number.isNaN(t) ? null : t;
+            };
+            const SORT_LAST = Number.MAX_SAFE_INTEGER;
 
-              {inquiry.email_scheduled_for && !inquiry.email_sent_at && (
-                <li className="timeline-item pending">
-                  <div className="timeline-dot" />
-                  <div>
-                    <div className="timeline-title">Email scheduled</div>
-                    <div className="timeline-meta">
-                      Sends at {fmtDate(inquiry.email_scheduled_for)}
-                    </div>
-                  </div>
-                </li>
-              )}
+            type TimelineEntry = {
+              key: string;
+              sortAt: number;
+              status: "done" | "pending";
+              title: ReactNode;
+              meta?: ReactNode;
+              body?: ReactNode; // rendered inside .timeline-body
+              extra?: ReactNode; // rendered raw, no wrapper (e.g. transcript disclosure)
+            };
 
-              <li
-                className={`timeline-item ${
-                  inquiry.email_sent_at ? "done" : "pending"
-                }`}
-              >
-                <div className="timeline-dot" />
-                <div>
-                  <div className="timeline-title">Email sent to manufacturer</div>
-                  <div className="timeline-meta">
-                    {fmtDate(inquiry.email_sent_at) ?? "—"}
-                    {inquiry.call_scheduled_for && !inquiry.email_response_at && (
-                      <> · fallback call at {fmtDate(inquiry.call_scheduled_for)}</>
-                    )}
-                  </div>
-                </div>
-              </li>
+            const entries: TimelineEntry[] = [];
 
-              {inquiry.email_response_at && (
-                <li className="timeline-item done">
-                  <div className="timeline-dot" />
-                  <div>
-                    <div className="timeline-title">Email response received</div>
-                    <div className="timeline-meta">
-                      {fmtDate(inquiry.email_response_at)}
-                    </div>
-                    {inquiry.email_response && (
-                      <div className="timeline-body">{renderBold(inquiry.email_response)}</div>
-                    )}
-                  </div>
-                </li>
-              )}
+            entries.push({
+              key: "created",
+              sortAt: toMs(inquiry.created_at) ?? 0,
+              status: "done",
+              title: "Inquiry created",
+              meta: fmtDate(inquiry.created_at),
+            });
 
-              {(inquiry.status === "call_pending" || inquiry.call_completed_at) && (
-                <li
-                  className={`timeline-item ${
-                    inquiry.call_completed_at ? "done" : "pending"
-                  }`}
-                >
-                  <div className="timeline-dot" />
-                  <div>
-                    <div className="timeline-title">
-                      {inquiry.call_completed_at
-                        ? "Agent call completed"
-                        : "Agent call in progress"}
-                    </div>
-                    <div className="timeline-meta">
-                      {fmtDate(inquiry.call_completed_at) ??
-                        `scheduled ${fmtDate(inquiry.call_scheduled_for) ?? ""}`}
-                    </div>
-                    {inquiry.call_transcript && (
-                      <details
-                        id="call-transcript"
-                        className="transcript-toggle"
-                        open={
-                          typeof window !== "undefined" &&
-                          new URLSearchParams(
-                            window.location.hash.split("?")[1] || ""
-                          ).get("focus") === "transcript"
-                        }
-                      >
-                        <summary>View full call transcript</summary>
-                        <pre>{inquiry.call_transcript}</pre>
-                      </details>
-                    )}
-                  </div>
-                </li>
-              )}
+            if (inquiry.email_scheduled_for && !inquiry.email_sent_at) {
+              entries.push({
+                key: "email-scheduled",
+                sortAt: toMs(inquiry.email_scheduled_for) ?? SORT_LAST,
+                status: "pending",
+                title: "Email scheduled",
+                meta: <>Sends at {fmtDate(inquiry.email_scheduled_for)}</>,
+              });
+            }
 
-              {inquiry.status === "closed" && (
-                <li className="timeline-item done">
-                  <div className="timeline-dot" />
-                  <div>
-                    <div className="timeline-title">Closed</div>
-                  </div>
-                </li>
-              )}
-            </ol>
-          </div>
+            entries.push({
+              key: "email-sent",
+              sortAt:
+                toMs(inquiry.email_sent_at) ??
+                toMs(inquiry.email_scheduled_for) ??
+                toMs(inquiry.created_at) ??
+                0,
+              status: inquiry.email_sent_at ? "done" : "pending",
+              title: "Email sent to manufacturer",
+              meta: (
+                <>
+                  {fmtDate(inquiry.email_sent_at) ?? "—"}
+                  {inquiry.call_scheduled_for && !inquiry.email_response_at && (
+                    <> · fallback call at {fmtDate(inquiry.call_scheduled_for)}</>
+                  )}
+                </>
+              ),
+            });
+
+            if (inquiry.email_response_at) {
+              entries.push({
+                key: "email-response",
+                sortAt: toMs(inquiry.email_response_at) ?? SORT_LAST,
+                status: "done",
+                title: "Email response received",
+                meta: fmtDate(inquiry.email_response_at),
+                body: inquiry.email_response ? renderBold(inquiry.email_response) : undefined,
+              });
+            }
+
+            (inquiry.email_replies ?? [])
+              .filter((reply) => reply.direction === "outbound")
+              .forEach((reply) => {
+                entries.push({
+                  key: `followup-email-${reply.id}`,
+                  sortAt: toMs(reply.sent_at) ?? SORT_LAST,
+                  status: "done",
+                  title: "Follow-up email sent to manufacturer",
+                  meta: fmtDate(reply.sent_at),
+                  body: reply.body ? renderBold(reply.body) : undefined,
+                });
+              });
+
+            // One entry per CallLog — each physical call (initial, retry,
+            // fallback, every follow-up) gets its own Timeline entry with
+            // its own transcript, instead of a single entry that only ever
+            // reflected the most recent call (see models.CallLog). Sorted
+            // oldest-first here purely to number "Agent call" vs "Follow-up
+            // call N" correctly; final placement in the Timeline still uses
+            // each entry's own sortAt below, same as every other entry type.
+            const callLogs = [...(inquiry.call_logs ?? [])].sort(
+              (a, b) => (toMs(a.started_at) ?? 0) - (toMs(b.started_at) ?? 0)
+            );
+            // Deep-link target (#inquiries?id=N&focus=transcript) opens the
+            // most recent call's transcript — only one <details> may carry
+            // this id, so it's assigned to the last transcript-bearing log.
+            const lastTranscriptLogId = [...callLogs].reverse().find((l) => l.transcript)?.id;
+            if (callLogs.length > 0) {
+              callLogs.forEach((log, idx) => {
+                const isFollowup = idx > 0;
+                entries.push({
+                  key: `call-${log.id}`,
+                  sortAt: toMs(log.completed_at) ?? toMs(log.started_at) ?? SORT_LAST,
+                  status: log.completed_at ? "done" : "pending",
+                  title: log.completed_at
+                    ? isFollowup
+                      ? "Follow-up call completed"
+                      : "Agent call completed"
+                    : isFollowup
+                    ? "Follow-up call in progress"
+                    : "Agent call in progress",
+                  meta: fmtDate(log.completed_at) ?? `scheduled ${fmtDate(log.started_at) ?? ""}`,
+                  extra: log.transcript ? (
+                    <details
+                      id={log.id === lastTranscriptLogId ? "call-transcript" : undefined}
+                      className="transcript-toggle"
+                      open={
+                        log.id === lastTranscriptLogId &&
+                        typeof window !== "undefined" &&
+                        new URLSearchParams(window.location.hash.split("?")[1] || "").get("focus") ===
+                          "transcript"
+                      }
+                    >
+                      <summary>View full call transcript</summary>
+                      <pre>{log.transcript}</pre>
+                    </details>
+                  ) : undefined,
+                });
+              });
+            } else if (callInFlight || inquiry.call_completed_at) {
+              // Fallback for inquiries with no CallLog rows yet (e.g. this
+              // request predates the one-time backfill migration) — mirrors
+              // the single-entry behavior this replaced.
+              entries.push({
+                key: "call",
+                sortAt:
+                  toMs(inquiry.call_completed_at) ??
+                  toMs(inquiry.call_scheduled_for) ??
+                  SORT_LAST,
+                status: inquiry.call_completed_at ? "done" : "pending",
+                title: inquiry.call_completed_at ? "Agent call completed" : "Agent call in progress",
+                meta:
+                  fmtDate(inquiry.call_completed_at) ??
+                  `scheduled ${fmtDate(inquiry.call_scheduled_for) ?? ""}`,
+                extra: inquiry.call_transcript ? (
+                  <details
+                    id="call-transcript"
+                    className="transcript-toggle"
+                    open={
+                      typeof window !== "undefined" &&
+                      new URLSearchParams(window.location.hash.split("?")[1] || "").get("focus") ===
+                        "transcript"
+                    }
+                  >
+                    <summary>View full call transcript</summary>
+                    <pre>{inquiry.call_transcript}</pre>
+                  </details>
+                ) : undefined,
+              });
+            }
+
+            if (inquiry.status === "closed") {
+              entries.push({
+                key: "closed",
+                // closed_at is write-once, set the moment close_inquiry runs.
+                // Legacy rows closed before this column existed are
+                // backfilled from updated_at server-side (see main.py); this
+                // client-side fallback only matters for the brief window
+                // before that backfill has run.
+                sortAt: toMs(inquiry.closed_at) ?? toMs(inquiry.updated_at) ?? SORT_LAST,
+                status: "done",
+                title: "Closed",
+              });
+            }
+
+            entries.sort((a, b) => a.sortAt - b.sortAt);
+
+            return (
+              <div className="detail-section">
+                <div className="detail-label">Timeline</div>
+                <ol className="timeline">
+                  {entries.map((entry) => (
+                    <li key={entry.key} className={`timeline-item ${entry.status}`}>
+                      <div className="timeline-dot" />
+                      <div>
+                        <div className="timeline-title">{entry.title}</div>
+                        {entry.meta != null && <div className="timeline-meta">{entry.meta}</div>}
+                        {entry.body && <div className="timeline-body">{entry.body}</div>}
+                        {entry.extra}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            );
+          })()}
 
           {nextRetry && retryCount < maxRetries && (
             <div className="detail-section retry-banner">
@@ -694,6 +819,64 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               </button>
             </div>
           )}
+
+          {/* Always available, regardless of status — including closed and
+              completed inquiries. The user can always follow up. */}
+          <div className="detail-section action-panel">
+            <div className="detail-label">Contact Manufacturer Again</div>
+            {isResolvedStatus && (
+              <div className="cell-muted" style={{ marginBottom: 8 }}>
+                This inquiry is {inquiry.status === "closed" ? "closed" : "resolved"} — a follow-up
+                email or call will not change that.
+              </div>
+            )}
+
+            <label className="detail-label" style={{ marginTop: 4 }}>Send Another Email</label>
+            {emailReachable ? (
+              <>
+                <textarea
+                  value={followupBody}
+                  onChange={(e) => setFollowupBody(e.target.value)}
+                  rows={3}
+                  placeholder="Type a follow-up message to send to the manufacturer…"
+                  disabled={busy}
+                />
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={busy || !followupBody.trim()}
+                    onClick={() =>
+                      run(async () => {
+                        await onAction("sendFollowupEmail", { body: followupBody });
+                        setFollowupBody("");
+                      })
+                    }
+                  >
+                    Send Email
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="cell-muted">No email address on file for this manufacturer.</div>
+            )}
+
+            <label className="detail-label" style={{ marginTop: 16 }}>Call</label>
+            {callReachable ? (
+              <div style={{ marginTop: 4 }}>
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  disabled={busy || !canTriggerCall}
+                  onClick={() => run(() => onAction("triggerCall"))}
+                >
+                  {retryButtonLabel}
+                </button>
+              </div>
+            ) : (
+              <div className="cell-muted">No phone number on file for this manufacturer.</div>
+            )}
+          </div>
         </div>
 
         <div className="modal-footer modal-footer-split">
@@ -732,20 +915,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 }}
               >
                 Reset Retries
-              </button>
-            )}
-            {canTriggerCall && (
-              <button
-                className={
-                  inquiry.status === "needs_attention"
-                    ? "btn btn-primary"
-                    : "btn btn-ghost"
-                }
-                type="button"
-                disabled={busy || callInFlight}
-                onClick={() => run(() => onAction("triggerCall"))}
-              >
-                {retryButtonLabel}
               </button>
             )}
             {canClose && (

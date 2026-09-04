@@ -274,6 +274,10 @@ export default function InquiriesPage() {
           await api.inquiries.recordEmailResponse(current.id, payload);
           setSuccess("Email response saved.");
           break;
+        case "sendFollowupEmail":
+          await api.inquiries.sendFollowupEmail(current.id, payload.body);
+          setSuccess("Follow-up email sent.");
+          break;
         case "triggerCall":
           await api.inquiries.triggerCall(current.id);
           setSuccess("Call queued.");

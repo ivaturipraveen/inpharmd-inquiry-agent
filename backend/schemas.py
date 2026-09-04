@@ -93,6 +93,19 @@ class EmailReplyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CallLogOut(BaseModel):
+    id: int
+    conversation_id: Optional[str] = None
+    is_test_call: bool = False
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    provider_status: Optional[str] = None
+    transcript: Optional[str] = None
+    summary: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InquiryBase(BaseModel):
     manufacturer_id: Optional[int] = None
     subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
@@ -189,6 +202,10 @@ class EmailResponsePayload(BaseModel):
     response: str
 
 
+class FollowupEmailPayload(BaseModel):
+    body: str = Field(..., min_length=1)
+
+
 class CallResultPayload(BaseModel):
     transcript: Optional[str] = None
     summary: Optional[str] = None
@@ -228,6 +245,7 @@ class InquiryOut(InquiryBase):
     pdf_summary: Optional[str] = None
     inbound_attachments: list[InquiryAttachmentOut] = []
     email_replies: list[EmailReplyOut] = []
+    call_logs: list[CallLogOut] = []
     legacy_response_posted_at: Optional[datetime] = None
     excel_response_url: Optional[str] = None
     excel_response_posted_at: Optional[datetime] = None
@@ -235,6 +253,7 @@ class InquiryOut(InquiryBase):
     pi_link: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
     manufacturer: Optional[ManufacturerSummary] = None
 
     model_config = ConfigDict(from_attributes=True)

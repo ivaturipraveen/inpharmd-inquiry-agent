@@ -16,6 +16,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
+from enum import Enum
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
@@ -284,3 +285,124 @@ async def place_inquiry_call(
 def place_inquiry_call_sync(**kwargs) -> Dict[str, Any]:
     """Sync wrapper for callers running outside an event loop (e.g. APScheduler)."""
     return asyncio.run(place_inquiry_call(**kwargs))
+
+
+class CallPollOutcome(str, Enum):
+    """Result of polling ElevenLabs for a conversation's current status —
+    used by scheduler._reconcile_stuck_calls to recover a call's outcome
+    when the post-call webhook was never received."""
+    TERMINAL = "terminal"                # call has a definite outcome (done/failed)
+    STILL_IN_PROGRESS = "still_in_progress"  # provider confirms the call is ongoing
+    NOT_FOUND = "not_found"              # provider has no record of this conversation_id
+    POLL_FAILED = "poll_failed"          # could not get/interpret a response — NOT the same as STILL_IN_PROGRESS
+
+
+@dataclass
+class ConversationPollResult:
+    outcome: CallPollOutcome
+    provider_status: Optional[str] = None  # normalized: "answered" | "completed" | "no_answer"
+    summary: Optional[str] = None
+    transcript: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    fail_reason: Optional[str] = None      # only set when outcome == POLL_FAILED
+
+
+# Verified directly against ElevenLabs' current API docs (GET
+# /v1/convai/conversations/{conversation_id}) — not assumed:
+#   - initiated / in-progress / processing = ongoing, not terminal
+#   - done / failed = terminal
+#   - analysis.call_successful: "success" | "failure" | "unknown"
+#   - analysis.transcript_summary: string
+#   - metadata.call_duration_secs: number
+#   - transcript: list of {role, message, time_in_call_secs, ...}
+_IN_PROGRESS_STATUSES = {"initiated", "in-progress", "processing"}
+_TERMINAL_STATUSES = {"done", "failed"}
+
+
+def _flatten_conversation_transcript(turns: Any) -> Optional[str]:
+    if not isinstance(turns, list):
+        return None
+    lines = []
+    for t in turns:
+        if not isinstance(t, dict):
+            continue
+        role = t.get("role") or "agent"
+        text = t.get("message") or ""
+        if text:
+            lines.append(f"{role.upper()}: {text}")
+    return "\n".join(lines) if lines else None
+
+
+async def get_conversation_status(conversation_id: str) -> ConversationPollResult:
+    """Query ElevenLabs for a conversation's current status.
+
+    Deliberately never raises for any expected failure mode (missing
+    config, timeout, network error, non-200 response, malformed body,
+    unexpected status value) — a failed poll is a normal, expected outcome
+    for a background reconciliation loop, not an exceptional condition.
+    Every such case returns POLL_FAILED with a fail_reason, distinct from
+    STILL_IN_PROGRESS (which means the provider was successfully reached
+    and explicitly confirmed the call is ongoing)."""
+    try:
+        api_key = _required("ELEVENLABS_API_KEY")
+    except CallConfigError as e:
+        return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason=f"not_configured: {e}")
+
+    headers = {"xi-api-key": api_key}
+    url = f"{ELEVEN_BASE}/convai/conversations/{conversation_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url, headers=headers)
+    except httpx.TimeoutException:
+        return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason="timeout")
+    except httpx.HTTPError as e:
+        return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason=f"network_error: {e}")
+
+    if r.status_code == 404:
+        return ConversationPollResult(outcome=CallPollOutcome.NOT_FOUND)
+    if not r.is_success:
+        return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason=f"http_{r.status_code}")
+
+    try:
+        body = r.json()
+    except ValueError:
+        return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason="invalid_json")
+
+    status = body.get("status") if isinstance(body, dict) else None
+    if not status:
+        return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason="missing_status_field")
+
+    if status in _IN_PROGRESS_STATUSES:
+        return ConversationPollResult(outcome=CallPollOutcome.STILL_IN_PROGRESS)
+
+    if status in _TERMINAL_STATUSES:
+        analysis = body.get("analysis") or {}
+        call_successful = analysis.get("call_successful")
+        summary = analysis.get("transcript_summary")
+        duration = (body.get("metadata") or {}).get("call_duration_secs")
+        transcript = _flatten_conversation_transcript(body.get("transcript"))
+
+        if status == "failed":
+            provider_status = "no_answer"
+        elif call_successful == "success":
+            provider_status = "answered"
+        elif isinstance(duration, (int, float)) and duration < 8:
+            provider_status = "no_answer"
+        else:
+            provider_status = "completed"
+
+        return ConversationPollResult(
+            outcome=CallPollOutcome.TERMINAL,
+            provider_status=provider_status,
+            summary=summary,
+            transcript=transcript,
+            duration_seconds=duration,
+        )
+
+    return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason=f"unexpected_status:{status}")
+
+
+def get_conversation_status_sync(conversation_id: str) -> ConversationPollResult:
+    """Sync wrapper for callers outside an event loop (e.g. APScheduler)."""
+    return asyncio.run(get_conversation_status(conversation_id))

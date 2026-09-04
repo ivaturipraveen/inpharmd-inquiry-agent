@@ -147,6 +147,61 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # 48h" Slack notification guard — see models.py for exact semantics.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS first_contacted_at TIMESTAMPTZ",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS no_response_notified_at TIMESTAMPTZ",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ",
+        # One-time backfill for inquiries closed before this column existed —
+        # safe to re-run on every startup: WHERE excludes non-closed rows
+        # entirely and excludes already-backfilled/newly-set rows, so this
+        # is a no-op after the first successful run.
+        "UPDATE inquiries SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL",
+        # Stuck-call reconciliation tracking (see scheduler._reconcile_stuck_calls).
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_reconcile_failure_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_reconcile_next_attempt_at TIMESTAMPTZ",
+        # Per-call history — one row per physical call placed for an inquiry
+        # (initial, retries, fallback, every follow-up), so repeat calls no
+        # longer overwrite each other's transcript/summary the way the
+        # single-row inquiries.call_* columns do. See models.CallLog.
+        """
+CREATE TABLE IF NOT EXISTS call_logs (
+    id              SERIAL PRIMARY KEY,
+    inquiry_id      INTEGER NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
+    conversation_id VARCHAR(128),
+    is_test_call    BOOLEAN NOT NULL DEFAULT FALSE,
+    started_at      TIMESTAMPTZ NOT NULL,
+    completed_at    TIMESTAMPTZ,
+    resolved_at     TIMESTAMPTZ,
+    provider_status VARCHAR(64),
+    transcript      TEXT,
+    summary         TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+""",
+        "CREATE INDEX IF NOT EXISTS ix_call_logs_inquiry_id ON call_logs (inquiry_id)",
+        "CREATE INDEX IF NOT EXISTS ix_call_logs_conversation_id ON call_logs (conversation_id)",
+        # One-time backfill: every inquiry that already has a call on record
+        # (under the old single-row model) gets exactly one CallLog row
+        # representing it, so existing calls aren't invisible to the new
+        # history view. NOT EXISTS makes this safe to re-run on every
+        # startup — an inquiry only ever gets backfilled once, even if it
+        # places new (separately-logged) calls afterward. Pre-existing
+        # completed calls are backfilled as already resolved (resolved_at =
+        # completed_at) since we cannot know in hindsight whether a webhook
+        # or submit_answer alone produced the stored result.
+        """
+INSERT INTO call_logs (inquiry_id, conversation_id, is_test_call, started_at, completed_at, resolved_at, provider_status, transcript, summary)
+SELECT
+    i.id,
+    i.call_conversation_id,
+    i.is_test_call,
+    COALESCE(i.call_scheduled_for, i.created_at, NOW()),
+    i.call_completed_at,
+    i.call_completed_at,
+    i.call_provider_status,
+    i.call_transcript,
+    i.call_summary
+FROM inquiries i
+WHERE i.call_conversation_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM call_logs cl WHERE cl.inquiry_id = i.id)
+""",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

@@ -175,6 +175,11 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ response }),
       }),
+    sendFollowupEmail: (id: number, body: string) =>
+      request<Inquiry>(`/api/inquiries/${id}/send-followup-email`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      }),
     triggerCall: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/trigger-call`, { method: "POST" }),
     testCall: (id: number, phoneNumber: string) =>
