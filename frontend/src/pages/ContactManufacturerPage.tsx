@@ -3,6 +3,7 @@ import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
 import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
+import InquiryDetail from "../components/InquiryDetail";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable } from "../utils/channelResolution";
@@ -162,6 +163,11 @@ export default function ContactManufacturerPage() {
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // "Already contacted" detail popup — reuses InquiryDetail exactly as the
+  // Manufacturer Outreach page (InquiriesPage.tsx) does, so clicking a
+  // contacted row here opens the identical popup with identical actions.
+  const [selectedContactedInquiry, setSelectedContactedInquiry] = useState<Inquiry | null>(null);
+
   // "Add manufacturer" modal
   const [addingMfrName, setAddingMfrName] = useState<string | null>(null);
 
@@ -280,6 +286,88 @@ export default function ContactManufacturerPage() {
       window.removeEventListener("focus", refresh);
     };
   }, [loadExistingInquiries]);
+
+  // Action dispatch for the "Already contacted" popup — mirrors
+  // InquiriesPage.tsx's handleAction/handleDelete exactly (same action
+  // strings, same api.inquiries.* calls) so InquiryDetail behaves
+  // identically regardless of which page opened it. Refreshes this page's
+  // own existingInquiries (instead of InquiriesPage's inquiries list) so
+  // the Already Contacted cards immediately reflect the change.
+  const handleContactedAction = async (action: string, payload?: any) => {
+    if (!selectedContactedInquiry) return;
+    const current = selectedContactedInquiry;
+    setSelectedContactedInquiry(null);
+    try {
+      switch (action) {
+        case "sendEmail":
+          await api.inquiries.sendEmail(current.id);
+          setBanner("Email scheduled — will send in ~30 min.");
+          break;
+        case "cancelScheduledEmail":
+          await api.inquiries.cancelScheduledEmail(current.id);
+          setBanner("Scheduled email cancelled. Inquiry returned to draft.");
+          break;
+        case "editDraft":
+          await api.inquiries.update(current.id, { subject: payload.subject, question: payload.question });
+          setBanner("Draft updated.");
+          break;
+        case "editScheduledEmail":
+          await api.inquiries.editScheduledEmailContent(current.id, payload.subject, payload.question);
+          setBanner("Email content updated.");
+          break;
+        case "sendNow":
+          await api.inquiries.sendEmailNow(current.id);
+          setBanner("Email sent immediately.");
+          break;
+        case "recordEmailResponse":
+          await api.inquiries.recordEmailResponse(current.id, payload);
+          setBanner("Email response saved.");
+          break;
+        case "sendFollowupEmail":
+          await api.inquiries.sendFollowupEmail(current.id, payload.body);
+          setBanner("Follow-up email sent.");
+          break;
+        case "triggerCall":
+          await api.inquiries.triggerCall(current.id);
+          setBanner("Call queued.");
+          break;
+        case "recordCallResult":
+          await api.inquiries.recordCallResult(current.id, payload.summary, payload.transcript);
+          setBanner("Call result saved.");
+          break;
+        case "close":
+          await api.inquiries.close(current.id);
+          setBanner("Inquiry closed.");
+          break;
+        case "extractAnswer":
+          await api.inquiries.extractAnswer(current.id);
+          setBanner("Answer extracted from transcript.");
+          break;
+        case "resetRetries":
+          await api.inquiries.resetRetries(current.id);
+          setBanner("Retries reset. Inquiry returned to draft.");
+          break;
+        default:
+          return;
+      }
+      loadExistingInquiries();
+    } catch (err: any) {
+      setError(err?.message ?? "Action failed.");
+    }
+  };
+
+  const handleContactedDelete = async () => {
+    if (!selectedContactedInquiry) return;
+    const current = selectedContactedInquiry;
+    setSelectedContactedInquiry(null);
+    try {
+      await api.inquiries.remove(current.id);
+      setBanner("Inquiry deleted.");
+      loadExistingInquiries();
+    } catch (err: any) {
+      setError(err?.message ?? "Delete failed.");
+    }
+  };
 
   // Map manufacturer_id → inquiry for the first (most-recent) contact per mfr.
   // Test call inquiries have manufacturer_id = null and are excluded from this map.
@@ -781,7 +869,16 @@ export default function ContactManufacturerPage() {
                 const mfr = inq.manufacturer_id != null ? mfrById[inq.manufacturer_id] : undefined;
                 const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                 return (
-                  <div key={inq.id} className="contacted-row">
+                  <div
+                    key={inq.id}
+                    className="contacted-row"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedContactedInquiry(inq)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") setSelectedContactedInquiry(inq);
+                    }}
+                  >
                     <div className="contacted-row-main">
                       <span className="contacted-row-name">
                         {mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? (inq.test_call_phone ? `Test Call — ${inq.test_call_phone}` : `Manufacturer #${inq.manufacturer_id}`)}
@@ -1063,7 +1160,16 @@ export default function ContactManufacturerPage() {
                       const inq = item.inq;
                       const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                       return (
-                        <div key={item.key} className="contacted-row">
+                        <div
+                          key={item.key}
+                          className="contacted-row"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setSelectedContactedInquiry(inq)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") setSelectedContactedInquiry(inq);
+                          }}
+                        >
                           <div className="contacted-row-main">
                             <span className="contacted-row-name">{item.name}</span>
                             {(item.medication || item.piStorage) && (
@@ -1591,6 +1697,15 @@ export default function ContactManufacturerPage() {
           prefillManufacturer={addingMfrName}
           onClose={() => setAddingMfrName(null)}
           onSubmit={handleAddManufacturer}
+        />
+      )}
+
+      {selectedContactedInquiry && (
+        <InquiryDetail
+          inquiry={selectedContactedInquiry}
+          onClose={() => setSelectedContactedInquiry(null)}
+          onAction={handleContactedAction}
+          onDelete={handleContactedDelete}
         />
       )}
     </>

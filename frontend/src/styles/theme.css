@@ -1342,6 +1342,13 @@ pre.raw-json {
   background: var(--surface);
   margin-bottom: 6px;
   opacity: 0.7;
+  cursor: pointer;
+}
+.contacted-row:hover,
+.contacted-row:focus-visible {
+  opacity: 1;
+  border-color: var(--brand-orange);
+  outline: none;
 }
 
 .contacted-row-main {
