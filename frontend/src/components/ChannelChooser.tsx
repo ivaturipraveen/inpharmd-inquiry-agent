@@ -296,58 +296,62 @@ const ChannelChooser: FC<Props> = ({
               </button>
             </div>
 
-            {/* Web Form card */}
-            {webFormCapableCount > 0 && (
-              <div className="channel-card">
-                <div className="channel-icon channel-icon-test">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <path d="M14 2v6h6" />
-                    <path d="M9 15h6" />
-                    <path d="M9 11h6" />
-                  </svg>
-                </div>
-                <div className="channel-title">{webFormLabel}</div>
-                <div className="channel-sub">
-                  {isMulti ? (
+            {/* Web Form card — always shown, disabled when not eligible (mirrors Email/Call above) */}
+            <div className={`channel-card ${webFormCapableCount === 0 ? "channel-disabled" : ""}`}>
+              <div className="channel-icon channel-icon-test">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <path d="M14 2v6h6" />
+                  <path d="M9 15h6" />
+                  <path d="M9 11h6" />
+                </svg>
+              </div>
+              <div className="channel-title">{webFormLabel}</div>
+              <div className="channel-sub">
+                {isMulti ? (
+                  webFormCapableCount > 0 ? (
                     <>
                       <strong>{webFormCapableCount}</strong>{" "}
                       {webFormCapableCount === 1 ? "manufacturer has" : "manufacturers have"} a
                       web form available.
                     </>
                   ) : (
-                    "Open this manufacturer's medical information request form to submit this inquiry."
-                  )}
-                </div>
-                <button
-                  className="btn btn-primary"
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={handleOpenWebForm}
-                >
-                  {webFormLabel}
-                </button>
-                {isMulti && webFormCapableCount > 1 && (
-                  <ul className="channel-meta channel-webform-list">
-                    <li className="cell-muted">
-                      Your browser may block opening more than one tab at
-                      once — open any that didn't open individually:
-                    </li>
-                    {webFormManufacturers.map((wm) => (
-                      <li key={wm.id}>
-                        <a
-                          href={wm.mi_web_form_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {wm.manufacturer}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
+                    "None of the selected manufacturers prefer Web Form."
+                  )
+                ) : webFormCapableCount > 0 ? (
+                  "Open this manufacturer's medical information request form to submit this inquiry."
+                ) : (
+                  "This manufacturer's preferred channel is not Web Form."
                 )}
               </div>
-            )}
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={webFormCapableCount === 0 || busy !== null}
+                onClick={handleOpenWebForm}
+              >
+                {webFormLabel}
+              </button>
+              {isMulti && webFormCapableCount > 1 && (
+                <ul className="channel-meta channel-webform-list">
+                  <li className="cell-muted">
+                    Your browser may block opening more than one tab at
+                    once — open any that didn't open individually:
+                  </li>
+                  {webFormManufacturers.map((wm) => (
+                    <li key={wm.id}>
+                      <a
+                        href={wm.mi_web_form_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {wm.manufacturer}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
 
           {attentionItems.length > 0 && (
