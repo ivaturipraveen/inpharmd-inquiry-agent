@@ -556,6 +556,116 @@ def _scan_and_trigger_fallback_calls() -> None:
             db2.close()
 
 
+def _scan_and_place_scheduled_calls() -> None:
+    """One scheduler tick: place calls scheduled via POST /{id}/schedule-call
+    (Call-preferred manufacturer, was outside business hours at dispatch)."""
+    import call_service
+
+    db = SessionLocal()
+    try:
+        now = _now()
+        pending = (
+            db.query(Inquiry)
+            .filter(
+                Inquiry.status == "call_scheduled",
+                Inquiry.call_scheduled_for.isnot(None),
+                Inquiry.call_scheduled_for <= now,
+                Inquiry.is_test_call.isnot(True),
+                Inquiry.call_outcome_unknown_until.is_(None),
+            )
+            .all()
+        )
+    except Exception:
+        log.exception("Scheduled-call scan query failed")
+        return
+    finally:
+        db.close()
+
+    if not pending:
+        return
+
+    log.info("Scheduled-call scan: %s due", len(pending))
+
+    for obj in pending:
+        db2 = SessionLocal()
+        try:
+            locked = (
+                db2.query(Inquiry)
+                .filter(
+                    Inquiry.id == obj.id,
+                    Inquiry.status == "call_scheduled",
+                    Inquiry.call_scheduled_for.isnot(None),
+                    Inquiry.call_scheduled_for <= _now(),
+                    Inquiry.call_outcome_unknown_until.is_(None),
+                )
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+            if not locked:
+                db2.close()
+                continue
+
+            # Re-derive eligibility rather than trust stored state.
+            fresh_mfr = db2.get(ManufacturerContact, locked.manufacturer_id)
+            preferred_ok = fresh_mfr and (fresh_mfr.preferred_channel or "").strip().lower() == "phone"
+            if not fresh_mfr or not preferred_ok or not fresh_mfr.mi_phone:
+                log.warning(
+                    "Inquiry %s no longer eligible for scheduled call (re-checked); marking needs_attention",
+                    locked.id,
+                )
+                locked.status = "needs_attention"
+                locked.call_scheduled_for = None
+                db2.commit()
+                db2.close()
+                continue
+
+            try:
+                resp = call_service.place_inquiry_call_sync(
+                    inquiry_id=locked.id,
+                    to_number=fresh_mfr.mi_phone,
+                    manufacturer_name=fresh_mfr.manufacturer,
+                    subject=locked.subject,
+                    question=locked.question,
+                    requester_name=locked.requester_name,
+                    requester_email=locked.requester_email,
+                )
+            except call_service.CallOutcomeUnknown:
+                # Move off call_scheduled to call_pending so _resolve_ambiguous_call_timeouts can find and resolve it later.
+                locked.status = "call_pending"
+                locked.call_outcome_unknown_until = _now() + timedelta(minutes=10)
+                db2.commit()
+                db2.close()
+                continue
+            except Exception:
+                log.exception("Scheduled call failed for inquiry %s; will retry on next tick", locked.id)
+                db2.rollback()
+                db2.close()
+                continue
+
+            import call_log_service
+
+            now2 = _now()
+            locked.status = "call_pending"
+            locked.call_scheduled_for = now2
+            locked.call_conversation_id = resp.get("conversation_id") or resp.get("conversationId")
+            locked.call_provider_status = resp.get("status") or "initiated"
+            if locked.first_contacted_at is None:
+                locked.first_contacted_at = now2
+            call_log_service.start_call_log(
+                db2, locked,
+                conversation_id=locked.call_conversation_id,
+                provider_status=locked.call_provider_status,
+                started_at=now2,
+            )
+            db2.commit()
+            log.info("Scheduled call placed for inquiry %s (conv %s)", locked.id, locked.call_conversation_id)
+        except Exception:
+            log.exception("Unexpected error during scheduled call for inquiry %s; rolling back", obj.id)
+            db2.rollback()
+        finally:
+            db2.close()
+
+
 def _poll_email_replies() -> None:
     """One scheduler tick: pull any new manufacturer email replies from the inbox."""
     import graph_service
@@ -1076,6 +1186,14 @@ def start_scheduler() -> None:
         "interval",
         seconds=_TICK_SECONDS,
         id="fallback_call_scan",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _scan_and_place_scheduled_calls,
+        "interval",
+        seconds=_TICK_SECONDS,
+        id="scheduled_call_scan",
         max_instances=1,
         coalesce=True,
     )

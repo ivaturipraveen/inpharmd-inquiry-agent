@@ -76,6 +76,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
       new Date(inquiry.call_completed_at).getTime() < new Date(inquiry.call_scheduled_for).getTime())
   );
   const isDraft = inquiry.status === "draft";
+  const isCallScheduled = inquiry.status === "call_scheduled";
   const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
   // The user can always call the manufacturer again, regardless of status —
@@ -387,24 +388,34 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               });
             }
 
-            entries.push({
-              key: "email-sent",
-              sortAt:
-                toMs(inquiry.email_sent_at) ??
-                toMs(inquiry.email_scheduled_for) ??
-                toMs(inquiry.created_at) ??
-                0,
-              status: inquiry.email_sent_at ? "done" : "pending",
-              title: "Email sent to manufacturer",
-              meta: (
-                <>
-                  {fmtDate(inquiry.email_sent_at) ?? "—"}
-                  {inquiry.call_scheduled_for && !inquiry.email_response_at && (
-                    <> · fallback call at {fmtDate(inquiry.call_scheduled_for)}</>
-                  )}
-                </>
-              ),
-            });
+            if (isCallScheduled) {
+              entries.push({
+                key: "call-scheduled",
+                sortAt: toMs(inquiry.call_scheduled_for) ?? SORT_LAST,
+                status: "pending",
+                title: "Call scheduled",
+                meta: <>Calls at {fmtDate(inquiry.call_scheduled_for)}</>,
+              });
+            } else {
+              entries.push({
+                key: "email-sent",
+                sortAt:
+                  toMs(inquiry.email_sent_at) ??
+                  toMs(inquiry.email_scheduled_for) ??
+                  toMs(inquiry.created_at) ??
+                  0,
+                status: inquiry.email_sent_at ? "done" : "pending",
+                title: "Email sent to manufacturer",
+                meta: (
+                  <>
+                    {fmtDate(inquiry.email_sent_at) ?? "—"}
+                    {inquiry.call_scheduled_for && !inquiry.email_response_at && (
+                      <> · fallback call at {fmtDate(inquiry.call_scheduled_for)}</>
+                    )}
+                  </>
+                ),
+              });
+            }
 
             if (inquiry.email_response_at) {
               entries.push({
@@ -671,6 +682,16 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
+          {/* Call scheduled for next business hours — read-only, no draft/email actions */}
+          {isCallScheduled && (
+            <div className="detail-section action-panel">
+              <div className="detail-label">Call Scheduled</div>
+              <div className="cell-muted" style={{ marginTop: 8 }}>
+                Scheduled for {fmtDate(inquiry.call_scheduled_for)}
+              </div>
+            </div>
+          )}
+
           {/* Scheduled email actions */}
           {isScheduled && (
             <div className="detail-section action-panel">
@@ -834,7 +855,9 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               </div>
             )}
 
-            <label className="detail-label" style={{ marginTop: 4 }}>Send Another Email</label>
+            <label className="detail-label" style={{ marginTop: 4 }}>
+              {isCallScheduled ? "Send Email" : "Send Another Email"}
+            </label>
             {emailReachable ? (
               <>
                 <textarea

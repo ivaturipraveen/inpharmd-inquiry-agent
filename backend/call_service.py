@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
@@ -168,6 +168,24 @@ def is_within_business_hours(text: Optional[str], now_utc: Optional[datetime] = 
         return False
     now_t = now_local.time()
     return win.open_local <= now_t <= win.close_local
+
+
+def next_business_hours_start(text: Optional[str], now_utc: Optional[datetime] = None) -> Optional[datetime]:
+    """Next UTC datetime this hours string opens. None if unparseable."""
+    win = parse_hours(text)
+    if not win or not win.open_local or not win.close_local:
+        return None
+    now_local = (now_utc or datetime.now(tz=ZoneInfo("UTC"))).astimezone(win.tz)
+    for days_ahead in range(8):
+        candidate = now_local + timedelta(days=days_ahead)
+        if candidate.weekday() not in win.weekdays:
+            continue
+        start = candidate.replace(
+            hour=win.open_local.hour, minute=win.open_local.minute, second=0, microsecond=0
+        )
+        if start > now_local:
+            return start.astimezone(ZoneInfo("UTC"))
+    return None
 
 
 # ---------- Outbound call ----------

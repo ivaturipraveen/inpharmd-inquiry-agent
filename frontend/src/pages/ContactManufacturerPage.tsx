@@ -715,8 +715,10 @@ export default function ContactManufacturerPage() {
       }
 
       if (channel === "call") {
+        const scheduled = allCreated.filter((c) => c.status === "call_scheduled").length;
         setBanner(
           `Calling ${totalDispatched} manufacturer${totalDispatched === 1 ? "" : "s"}` +
+            (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
             (allFailed.length > 0 ? ` · ${allFailed.length} skipped` : ""),
         );
       } else {
@@ -1324,10 +1326,13 @@ export default function ContactManufacturerPage() {
               const fallbackHoursVary = new Set(fallbackEligibleHours).size > 1;
               const effectiveFallbackHours = fallbackEligibleHours[0] ?? fallbackHours;
 
+              // Out-of-hours manufacturers are scheduled, not excluded — all
+              // of buckets.call will be contacted, now or later.
               const outOfHoursNow = buckets.call.filter(
                 (m) => isWithinBusinessHoursNow(m.mi_phone_hours) === false,
               ).length;
               const callableNow = buckets.call.length - outOfHoursNow;
+              const totalCallable = buckets.call.length;
 
               // Web form: dedupe by manufacturer (not by row) — a manufacturer
               // referenced by several selected rows should still only count,
@@ -1435,7 +1440,7 @@ export default function ContactManufacturerPage() {
                       </div>
 
                       {/* Call card */}
-                      <div className={`channel-card ${callableNow === 0 ? "channel-disabled" : ""}`}>
+                      <div className={`channel-card ${totalCallable === 0 ? "channel-disabled" : ""}`}>
                         <div className="channel-icon channel-icon-call">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.86 19.86 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.86 19.86 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92Z" />
@@ -1444,16 +1449,16 @@ export default function ContactManufacturerPage() {
                         <div className="channel-title">Call Agent</div>
                         <div className="channel-sub">
                           Voice agent dials each callable manufacturer in sequence.
-                          Numbers outside their business hours right now stay as
-                          drafts — you can retry them later from Outreach.
+                          Numbers outside their business hours right now are
+                          scheduled for their next business hours instead.
                         </div>
                         <ul className="channel-meta">
                           <li>
                             <span>Preferred Call</span>{" "}
-                            {callableNow} of {buckets.call.length} callable now
+                            {totalCallable} of {total}
                             {outOfHoursNow > 0 && (
                               <span className="bulk-row-warn">
-                                {" "}· {outOfHoursNow} outside hours
+                                {" "}· {outOfHoursNow} scheduled for later
                               </span>
                             )}
                           </li>
@@ -1464,11 +1469,9 @@ export default function ContactManufacturerPage() {
                         <button
                           className="btn btn-primary"
                           type="button"
-                          disabled={noneSelected || callableNow === 0 || anyBusy}
+                          disabled={noneSelected || totalCallable === 0 || anyBusy}
                           title={
-                            callableNow === 0 && buckets.call.length > 0
-                              ? "All selected manufacturers are outside business hours right now."
-                              : callableNow === 0
+                            totalCallable === 0
                               ? "No selected manufacturers prefer Call."
                               : undefined
                           }
@@ -1476,9 +1479,11 @@ export default function ContactManufacturerPage() {
                         >
                           {submitting === "call"
                             ? "Calling…"
-                            : callableNow === 0
-                            ? "Nobody callable now"
-                            : `Call ${callableNow} Now`}
+                            : totalCallable === 0
+                            ? "Nobody prefers Call"
+                            : outOfHoursNow > 0
+                            ? `Call ${callableNow} Now (+${outOfHoursNow} scheduled)`
+                            : `Call ${totalCallable} Now`}
                         </button>
                       </div>
 
@@ -1617,8 +1622,13 @@ export default function ContactManufacturerPage() {
             }}
             onCallAgent={async () => {
               const id = await getOrCreateId();
-              await api.inquiries.triggerCall(id);
-              setBanner("Call placed — the agent is dialing now.");
+              if (isWithinBusinessHoursNow(mfr?.mi_phone_hours) === false) {
+                await api.inquiries.scheduleCall(id);
+                setBanner(`Call scheduled for ${mfr?.manufacturer ?? "manufacturer"}'s next business hours.`);
+              } else {
+                await api.inquiries.triggerCall(id);
+                setBanner("Call placed — the agent is dialing now.");
+              }
               closePending();
               goTo("inquiries");
             }}
@@ -1685,8 +1695,10 @@ export default function ContactManufacturerPage() {
           const total = result.created.length;
           const failed = result.failed.length;
           if (channel === "call") {
+            const scheduled = result.created.filter((c) => c.status === "call_scheduled").length;
             setBanner(
               `Calling ${result.dispatched ?? 0} manufacturer${(result.dispatched ?? 0) === 1 ? "" : "s"}` +
+                (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
                 (failed > 0 ? ` · ${failed} skipped` : ""),
             );
           } else if (channel === "email") {

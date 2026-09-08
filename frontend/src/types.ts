@@ -36,6 +36,7 @@ export type InquiryStatus =
   | "email_responded"
   | "call_pending"
   | "call_completed"
+  | "call_scheduled"
   | "needs_attention"
   | "closed"
   | "failed";

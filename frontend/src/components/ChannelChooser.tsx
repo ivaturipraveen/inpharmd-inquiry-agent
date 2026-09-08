@@ -85,9 +85,8 @@ const ChannelChooser: FC<Props> = ({
     })),
   ];
 
-  const callDisabled = isMulti
-    ? callEligibleCount === 0 || busy !== null
-    : callEligibleCount === 0 || busy !== null || outOfHours;
+  // Out-of-hours no longer disables Call — onCallAgent schedules it instead.
+  const callDisabled = callEligibleCount === 0 || busy !== null;
 
   useEffect(() => {
     if (!error) return;
@@ -116,7 +115,6 @@ const ChannelChooser: FC<Props> = ({
   };
 
   const handleCall = async () => {
-    if (!isMulti && outOfHours) return;
     setBusy("call");
     setError(null);
     try {
@@ -275,7 +273,11 @@ const ChannelChooser: FC<Props> = ({
                       ) : inHours ? (
                         <em className="ok">In business hours now</em>
                       ) : (
-                        <em className="warn">Outside business hours</em>
+                        <em className="warn" style={{ textAlign: "right" }}>
+                          Outside business hours
+                          <br />
+                          (will be scheduled)
+                        </em>
                       )}
                     </li>
                   </>
@@ -287,12 +289,16 @@ const ChannelChooser: FC<Props> = ({
                 disabled={callDisabled}
                 title={
                   !isMulti && outOfHours
-                    ? `Outside ${m?.manufacturer ?? "manufacturer"} business hours (${m?.mi_phone_hours ?? "unknown"}). Wait until in-hours to call.`
+                    ? `Outside ${m?.manufacturer ?? "manufacturer"} business hours (${m?.mi_phone_hours ?? "unknown"}) — will be scheduled instead.`
                     : undefined
                 }
                 onClick={handleCall}
               >
-                {busy === "call" ? "Dialing…" : "Call Agent Now"}
+                {busy === "call"
+                  ? (!isMulti && outOfHours ? "Scheduling…" : "Dialing…")
+                  : !isMulti && outOfHours
+                  ? "Schedule Call"
+                  : "Call Agent Now"}
               </button>
             </div>
 

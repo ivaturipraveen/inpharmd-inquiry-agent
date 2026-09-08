@@ -383,6 +383,12 @@ async def bulk_create_inquiries(
                 continue
             in_hours = call_service.is_within_business_hours(mfr.mi_phone_hours)
             if in_hours is False:
+                # Schedule for next business hours instead of failing.
+                next_start = call_service.next_business_hours_start(mfr.mi_phone_hours)
+                if next_start is not None:
+                    obj.status = "call_scheduled"
+                    obj.call_scheduled_for = next_start
+                    continue
                 failed.append({
                     "manufacturer_id": obj.manufacturer_id,
                     "error": f"{mfr.manufacturer} is outside business hours ({mfr.mi_phone_hours})",
@@ -994,6 +1000,32 @@ async def trigger_call(
         provider_status=locked.call_provider_status,
         started_at=locked.call_scheduled_for,
     )
+    db.commit()
+    return _get_or_404(db, inquiry_id, current_user)
+
+
+@router.post("/{inquiry_id}/schedule-call", response_model=InquiryOut)
+def schedule_call(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Schedule this draft's call for the manufacturer's next business hours
+    (Call-preferred, currently outside hours). Placed later by
+    scheduler._scan_and_place_scheduled_calls; does not call trigger_call."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    if obj.status != "draft":
+        raise HTTPException(status_code=409, detail="Can only schedule a call from draft")
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+    if not mfr.mi_phone:
+        raise HTTPException(status_code=400, detail=f"{mfr.manufacturer} has no MI phone number on file")
+    next_start = call_service.next_business_hours_start(mfr.mi_phone_hours)
+    if next_start is None:
+        raise HTTPException(status_code=422, detail="Cannot determine this manufacturer's business hours")
+    obj.status = "call_scheduled"
+    obj.call_scheduled_for = next_start
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

@@ -182,6 +182,9 @@ export const api = {
       }),
     triggerCall: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/trigger-call`, { method: "POST" }),
+    /** Schedule this draft's call for the manufacturer's next business hours. */
+    scheduleCall: (id: number) =>
+      request<Inquiry>(`/api/inquiries/${id}/schedule-call`, { method: "POST" }),
     testCall: (id: number, phoneNumber: string) =>
       request<Inquiry>(`/api/inquiries/${id}/test-call`, {
         method: "POST",

@@ -13,6 +13,7 @@ const STATUS_FILTERS = [
   { value: "email_responded", label: "Email Responded" },
   { value: "call_pending", label: "Call Pending" },
   { value: "call_completed", label: "Call Completed" },
+  { value: "call_scheduled", label: "Call Scheduled" },
   { value: "needs_attention", label: "Needs Attention" },
   { value: "closed", label: "Closed" },
 ];
@@ -23,7 +24,7 @@ const STATUS_FILTERS = [
 // + call_completed, group counted those plus `closed`, so a closed
 // inquiry made the two readouts disagree by one.
 const RESPONDED_STATUSES = ["email_responded", "call_completed", "closed"];
-const AWAITING_STATUSES = ["email_pending", "email_sent", "call_pending"];
+const AWAITING_STATUSES = ["email_pending", "email_sent", "call_pending", "call_scheduled"];
 const DRAFT_STATUSES = ["draft"];
 
 // Bucket filter values used by the stat-tile click handlers. The
@@ -518,6 +519,11 @@ export default function InquiriesPage() {
                                   : "Fallback call pending…"}
                               </span>
                             )}
+                            {i.status === "call_scheduled" && i.call_scheduled_for && (
+                              <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
+                                Calling at {new Date(i.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              </span>
+                            )}
                             {i.email_sent_at && (i.status === "call_pending" || i.status === "call_completed" || i.status === "needs_attention") && (
                               <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
                                 via fallback call
@@ -640,6 +646,8 @@ export default function InquiriesPage() {
                                   ? "Not sent yet"
                                   : c.status === "email_pending"
                                   ? `Scheduled — sends at ${c.email_scheduled_for ? new Date(c.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "..."}`
+                                  : c.status === "call_scheduled"
+                                  ? `Call scheduled — calling at ${c.call_scheduled_for ? new Date(c.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "..."}`
                                   : "Waiting for reply"}
                               </div>
                             </td>
@@ -652,6 +660,11 @@ export default function InquiriesPage() {
                                     {new Date(c.call_scheduled_for) > new Date()
                                       ? `Fallback call at ${new Date(c.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
                                       : "Fallback call pending…"}
+                                  </span>
+                                )}
+                                {c.status === "call_scheduled" && c.call_scheduled_for && (
+                                  <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
+                                    Calling at {new Date(c.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                                   </span>
                                 )}
                                 {c.email_sent_at && (c.status === "call_pending" || c.status === "call_completed" || c.status === "needs_attention") && (
