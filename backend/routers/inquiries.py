@@ -661,9 +661,9 @@ def record_email_response(
     # ensures the in-memory object reflects the current DB state even if the
     # session already held a pre-lock snapshot from _get_or_404 above.
     # Mirrors cancel_scheduled_email, send_now, trigger_call in this file.
+    # joinedload + FOR UPDATE fails on this nullable relation (Postgres); obj.manufacturer lazy-loads below instead.
     obj = (
         db.query(Inquiry)
-        .options(joinedload(Inquiry.manufacturer))
         .populate_existing()
         .filter(Inquiry.id == inquiry_id)
         .with_for_update()

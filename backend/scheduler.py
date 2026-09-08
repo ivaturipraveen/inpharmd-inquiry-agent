@@ -686,7 +686,6 @@ def _notify_no_response() -> None:
         try:
             locked = (
                 db2.query(Inquiry)
-                .options(joinedload(Inquiry.manufacturer))
                 .filter(
                     Inquiry.id == obj.id,
                     Inquiry.no_response_notified_at.is_(None),
@@ -704,7 +703,8 @@ def _notify_no_response() -> None:
                 db2.close()
                 continue
 
-            mfr = locked.manufacturer
+            # joinedload + FOR UPDATE fails on this nullable relation (Postgres) — fetch separately.
+            mfr = db2.get(ManufacturerContact, locked.manufacturer_id)
             fallback_attempted = bool(locked.email_sent_at and locked.call_conversation_id)
             contact_method = "Email" if locked.email_sent_at else "Call"
             if locked.status == "needs_attention":
@@ -895,9 +895,9 @@ def _reconcile_stuck_calls() -> None:
     for inquiry_id in poll_ids:
         db2 = SessionLocal()
         try:
+            # joinedload + FOR UPDATE fails on this nullable relation (Postgres); unused here anyway.
             locked = (
                 db2.query(Inquiry)
-                .options(joinedload(Inquiry.manufacturer))
                 .filter(Inquiry.id == inquiry_id, Inquiry.status.in_(("call_pending", "closed")))
                 .with_for_update(skip_locked=True)
                 .first()

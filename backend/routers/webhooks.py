@@ -143,9 +143,9 @@ async def elevenlabs_post_call(
     # poll or manual call-result entry for the same inquiry can't race with
     # this webhook (see call_outcome_service.apply_call_outcome, used by all
     # three writers).
+    # joinedload + FOR UPDATE fails on this nullable relation (Postgres); obj.manufacturer lazy-loads below instead.
     locked = (
         db.query(Inquiry)
-        .options(joinedload(Inquiry.manufacturer))
         .filter(Inquiry.id == obj.id)
         .with_for_update()
         .first()
