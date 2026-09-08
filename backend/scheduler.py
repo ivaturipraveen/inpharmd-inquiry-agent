@@ -227,6 +227,13 @@ def _scan_and_send_pending_emails() -> None:
                 continue
 
             try:
+                import attachment_extraction_service
+                # Best-effort — never raises; falls back to "" fields (the
+                # template's normal "Not provided" placeholders) if nothing
+                # was extractable or extraction failed.
+                excursion_fields = attachment_extraction_service.get_or_extract(
+                    db2, locked, manufacturer_name=mfr.manufacturer
+                )
                 message_id = email_service.send_inquiry_email(
                     inquiry_id=locked.id,
                     manufacturer_name=mfr.manufacturer,
@@ -239,6 +246,8 @@ def _scan_and_send_pending_emails() -> None:
                     pi_storage_data=locked.pi_storage_data,
                     pi_link=locked.pi_link,
                     team_name=locked.team_name,
+                    mue_details=locked.mue_details,
+                    **excursion_fields,
                 )
             except Exception:
                 log.exception(

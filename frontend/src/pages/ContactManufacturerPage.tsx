@@ -32,6 +32,9 @@ interface ForwardContext {
   // From InpharmD's inquiry_submitter_details.team_name, if the platform
   // returned one for this MUE inquiry's submitter.
   team_name?: string;
+  // Raw "Temperature Excursion Request" text from InpharmD (API field
+  // `mue_details`), distinct from `title`. TE-only in practice.
+  mue_details?: string;
 }
 
 interface DetectedRow {
@@ -112,7 +115,14 @@ const readContext = (): ForwardContext | null => {
     if (attUrl && attName) attachments.push({ id: 0, file_name: attName, doc_url: attUrl });
   }
   const team_name = params.get("team_name") ?? undefined;
-  return { uuid, title, attachments, ...(team_name ? { team_name } : {}) };
+  const mue_details = params.get("mue_details") ?? undefined;
+  return {
+    uuid,
+    title,
+    attachments,
+    ...(team_name ? { team_name } : {}),
+    ...(mue_details ? { mue_details } : {}),
+  };
 };
 
 const goTo = (hash: string) => {
@@ -219,9 +229,15 @@ export default function ContactManufacturerPage() {
   useEffect(() => {
     if (ctx) sessionStorage.removeItem(CTX_KEY);
     // Subject is always backend-generated — never seeded from ctx.title.
-    // The original MUE title still seeds the question/details field.
+    // The original MUE title still seeds the question/details field. When
+    // InpharmD also sent mue_details (the "Temperature Excursion Request"
+    // text), it's appended as a second paragraph in the same editable
+    // textarea — both are free-form editable from here on as one blob, so
+    // it is NOT also submitted as a separate mue_details field (that would
+    // duplicate it in the outbound email — see the two bulkCreate calls
+    // below, which now always send mue_details: null).
     if (ctx?.title) {
-      setQuestion(ctx.title);
+      setQuestion(ctx.mue_details ? `${ctx.title}\n\n${ctx.mue_details}` : ctx.title);
     }
     if (ctx?.team_name) setTeamName(ctx.team_name);
   }, [ctx]);
@@ -686,6 +702,11 @@ export default function ContactManufacturerPage() {
           source_inquiry_uuid: ctx.uuid,
           source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
           source_excel_sheet: s.result!.sheet_name,
+          attachments: ctx.attachments,
+          // Already folded into `question` above (see the ctx effect) as an
+          // editable second paragraph — sending it here too would duplicate
+          // it in the outbound email.
+          mue_details: null,
           dispatch_channel: channel,
         });
         allCreated.push(...result.created);
@@ -752,7 +773,10 @@ export default function ContactManufacturerPage() {
       <div className="contact-context-card">
         <div className="contact-context-row">
           <span className="contact-context-label">Inquiry</span>
-          <span className="contact-context-value">{ctx.title || "(no title)"}</span>
+          <div className="contact-context-value">
+            {ctx.title || "(no title)"}
+            {ctx.mue_details && <div>{ctx.mue_details}</div>}
+          </div>
         </div>
         {ctx.submitter && (
           <div className="contact-context-row">
@@ -1651,6 +1675,11 @@ export default function ContactManufacturerPage() {
             source_inquiry_uuid: ctx.uuid ?? null,
             source_excel_url: null,
             source_excel_sheet: null,
+            attachments: ctx.attachments,
+            // Already folded into `question` above (see the ctx effect) as an
+            // editable second paragraph — sending it here too would duplicate
+            // it in the outbound email.
+            mue_details: null,
             dispatch_channel: channel,
           });
           const total = result.created.length;
@@ -1724,6 +1753,7 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   if (ctx.uuid) qs.set("uuid", ctx.uuid);
   if (ctx.title) qs.set("title", ctx.title);
   if (ctx.team_name) qs.set("team_name", ctx.team_name);
+  if (ctx.mue_details) qs.set("mue_details", ctx.mue_details);
   // Encode ALL extractable attachments in the URL (indexed: att_url_0, att_url_1, …)
   // so readContext can reconstruct them on page refresh when sessionStorage is gone.
   const extractables = (ctx.attachments ?? []).filter(isExtractable);

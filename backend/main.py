@@ -202,6 +202,14 @@ FROM inquiries i
 WHERE i.call_conversation_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM call_logs cl WHERE cl.inquiry_id = i.id)
 """,
+        # Original platform attachment list + cached structured-field
+        # extraction for the stability-excursion email template. See
+        # models.Inquiry and attachment_extraction_service.py.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_attachments_json TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS attachment_extraction_cache TEXT",
+        # Raw "Temperature Excursion Request" text from InpharmD (API field
+        # `mue_details`) — see models.Inquiry.mue_details.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS mue_details TEXT",
     ]
     # Each statement runs in its own transaction so a Postgres error on one
     # statement does not abort the rest (a single engine.begin() block puts

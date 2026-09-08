@@ -448,7 +448,7 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
         senderHandle="druginfo@inpharmd.com"
         recipientLabel={`to ${to}`}
         timestamp={fmtLong(inquiry.email_sent_at || inquiry.created_at)}
-        body={inquiry.question}
+        body={inquiry.mue_details ? `${inquiry.question}\n\n${inquiry.mue_details}` : inquiry.question}
         direction="out"
       />
 

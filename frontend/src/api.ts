@@ -242,6 +242,12 @@ export const api = {
       source_inquiry_uuid?: string | null;
       source_excel_url?: string | null;
       source_excel_sheet?: string | null;
+      /** Original platform attachments (all of them), for later best-effort
+       * structured-field extraction — see backend models.Inquiry.source_attachments_json. */
+      attachments?: { file_name: string; doc_url: string }[];
+      /** Raw "Temperature Excursion Request" text from InpharmD (API field
+       * `mue_details`), distinct from `question` — see backend models.Inquiry.mue_details. */
+      mue_details?: string | null;
       dispatch_channel?: "email" | "call" | "none";
       /** @deprecated use dispatch_channel */
       send_email?: boolean;

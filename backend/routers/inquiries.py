@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+import attachment_extraction_service
 import call_log_service
 import call_service
 import email_service
@@ -241,6 +243,14 @@ async def bulk_create_inquiries(
     created_objs: list[Inquiry] = []
     failed: list[dict] = []
 
+    # Same platform attachment list for every target in this batch (they all
+    # come from the same source InpharmD inquiry) — serialized once here.
+    source_attachments_json = (
+        json.dumps([a.model_dump() for a in payload.attachments])
+        if payload.attachments
+        else None
+    )
+
     for tgt in payload.targets:
         mfr = db.get(ManufacturerContact, tgt.manufacturer_id)
         if not mfr:
@@ -264,6 +274,8 @@ async def bulk_create_inquiries(
             source_excel_url=payload.source_excel_url,
             source_excel_sheet=payload.source_excel_sheet,
             source_excel_row=tgt.source_excel_row,
+            source_attachments_json=source_attachments_json,
+            mue_details=(payload.mue_details or "").strip() or None,
             team_name=(payload.team_name or "").strip() or None,
             medication_name=tgt.medication_name or None,
             pi_storage_data=tgt.pi_storage_data or None,
@@ -587,6 +599,13 @@ def send_now(
             detail=f"{mfr.manufacturer} has no email address on file",
         )
 
+    # Best-effort — never raises; returns all-"" fields if nothing was
+    # extractable or extraction failed, in which case the template below
+    # falls back to its normal "Not provided" placeholders.
+    excursion_fields = attachment_extraction_service.get_or_extract(
+        db, locked, manufacturer_name=mfr.manufacturer
+    )
+
     try:
         message_id = email_service.send_inquiry_email(
             inquiry_id=locked.id,
@@ -600,6 +619,8 @@ def send_now(
             pi_storage_data=locked.pi_storage_data,
             pi_link=locked.pi_link,
             team_name=locked.team_name,
+            mue_details=locked.mue_details,
+            **excursion_fields,
         )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))

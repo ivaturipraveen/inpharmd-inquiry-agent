@@ -47,6 +47,18 @@ class SendGridConfig:
         return cls(api_key=api_key, from_addr=from_addr, from_name=from_name)
 
 
+def _sig_lines(team: Optional[str], *, escape=None) -> list[str]:
+    """Shared signature-block lines (plain text, or HTML when `escape` is
+    given) — used by both the follow-up branch and the stability-excursion
+    template below so the signature is defined in exactly one place."""
+    esc = escape or (lambda s: s)
+    lines = ["Requested by:", "Leah Mueller, PharmD", "Pharmacist"]
+    if team:
+        lines.append(f"For {esc(team)}")
+    lines.append("3423 Piedmont Rd NE, Atlanta, GA 30305")
+    return lines
+
+
 def _build_body(
     *,
     inquiry_id: int,
@@ -59,23 +71,49 @@ def _build_body(
     pi_link: Optional[str] = None,
     team_name: Optional[str] = None,
     is_followup: bool = False,
+    # Raw InpharmD "Temperature Excursion Request" text (API field
+    # `mue_details`), distinct from `question`. Appended as an unlabeled
+    # second paragraph inside the client-approved "Additional details"
+    # bullet, right after the question — never a new bullet/label of its
+    # own, and omitted entirely when empty. is_followup=True ignores it —
+    # a manual follow-up isn't the original MUE submission.
+    mue_details: Optional[str] = None,
+    # Temperature-excursion / product-detail fields for the new template
+    # (see attachment_extraction_service.py). All optional/default None —
+    # every field renders as "Not provided" when absent, so this never
+    # breaks or looks malformed for an inquiry with no extracted data.
+    strength: Optional[str] = None,
+    dosage_form: Optional[str] = None,
+    ndc: Optional[str] = None,
+    lot_number: Optional[str] = None,
+    expiration_date: Optional[str] = None,
+    quantity_affected: Optional[str] = None,
+    excursion_details: Optional[str] = None,
+    temperature_range: Optional[str] = None,
+    duration: Optional[str] = None,
+    num_excursions: Optional[str] = None,
 ) -> tuple[str, str]:
     """Return (plain_text, html) tuple for the email body.
 
-    inquiry_id/manufacturer_name/pi_storage_data/pi_link/requester_name/
-    requester_email are accepted (and still passed by every caller) but are
-    not rendered — the client-approved template only varies by `question`,
-    `team_name`, and `medication_name` (rendered as a "Drug Name:" line
-    above QUESTION when present). Kept as parameters so no call site needs
-    to change.
+    is_followup=True keeps the ORIGINAL, unchanged behavior (greeting +
+    "FOLLOW-UP MESSAGE:" + the free-text follow-up body + signature) — see
+    routers.inquiries.send_followup_email. That branch does not use any of
+    the new excursion/product fields and is untouched by the template
+    below.
 
-    is_followup=True swaps only the greeting sentence and the body label —
-    everything else (signature, drug-name line, HTML structure) is
-    identical. Exists so a manual follow-up email (see
-    routers.inquiries.send_followup_email) doesn't read as a brand-new
-    "drug information request" with the follow-up text mislabeled as the
-    original QUESTION. Default False keeps every existing caller's output
-    byte-for-byte unchanged.
+    is_followup=False renders the client-approved stability-excursion
+    template: greeting, two fixed explanatory paragraphs, a "Temperature
+    excursion details" section, a "Product information" section, and the
+    signature. Health System name (`team_name`) appears in both the
+    greeting and the signature, reusing the same field/logic as before.
+    `question` (the pharmacist's free-text description) is rendered under
+    "Additional details" in the Temperature excursion details section
+    rather than dropped, so no existing inquiry data is lost.
+    `medication_name` -> Drug name, `manufacturer_name` -> Manufacturer,
+    and `pi_storage_data` -> Additional product information reuse fields
+    that were already being passed into this function. Every other
+    product/excursion field has no existing structured source and renders
+    as "Not provided" unless attachment_extraction_service supplied one.
     """
     import html as html_lib
 
@@ -85,31 +123,23 @@ def _build_body(
     if is_followup:
         greeting_lead = "Hello, this is a follow-up regarding a drug information request from a pharmacist"
         body_label = "FOLLOW-UP MESSAGE"
-    else:
-        greeting_lead = "Hello, this is a drug information request from a pharmacist"
-        body_label = "QUESTION"
 
-    greeting_plain = f"{greeting_lead} at {team}." if team else f"{greeting_lead}."
-    greeting_html = (
-        f"<p>{greeting_lead} at {html_lib.escape(team)}.</p>" if team else f"<p>{greeting_lead}.</p>"
-    )
+        greeting_plain = f"{greeting_lead} at {team}." if team else f"{greeting_lead}."
+        greeting_html = (
+            f"<p>{greeting_lead} at {html_lib.escape(team)}.</p>" if team else f"<p>{greeting_lead}.</p>"
+        )
 
-    sig_lines_plain = ["Requested by:", "Leah Mueller, PharmD", "Pharmacist"]
-    sig_lines_html = ["Requested by:", "Leah Mueller, PharmD", "Pharmacist"]
-    if team:
-        sig_lines_plain.append(f"For {team}")
-        sig_lines_html.append(f"For {html_lib.escape(team)}")
-    sig_lines_plain.append("3423 Piedmont Rd NE, Atlanta, GA 30305")
-    sig_lines_html.append("3423 Piedmont Rd NE, Atlanta, GA 30305")
-    signature_plain = "\n".join(sig_lines_plain)
-    signature_html = "<p>" + "<br>\n".join(sig_lines_html) + "</p>"
+        sig_lines_plain = _sig_lines(team)
+        sig_lines_html = _sig_lines(team, escape=html_lib.escape)
+        signature_plain = "\n".join(sig_lines_plain)
+        signature_html = "<p>" + "<br>\n".join(sig_lines_html) + "</p>"
 
-    drug_name_line_plain = f"Drug Name: {drug_name}\n\n" if drug_name else ""
-    drug_name_line_html = (
-        f"<p><strong>Drug Name:</strong> {html_lib.escape(drug_name)}</p>\n" if drug_name else ""
-    )
+        drug_name_line_plain = f"Drug Name: {drug_name}\n\n" if drug_name else ""
+        drug_name_line_html = (
+            f"<p><strong>Drug Name:</strong> {html_lib.escape(drug_name)}</p>\n" if drug_name else ""
+        )
 
-    plain = f"""\
+        plain = f"""\
 {greeting_plain}
 
 {drug_name_line_plain}{body_label}:
@@ -118,11 +148,108 @@ def _build_body(
 {signature_plain}
 """
 
-    html = f"""\
+        html = f"""\
 <html><body style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6;">
 {greeting_html}
 {drug_name_line_html}<p><strong>{body_label}:</strong></p>
 <p>{html_lib.escape(question).replace(chr(10), '<br>')}</p>
+{signature_html}
+</body></html>
+"""
+        return plain, html
+
+    # --- Stability-excursion template (new inquiries; is_followup=False) ---
+    NOT_PROVIDED = "Not provided"
+    fv = lambda v: (v or "").strip() or NOT_PROVIDED  # noqa: E731
+
+    greeting_plain = (
+        f"Hello, I am a pharmacist at {team} writing to request stability information "
+        "regarding a temperature excursion for one of our medications."
+        if team
+        else "Hello, I am a pharmacist writing to request stability information "
+        "regarding a temperature excursion for one of our medications."
+    )
+    greeting_html = f"<p>{html_lib.escape(greeting_plain)}</p>"
+
+    sig_lines_plain = _sig_lines(team)
+    sig_lines_html = _sig_lines(team, escape=html_lib.escape)
+    signature_plain = "\n".join(sig_lines_plain)
+    signature_html = "<p>" + "<br>\n".join(sig_lines_html) + "</p>"
+
+    # "Additional details" is the client-approved bullet for the free-text
+    # question — do not remove it. mue_details (InpharmD's separate
+    # "Temperature Excursion Request" text) is appended right after the
+    # question, inside this same bullet, as an unlabeled second paragraph —
+    # never a new bullet/label of its own, and omitted entirely when empty.
+    mue_text = (mue_details or "").strip() or None
+    additional_details_value = f"{question}\n{mue_text}" if mue_text else question
+
+    excursion_fields = [
+        ("Excursion(s)", fv(excursion_details)),
+        ("Temperature range", fv(temperature_range)),
+        ("Duration", fv(duration)),
+        ("Number of excursion events", fv(num_excursions)),
+        ("Additional details", fv(additional_details_value)),
+    ]
+    product_fields = [
+        ("Drug name", fv(drug_name)),
+        ("Strength", fv(strength)),
+        ("Dosage form", fv(dosage_form)),
+        ("Manufacturer", fv(manufacturer_name)),
+        ("NDC", fv(ndc)),
+        ("Lot number", fv(lot_number)),
+        ("Expiration date", fv(expiration_date)),
+        ("Quantity affected (if applicable)", fv(quantity_affected)),
+        ("Additional product information", fv(pi_storage_data)),
+    ]
+
+    excursion_plain = "\n".join(f"- {label}: {value}" for label, value in excursion_fields)
+    product_plain = "\n".join(f"- {label}: {value}" for label, value in product_fields)
+    excursion_html = "\n".join(
+        f"<li><strong>{label}:</strong> {html_lib.escape(value).replace(chr(10), '<br>')}</li>"
+        for label, value in excursion_fields
+    )
+    product_html = "\n".join(
+        f"<li><strong>{label}:</strong> {html_lib.escape(value)}</li>" for label, value in product_fields
+    )
+
+    plain = f"""\
+{greeting_plain}
+
+Could you please review the information below and provide any available stability data or \
+recommendations for the reported excursion? Specifically, based on the information provided, \
+can the product continue to be used, or should it be discarded? If available, please include \
+any supporting stability data, internal studies, validation data, or manufacturer \
+recommendations related to this excursion.
+
+If additional information is needed to complete your assessment, please let me know.
+
+Temperature excursion details
+{excursion_plain}
+
+Product information
+{product_plain}
+
+{signature_plain}
+"""
+
+    html = f"""\
+<html><body style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6;">
+{greeting_html}
+<p>Could you please review the information below and provide any available stability data or \
+recommendations for the reported excursion? Specifically, based on the information provided, \
+can the product continue to be used, or should it be discarded? If available, please include \
+any supporting stability data, internal studies, validation data, or manufacturer \
+recommendations related to this excursion.</p>
+<p>If additional information is needed to complete your assessment, please let me know.</p>
+<p><strong>Temperature excursion details</strong></p>
+<ul>
+{excursion_html}
+</ul>
+<p><strong>Product information</strong></p>
+<ul>
+{product_html}
+</ul>
 {signature_html}
 </body></html>
 """
@@ -143,6 +270,17 @@ def send_inquiry_email(
     pi_link: Optional[str] = None,
     team_name: Optional[str] = None,
     is_followup: bool = False,
+    mue_details: Optional[str] = None,
+    strength: Optional[str] = None,
+    dosage_form: Optional[str] = None,
+    ndc: Optional[str] = None,
+    lot_number: Optional[str] = None,
+    expiration_date: Optional[str] = None,
+    quantity_affected: Optional[str] = None,
+    excursion_details: Optional[str] = None,
+    temperature_range: Optional[str] = None,
+    duration: Optional[str] = None,
+    num_excursions: Optional[str] = None,
 ) -> str:
     """Send the inquiry email via the SendGrid API.
 
@@ -153,6 +291,14 @@ def send_inquiry_email(
     the original inquiry (see _build_body) — used by
     routers.inquiries.send_followup_email. Default False, unchanged for
     every other existing caller.
+
+    strength/dosage_form/ndc/lot_number/expiration_date/quantity_affected/
+    excursion_details/temperature_range/duration/num_excursions are all
+    optional pass-throughs to _build_body's stability-excursion template —
+    see attachment_extraction_service.py for how callers obtain them.
+    Every existing caller that doesn't pass these keeps sending the exact
+    same "Not provided" placeholders it always has (no behavior change
+    unless a caller explicitly supplies real values).
     """
     cfg = SendGridConfig.from_env()
 
@@ -173,6 +319,17 @@ def send_inquiry_email(
         pi_link=pi_link,
         team_name=team_name,
         is_followup=is_followup,
+        mue_details=mue_details,
+        strength=strength,
+        dosage_form=dosage_form,
+        ndc=ndc,
+        lot_number=lot_number,
+        expiration_date=expiration_date,
+        quantity_affected=quantity_affected,
+        excursion_details=excursion_details,
+        temperature_range=temperature_range,
+        duration=duration,
+        num_excursions=num_excursions,
     )
 
     payload = {

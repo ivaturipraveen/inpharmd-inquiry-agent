@@ -489,6 +489,7 @@ export default function InquiriesPage() {
                               subject, not meant for display — show the actual
                               question instead, matching the MUE group row below. */}
                           <div className="cell-primary">{i.question}</div>
+                          {i.mue_details && <div className="cell-primary">{i.mue_details}</div>}
                         </td>
                         <td>
                           {i.is_test_call ? (
@@ -567,7 +568,8 @@ export default function InquiriesPage() {
                           {/* Subject is now per-inquiry (unique [InpharmD #id] per
                               child), so it can't represent the whole MUE group —
                               show the shared original MUE title/question instead. */}
-                          <span className="cell-primary">{sample.question}</span>
+                          <div className="cell-primary">{sample.question}</div>
+                          {sample.mue_details && <div className="cell-primary">{sample.mue_details}</div>}
                         </td>
                         <td className="mue-stats-cell">
                           {open ? (

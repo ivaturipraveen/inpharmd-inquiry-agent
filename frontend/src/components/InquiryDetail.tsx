@@ -166,6 +166,9 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
           <div className="detail-section">
             <div className="detail-label">Question</div>
             <div className="detail-prose">{inquiry.question}</div>
+            {inquiry.mue_details && (
+              <div className="detail-prose">{inquiry.mue_details}</div>
+            )}
           </div>
 
           {/* Final Answer shows automatically once the agent or AI has captured one.

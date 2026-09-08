@@ -197,11 +197,32 @@ class Inquiry(Base):
     # Per-row product details extracted from the MUE Excel alongside the manufacturer name.
     medication_name = Column(Text)
     pi_storage_data = Column(Text)
+    # Raw content of InpharmD's "Temperature Excursion Request" form field
+    # (API key `mue_details`) — distinct from `question` (the "New Inquiry"
+    # box's `title`). Batch-level, same for every target created from one
+    # source InpharmD inquiry. TE-only in practice: staging only ever
+    # populates it on temperature-excursion inquiries.
+    mue_details = Column(Text)
     # DailyMed-enriched fields: canonical PI URL and storage/handling text.
     pi_link = Column(Text)
     # Where the updated Excel landed (S3) after we filled in the response.
     excel_response_url = Column(Text)
     excel_response_posted_at = Column(DateTime(timezone=True))
+
+    # Original attachments from the source InpharmD platform inquiry (JSON
+    # list of {file_name, doc_url}), captured once at bulk_create_inquiries
+    # time — see attachment_extraction_service.py. Independent of
+    # source_excel_url (which is the MUE tracking workbook specifically);
+    # this holds the full attachment list as the platform sent it.
+    source_attachments_json = Column(Text, nullable=True)
+    # Cached result of the one-time structured-field extraction (JSON dict)
+    # run against source_attachments_json for the stability-excursion email
+    # template (see email_service.py / attachment_extraction_service.py).
+    # Written ONLY on a successful extraction — including a successful run
+    # that found no relevant fields — never on a timeout/download/API
+    # failure, so a transient failure doesn't permanently block retrying on
+    # the next send attempt (scheduled-send retries every tick on failure).
+    attachment_extraction_cache = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

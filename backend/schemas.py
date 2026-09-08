@@ -148,6 +148,11 @@ class BulkTarget(BaseModel):
     pi_link: Optional[str] = None
 
 
+class SourceAttachment(BaseModel):
+    file_name: str = ""
+    doc_url: str = ""
+
+
 class BulkInquiryCreate(BaseModel):
     targets: list[BulkTarget]
     subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
@@ -158,6 +163,15 @@ class BulkInquiryCreate(BaseModel):
     source_inquiry_uuid: Optional[str] = None
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
+    # Original attachments from the source InpharmD platform inquiry (all of
+    # them, not just the MUE Excel workbook) — stored verbatim as JSON on
+    # each created Inquiry for later, on-demand, best-effort structured-field
+    # extraction. See models.Inquiry.source_attachments_json.
+    attachments: Optional[list[SourceAttachment]] = None
+    # Raw content of InpharmD's "Temperature Excursion Request" form field
+    # (API key `mue_details`), distinct from `question`. Same for every
+    # target in the batch — see models.Inquiry.mue_details.
+    mue_details: Optional[str] = None
     # Same requesting team for every manufacturer in the batch (not per-target).
     team_name: Optional[str] = None
     # Dispatch channel applied to every created inquiry:
@@ -251,6 +265,7 @@ class InquiryOut(InquiryBase):
     excel_response_posted_at: Optional[datetime] = None
     pi_storage_data: Optional[str] = None
     pi_link: Optional[str] = None
+    mue_details: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None

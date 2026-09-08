@@ -401,3 +401,104 @@ def extract_document_text(filename: str, file_bytes: bytes) -> str:
 
     log.info("No text extractor for file extension '%s'", ext)
     return ""
+
+
+_EXCURSION_FIELDS_SYSTEM = (
+    "You are extracting structured fields from a pharmacist's temperature-"
+    "excursion inquiry text and/or a supporting document, for use in an "
+    "outbound email to a drug manufacturer. The document may be a general "
+    "tracking spreadsheet covering many unrelated products. If a target "
+    "drug name and/or manufacturer is given below, use ONLY the row(s) that "
+    "match that drug and manufacturer — ignore every other row, even if "
+    "other rows look similar. If more than one matching row has a different "
+    "value for the same field (e.g. different NDCs, lot numbers, or "
+    "expiration dates for the same drug/manufacturer), include ALL distinct "
+    "values for that field, joined by '; ', in the order they appear — never "
+    "arbitrarily pick just one. "
+    "temperature_range and duration describe the ACTUAL excursion event "
+    "reported in the inquiry text (the temperature the product was exposed "
+    "to, and for how long) — NEVER the product's normal/recommended storage "
+    "condition, even if that appears in the attachment or a PI-storage "
+    "column. If the inquiry text does not state an excursion temperature/"
+    "duration, leave those fields empty rather than substituting a storage "
+    "condition. "
+    "Return ONLY a JSON object with exactly these string keys: "
+    "excursion_details, temperature_range, duration, num_excursions, "
+    "strength, dosage_form, ndc, lot_number, expiration_date, "
+    "quantity_affected. Use an empty string \"\" for any field that is not "
+    "explicitly stated for the relevant product(s) — never guess, infer, or "
+    "fabricate a value that isn't there."
+)
+
+
+def extract_structured_excursion_fields(
+    text: str,
+    *,
+    drug_name: Optional[str] = None,
+    manufacturer_name: Optional[str] = None,
+) -> dict:
+    """Best-effort structured extraction of temperature-excursion / product
+    fields from free text (the inquiry's own text and/or extracted document
+    text, concatenated by the caller). Returns a dict with all 10 keys always
+    present (empty string when not found). Raises on any failure — timeout,
+    API error, or a non-JSON response — so the caller (see
+    attachment_extraction_service.py) can distinguish "nothing found" (a
+    clean empty-string result, safe to cache) from a technical failure (must
+    NOT be cached, so the next send attempt retries).
+
+    drug_name/manufacturer_name are the inquiry's own already-known values
+    (Inquiry.medication_name / the matched ManufacturerContact's name) —
+    passed through as explicit disambiguating context so a shared,
+    multi-product attachment (e.g. a pharmacy-wide MUE tracking sheet) gets
+    matched to the right row(s) instead of the model refusing to guess among
+    many unrelated products. Optional so a caller with neither value can
+    still get a best-effort extraction from the inquiry text alone.
+
+    timeout=15 is explicit and short — this function sits in the outbound
+    email send path and must never hang it; the default OpenAI client has no
+    timeout configured (see _get_client()), so every caller of a
+    time-sensitive extraction must pass its own, as done here.
+    """
+    if not is_configured():
+        raise SummaryConfigError("OPENAI_API_KEY not set")
+    client = _get_client()
+    snippet = (text or "").strip()
+    if len(snippet) > 24_000:
+        snippet = snippet[:24_000] + "\n…[truncated]"
+    if not snippet:
+        return {
+            "excursion_details": "", "temperature_range": "", "duration": "",
+            "num_excursions": "", "strength": "", "dosage_form": "", "ndc": "",
+            "lot_number": "", "expiration_date": "", "quantity_affected": "",
+        }
+
+    dn = (drug_name or "").strip()
+    mn = (manufacturer_name or "").strip()
+    context_line = (
+        f"Target product for this inquiry — Drug name: {dn or 'unspecified'}, "
+        f"Manufacturer: {mn or 'unspecified'}\n\n"
+        if dn or mn else ""
+    )
+    user_content = f"{context_line}{snippet}"
+
+    resp = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        temperature=0.0,
+        timeout=15,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _EXCURSION_FIELDS_SYSTEM},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    import json as _json
+    raw = (resp.choices[0].message.content or "{}").strip()
+    parsed = _json.loads(raw)  # raises json.JSONDecodeError on malformed output — caller treats as failure
+    return {
+        key: str(parsed.get(key) or "").strip()
+        for key in (
+            "excursion_details", "temperature_range", "duration", "num_excursions",
+            "strength", "dosage_form", "ndc", "lot_number", "expiration_date",
+            "quantity_affected",
+        )
+    }

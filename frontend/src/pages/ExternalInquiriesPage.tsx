@@ -33,6 +33,9 @@ interface MueInquiry {
   turnaround_time?: string | null;
   attachments?: Attachment[];
   inquiry_submitter_details?: SubmitterDetails;
+  // Raw "Temperature Excursion Request" free-text field from InpharmD's
+  // form — distinct from `title`. TE-only in practice.
+  mue_details?: string | null;
 }
 
 const truncate = (s: string, n = 80): string =>
@@ -323,6 +326,7 @@ export default function ExternalInquiriesPage() {
       type: typeLabel(i),
       attachments: i.attachments,
       team_name: i.inquiry_submitter_details?.team_name,
+      mue_details: i.mue_details ?? undefined,
     });
   };
 
@@ -485,6 +489,11 @@ export default function ExternalInquiriesPage() {
                         <div className="ext-question-text" title={i.title}>
                           {truncate(i.title, 120)}
                         </div>
+                        {i.mue_details && (
+                          <div className="ext-question-text" title={i.mue_details}>
+                            {truncate(i.mue_details, 120)}
+                          </div>
+                        )}
                       </td>
                       <td className="ext-submitter-cell">
                         <div className="ext-submitter-name">
@@ -744,7 +753,10 @@ const DetailModal = ({
           <div className="contact-context-card">
             <div className="contact-context-row">
               <span className="contact-context-label">Title</span>
-              <span className="contact-context-value">{inquiry.title || "—"}</span>
+              <div className="contact-context-value">
+                {inquiry.title || "—"}
+                {inquiry.mue_details && <div>{inquiry.mue_details}</div>}
+              </div>
             </div>
             <div className="contact-context-row">
               <span className="contact-context-label">UUID</span>
