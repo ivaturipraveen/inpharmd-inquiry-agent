@@ -178,6 +178,32 @@ async def elevenlabs_post_call(
         or (existing_log is None and obj.call_completed_at is not None)
     )
     if already_resolved:
+        # Transcript arrived later than the resolving webhook (e.g. ElevenLabs
+        # finishes transcription after "call ended"): backfill it and retry
+        # the legacy POST without re-running apply_call_outcome. event_key
+        # dedup in maybe_post_for_inquiry still blocks a re-post if one
+        # already succeeded.
+        incoming_transcript = _extract_transcript(body)
+        existing_transcript = existing_log.transcript if existing_log else obj.call_transcript
+        if incoming_transcript and not existing_transcript:
+            log.info(
+                "Inquiry %s already resolved but had no transcript; backfilling from this delivery (conversation_id=%s)",
+                obj.id, convo_id,
+            )
+            if existing_log is not None:
+                existing_log.transcript = incoming_transcript
+            obj.call_transcript = incoming_transcript
+            db.commit()
+            if not getattr(obj, "is_test_call", False):
+                try:
+                    legacy_response_service.maybe_post_for_inquiry(
+                        db, obj, f"call:{obj.call_conversation_id}",
+                        direct_response_text=incoming_transcript,
+                    )
+                except Exception:
+                    log.exception("Legacy POST failed for inquiry %s (transcript backfilled)", obj.id)
+            return {"matched": True, "conversation_id": convo_id, "already_resolved": True, "transcript_backfilled": True}
+
         log.info(
             "Inquiry %s already has a recorded call result; ignoring duplicate/late webhook (conversation_id=%s)",
             obj.id, convo_id,
@@ -243,7 +269,7 @@ async def elevenlabs_post_call(
         try:
             legacy_response_service.maybe_post_for_inquiry(
                 db, obj, f"call:{obj.call_conversation_id}",
-                direct_response_text=obj.call_summary,
+                direct_response_text=transcript,
             )
         except Exception:
             log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)

@@ -1181,8 +1181,8 @@ def extract_answer(
     obj.final_answer = extracted
     db.commit()
     legacy_response_service.maybe_post_for_inquiry(
-        db, obj, f"call-extract:{obj.call_conversation_id}",
-        direct_response_text=extracted,
+        db, obj, f"call:{obj.call_conversation_id}",
+        direct_response_text=obj.call_transcript,
     )
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -1251,7 +1251,7 @@ def record_call_result(
     if not obj.is_test_call:
         legacy_response_service.maybe_post_for_inquiry(
             db, obj, f"call:{obj.call_conversation_id}",
-            direct_response_text=payload.summary,
+            direct_response_text=payload.transcript,
         )
     return _get_or_404(db, inquiry_id, current_user)
 

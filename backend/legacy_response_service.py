@@ -10,9 +10,12 @@ Endpoint (Rails on Heroku):
     Content-Type: multipart/form-data
     Form fields:
         inquiry_uuid       str      (required)
-        mfr_email_response str      (required)
-        mfr_attachment[]   file     (optional — one part per attachment;
-                                     bytes downloaded from S3 and sent directly)
+        mfr_email_response str      (email responses only; never sent, not even
+                                     empty, for a call response)
+        mfr_call_response  str      (call responses only, full transcript
+                                     verbatim; never sent alongside mfr_email_response)
+        mfr_attachment[]   file     (optional, email responses only; one part
+                                     per attachment, bytes from S3)
 
 The base URL is the SAME as the rest of the InpharmD APIs — we reuse
 `INPHARMD_API_BASE_URL` (resolved by inpharmd_service._base_url) so there's a
@@ -96,12 +99,17 @@ def _download_attachment(s3_url: str) -> Optional[tuple[str, bytes, str]]:
 def post_response(
     *,
     inquiry_uuid: str,
-    mfr_email_response: str,
+    mfr_email_response: Optional[str] = None,
+    mfr_call_response: Optional[str] = None,
     mfr_attachment: Optional[list] = None,
     manufacturer_name: Optional[str] = None,
     medication_name: Optional[str] = None,
 ) -> bool:
     """POST the response back to legacy as multipart/form-data.
+
+    Callers must supply exactly one of `mfr_email_response` /
+    `mfr_call_response` — whichever is not None is sent; the other field is
+    omitted from the request entirely (not sent as an empty string).
 
     Each URL in `mfr_attachment` is downloaded and sent as a separate
     `mfr_attachment[]` file part. Pass None or [] when there are no
@@ -144,7 +152,11 @@ def post_response(
         else:
             log.warning("Skipping attachment that could not be downloaded: %s", s3_url[:80])
 
-    data = {"inquiry_uuid": inquiry_uuid, "mfr_email_response": mfr_email_response or ""}
+    data = {"inquiry_uuid": inquiry_uuid}
+    if mfr_email_response is not None:
+        data["mfr_email_response"] = mfr_email_response
+    if mfr_call_response is not None:
+        data["mfr_call_response"] = mfr_call_response
     if manufacturer_name:
         data["manufacturer_name"] = manufacturer_name
     if medication_name:
@@ -157,9 +169,10 @@ def post_response(
     ]
 
     log.info(
-        "pipeline: legacy POST sending uuid=%s response_chars=%d attachments=%d (of %d urls) manufacturer=%s medication=%s",
+        "pipeline: legacy POST sending uuid=%s field=%s response_chars=%d attachments=%d (of %d urls) manufacturer=%s medication=%s",
         inquiry_uuid,
-        len(mfr_email_response or ""),
+        "mfr_call_response" if mfr_call_response is not None else "mfr_email_response",
+        len(mfr_call_response or mfr_email_response or ""),
         len(attachments),
         len(urls),
         manufacturer_name or "(none)",
@@ -246,10 +259,12 @@ def maybe_post_for_inquiry(
     Callers must supply exactly one of:
       - email_reply_id: the specific EmailReply whose exact `.body` and
         reply-scoped InquiryAttachment rows (reply_id == email_reply_id)
-        should be sent. Used by every email-channel caller.
-      - direct_response_text: the exact response text for a call event.
-        Call events NEVER carry attachments — no InquiryAttachment query,
-        no pdf_url fallback, ever.
+        should be sent as `mfr_email_response`. Used by every email-channel
+        caller.
+      - direct_response_text: the exact call transcript for a call event,
+        sent as `mfr_call_response` (never `mfr_email_response`). Call
+        events NEVER carry attachments — no InquiryAttachment query, no
+        pdf_url fallback, ever.
 
     There is no fallback to `final_answer`/`email_response`/`call_summary`
     inside this function — the caller is always the authoritative source
@@ -351,7 +366,8 @@ def maybe_post_for_inquiry(
 
     ok = post_response(
         inquiry_uuid=uuid,
-        mfr_email_response=response_text,
+        mfr_email_response=response_text if email_reply_id is not None else None,
+        mfr_call_response=response_text if email_reply_id is None else None,
         mfr_attachment=s3_urls,
         manufacturer_name=mfr_name,
         medication_name=med_name,
