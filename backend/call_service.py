@@ -318,12 +318,35 @@ class ConversationPollResult:
     transcript: Optional[str] = None
     duration_seconds: Optional[float] = None
     fail_reason: Optional[str] = None      # only set when outcome == POLL_FAILED
+    # Only meaningful when outcome == STILL_IN_PROGRESS — None means the provider has not yet accepted/connected the call (see scheduler's never-accepted-timeout policy). Populated from ElevenLabs' metadata.accepted_time_unix_secs.
+    accepted_time_unix_secs: Optional[int] = None
 
 
 # Verified against ElevenLabs' API docs (GET /conversations/{id}), not
 # assumed: initiated/in-progress/processing = ongoing; done/failed = terminal.
 _IN_PROGRESS_STATUSES = {"initiated", "in-progress", "processing"}
 _TERMINAL_STATUSES = {"done", "failed"}
+# Exported so callers outside this module (routers.webhooks) can recognize a non-terminal provider status without duplicating the literal set.
+IN_PROGRESS_STATUSES = _IN_PROGRESS_STATUSES
+
+
+def classify_terminal_provider_status(
+    *, status: str, call_successful: Optional[str], duration_seconds: Optional[float]
+) -> str:
+    """Normalize a terminal ElevenLabs status (`done`/`failed`) plus its
+    analysis/duration into our provider_status vocabulary ("answered" |
+    "completed" | "no_answer"). Shared by the GET-poll path and the
+    post-call webhook so both interpret the same terminal result
+    identically — see call_outcome_service.apply_call_outcome's "one
+    implementation, not two that could drift apart" contract.
+    """
+    if status == "failed":
+        return "no_answer"
+    if call_successful == "success":
+        return "answered"
+    if isinstance(duration_seconds, (int, float)) and duration_seconds < 8:
+        return "no_answer"
+    return "completed"
 
 
 def _flatten_conversation_transcript(turns: Any) -> Optional[str]:
@@ -381,23 +404,22 @@ async def get_conversation_status(conversation_id: str) -> ConversationPollResul
         return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason="missing_status_field")
 
     if status in _IN_PROGRESS_STATUSES:
-        return ConversationPollResult(outcome=CallPollOutcome.STILL_IN_PROGRESS)
+        metadata = body.get("metadata") or {}
+        return ConversationPollResult(
+            outcome=CallPollOutcome.STILL_IN_PROGRESS,
+            accepted_time_unix_secs=metadata.get("accepted_time_unix_secs"),
+        )
 
     if status in _TERMINAL_STATUSES:
         analysis = body.get("analysis") or {}
-        call_successful = analysis.get("call_successful")
         summary = analysis.get("transcript_summary")
         duration = (body.get("metadata") or {}).get("call_duration_secs")
         transcript = _flatten_conversation_transcript(body.get("transcript"))
-
-        if status == "failed":
-            provider_status = "no_answer"
-        elif call_successful == "success":
-            provider_status = "answered"
-        elif isinstance(duration, (int, float)) and duration < 8:
-            provider_status = "no_answer"
-        else:
-            provider_status = "completed"
+        provider_status = classify_terminal_provider_status(
+            status=status,
+            call_successful=analysis.get("call_successful"),
+            duration_seconds=duration,
+        )
 
         return ConversationPollResult(
             outcome=CallPollOutcome.TERMINAL,
