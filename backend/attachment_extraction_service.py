@@ -36,9 +36,8 @@ from models import Inquiry, User
 log = logging.getLogger("inquiry.attachment_extraction")
 
 _DOWNLOAD_TIMEOUT_SECONDS = 10
-# Only file types summary_service.extract_document_text() can actually turn
-# into text — images are excluded (no OCR/vision is attempted anywhere in
-# this app, matching inbound_attachment_service.py's existing behavior).
+# Only types extract_document_text() can turn into text — images excluded
+# (no OCR/vision anywhere in this app).
 _TEXT_EXTRACTABLE_EXTENSIONS = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv")
 
 _EMPTY_FIELDS = {

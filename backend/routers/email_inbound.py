@@ -156,7 +156,6 @@ async def sendgrid_inbound(token: str, request: Request) -> Response:
         sender, subject[:120], len(text_body), len(html_body), bool(smtp_message_id),
     )
 
-    # Pick best body: plain text preferred, fall back to HTML stripped
     body = text_body.strip() if text_body.strip() else _strip_html(html_body)
 
     m = _SUBJECT_TAG.search(subject)
@@ -323,9 +322,8 @@ async def sendgrid_inbound(token: str, request: Request) -> Response:
         )
 
     except IntegrityError:
-        # Expected outcome when two paths race on the same email — the unique
-        # index on (inquiry_id, smtp_message_id) rejects the duplicate INSERT.
-        # Roll back and return 200 so SendGrid doesn't retry.
+        # Expected when two paths race on the same email — the unique index on
+        # (inquiry_id, smtp_message_id) rejects the duplicate; return 200 so SendGrid doesn't retry.
         db.rollback()
         log.info(
             "pipeline: inbound dedup inquiry=%s — concurrent delivery rejected by unique constraint",

@@ -16,9 +16,8 @@ interface Props {
   defaultManufacturerId?: number;
   defaultSubject?: string;
   defaultQuestion?: string;
-  // Pre-fills Team Name when forwarded from an InpharmD MUE inquiry
-  // (inquiry_submitter_details.team_name). Still editable; blank/omitted for
-  // a manual inquiry with no InpharmD source.
+  // Pre-fills Team Name when forwarded from an InpharmD MUE inquiry — still
+  // editable; blank/omitted for a manual inquiry.
   defaultTeamName?: string;
   // "modal" = floating dialog over a backdrop (default, used by Outreach tab).
   // "page"  = inline full-page form (used by Contact Manufacturer page).
@@ -59,9 +58,8 @@ const InquiryForm: FC<Props> = ({
   const [teamName, setTeamName] = useState(defaultTeamName ?? "");
   const [requesterName, setRequesterName] = useState("Leah");
   const [requesterEmail, setRequesterEmail] = useState("druginfo@inpharmd.com");
-  // Single source of truth for every selected manufacturer's own Drug Name +
-  // fallback time — used for both the 1-manufacturer and multi-manufacturer
-  // cases, so there's no separate structure to keep in sync.
+  // Single source of truth for each manufacturer's Drug Name + fallback time —
+  // used for both single- and multi-manufacturer cases.
   const [targetData, setTargetData] = useState<
     Record<number, { medicationName: string; fallbackHours: number }>
   >({});
@@ -77,9 +75,8 @@ const InquiryForm: FC<Props> = ({
     }
   }, [defaultManufacturerId]);
 
-  // Keep targetData in lockstep with manufacturerIds: seed a default entry
-  // (empty Drug Name, 24h fallback — never blank) for every newly added id,
-  // drop entries for removed ids, keep existing entries untouched otherwise.
+  // Keep targetData in lockstep with manufacturerIds — seed a default entry
+  // for newly added ids, drop entries for removed ones.
   useEffect(() => {
     setTargetData(prev => {
       const next: typeof prev = {};
@@ -110,10 +107,8 @@ const InquiryForm: FC<Props> = ({
     [manufacturers, manufacturerIds]
   );
 
-  // A Drug Name is required for every selected manufacturer before the
-  // inquiry can be created — used both to disable the submit button and to
-  // validate on submit (a disabled submit button alone doesn't stop implicit
-  // form submission via Enter).
+  // Drug Name is required for every selected manufacturer — used to disable
+  // submit AND to validate on submit (Enter can bypass a disabled button).
   const missingDrugNameFor = useMemo(
     () => selectedMfrs.filter(m => !(targetData[m.id]?.medicationName ?? "").trim()),
     [selectedMfrs, targetData]

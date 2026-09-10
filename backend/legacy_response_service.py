@@ -121,9 +121,8 @@ def post_response(
     try:
         url, key = _config()
     except inpharmd_service.InpharmdConfigError as e:
-        # Honour this function's "never raises" contract: a missing platform
-        # base URL means we cannot know where to post, so skip and let the
-        # inquiry flow continue.
+        # Honors the "never raises" contract — a missing base URL means we
+        # can't know where to post, so skip instead of raising.
         log.warning(
             "Legacy response post skipped: %s (uuid=%s)", e, inquiry_uuid
         )
@@ -301,9 +300,8 @@ def maybe_post_for_inquiry(
         )
         return False
 
-    # Re-load the inquiry with a row-level lock so concurrent callers
-    # (Graph poll + SendGrid webhook arriving simultaneously) cannot both
-    # pass the already_posted check and double-POST to the legacy API.
+    # Row-locks the inquiry so concurrent callers (e.g. Graph poll + SendGrid
+    # webhook) can't both pass the already-posted check and double-POST.
     from models import Inquiry as InquiryModel
     locked = db.query(InquiryModel).with_for_update().filter(
         InquiryModel.id == inquiry.id
@@ -326,12 +324,8 @@ def maybe_post_for_inquiry(
         )
         return False
 
-    # Attachments are scoped to the exact triggering event, never derived
-    # generically from the inquiry as a whole:
-    #   - Email event: only the InquiryAttachment rows tied to this specific
-    #     reply_id. No pdf_url fallback.
-    #   - Call event: always zero attachments. Never query InquiryAttachment,
-    #     never fall back to pdf_url — call responses never carry files.
+    # Attachments are scoped to the triggering event only — email replies get
+    # their own reply_id's rows; calls never carry attachments, ever.
     s3_urls: list[str] = []
     if email_reply_id is not None:
         from models import InquiryAttachment
@@ -344,9 +338,8 @@ def maybe_post_for_inquiry(
             if att.url
         ]
 
-    # Skip only when this exact event was already posted — not merely because
-    # any prior response exists. Different event_key = new manufacturer response
-    # = must POST regardless of what was sent before.
+    # Skip only when this exact event_key already posted — a different
+    # event_key must always POST, regardless of prior responses.
     stored_key = getattr(inquiry, "legacy_last_event_key", None)
     if stored_key == event_key:
         log.info(
@@ -385,11 +378,8 @@ def maybe_post_for_inquiry(
             )
             db.rollback()
 
-    # MUE inquiries with an Excel attachment also get the updated workbook
-    # written + uploaded + POSTed to the v2 /sheet endpoint under the
-    # `s3_url` form field (see excel_writeback_service). This is an
-    # independent idempotent op — failures here don't roll back the legacy
-    # POST above.
+    # MUE inquiries also get the Excel workbook rewritten + re-posted (see
+    # excel_writeback_service) — independent op, doesn't roll back the POST above.
     try:
         # Local import to avoid circular module loading at boot.
         import excel_writeback_service

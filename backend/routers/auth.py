@@ -34,7 +34,6 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _mint_session_token() -> str:
-    # 32 bytes of entropy → 64-char hex string. Plenty for a session id.
     return secrets.token_hex(32)
 
 
@@ -159,7 +158,6 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
             detail="Invalid email or password." if e.status_code in (401, 422) else "Upstream login failed.",
         )
 
-    # 2FA challenge — pass through to frontend, which will show the OTP screen.
     if isinstance(resp, dict) and resp.get("code") == "otp_required":
         log.info("auth.login 2FA required email=%s", payload.email)
         return {
@@ -169,7 +167,6 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
             "email": resp.get("email", payload.email),
         }
 
-    # Normal success — create/refresh the local session.
     return _complete_login(resp, payload.email, db)
 
 

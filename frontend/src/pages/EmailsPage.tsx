@@ -4,8 +4,6 @@ import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
 import { fmtFallbackHours } from "../utils/fallback";
 
-/* ----------------------------- helpers ----------------------------- */
-
 const READ_KEY = "inpharmd_email_read"; // localStorage map of inquiryId -> true
 
 const readReadSet = (): Set<number> => {
@@ -98,8 +96,6 @@ const FOLDERS: { key: FolderKey; label: string; icon: string }[] = [
   { key: "all", label: "All Mail", icon: "M3 7l9 6 9-6M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7M3 7l9-4 9 4" },
   { key: "unresponded", label: "Unresponded", icon: "M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" },
 ];
-
-/* ----------------------------- component ----------------------------- */
 
 export default function EmailsPage() {
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
@@ -376,8 +372,6 @@ export default function EmailsPage() {
   );
 }
 
-/* ----------------------------- stat tile ----------------------------- */
-
 interface StatTileProps {
   label: string;
   value: string | number;
@@ -395,8 +389,6 @@ function StatTile({ label, value, sub, tone = "neutral" }: StatTileProps) {
   );
 }
 
-
-/* ----------------------------- reader ----------------------------- */
 
 interface ReaderProps {
   inquiry: Inquiry;
@@ -504,8 +496,6 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
     </div>
   );
 }
-
-/* ----------------------------- message ----------------------------- */
 
 interface MessageProps {
   avatarColor: string;

@@ -49,17 +49,15 @@ def apply_call_outcome(
     which does not unconditionally overwrite it). Falls back to
     obj.call_conversation_id only when the caller has nothing more precise.
     """
-    # Deferred import: scheduler.py imports this module at top level, so an
-    # eager import here would be circular (scheduler -> call_outcome_service
-    # -> scheduler).
+    # Deferred import — scheduler.py imports this module at top level, so an
+    # eager import here would be circular.
     from scheduler import schedule_retry_after_failure
     import call_log_service
 
     now = _now()
 
-    # CallLog is the append-only per-call history counterpart to the
-    # Inquiry.call_* fields written below — see models.CallLog. Recorded
-    # first so it reflects this call's data even if something below raises.
+    # CallLog is the append-only counterpart to the Inquiry.call_* fields below
+    # (see models.CallLog) — recorded first so it's safe even if code below raises.
     _call_log_row, _had_prior_summary = call_log_service.record_terminal_result(
         db, obj,
         conversation_id=conversation_id or obj.call_conversation_id,
@@ -73,15 +71,8 @@ def apply_call_outcome(
     obj.call_completed_at = now
     if summary:
         obj.call_summary = summary
-        # Only overwrite final_answer if submit_answer didn't already set a
-        # structured one FOR THIS SAME CALL (had_prior_summary, from the
-        # CallLog row just resolved above) — not "if the inquiry has no
-        # final_answer at all". Scoping the check to this call, rather than
-        # the whole inquiry's history, is what lets a follow-up call's own
-        # webhook-only result correctly update final_answer even when an
-        # earlier call already left one in place; it still never downgrades
-        # an answer submit_answer already gave for the call being resolved
-        # right now.
+        # Only overwrite final_answer if submit_answer didn't already set one for
+        # THIS call (had_prior_summary) — never downgrades an answer already given.
         if not _had_prior_summary:
             obj.final_answer = summary
     if transcript:
@@ -91,19 +82,13 @@ def apply_call_outcome(
     if not obj.call_provider_status or obj.call_provider_status == "initiated":
         obj.call_provider_status = provider_status
 
-    # If submit_answer ran, status is already set; otherwise mark call_completed.
-    # needs_attention is included so a result that arrives after
-    # _resolve_ambiguous_call_timeouts (or the reconciliation ceiling) gave
-    # up waiting still lands the real result instead of leaving the inquiry
-    # stuck on a generic "could not confirm" placeholder.
+    # needs_attention is included so a late-arriving real result still lands,
+    # instead of leaving the inquiry stuck on a "could not confirm" placeholder.
     if obj.status in ("call_pending", "needs_attention"):
         obj.status = "call_completed"
 
-    # Fallback calls (email_sent_at is set) are one-shot: the system already
-    # tried email then a call. On voicemail/no_answer, go directly to
-    # needs_attention (unless closed — closed stays closed). For normal
-    # non-fallback calls, only schedule a retry when no real answer was
-    # already captured.
+    # Fallback calls (email_sent_at set) are one-shot — voicemail/no_answer goes
+    # straight to needs_attention; normal calls retry only if no answer yet.
     if obj.call_provider_status in ("voicemail", "no_answer"):
         if obj.email_sent_at:
             if obj.status != "closed":

@@ -318,9 +318,8 @@ def poll_once() -> int:
                     inquiry_id, email_reply_id = matched
                     db.commit()
                     updated += 1
-                    # Forward to legacy only when we created a new EmailReply row.
-                    # email_reply_id is None when the message was already processed
-                    # by Graph or SendGrid — that path already called maybe_post_for_inquiry.
+                    # Forward to legacy only for a newly-created EmailReply — email_reply_id is
+                    # None when Graph/SendGrid already processed this message and posted.
                     if email_reply_id is not None:
                         try:
                             obj = db.get(Inquiry, inquiry_id)
@@ -334,7 +333,6 @@ def poll_once() -> int:
                                 "Legacy POST after IMAP poll failed for inquiry %s",
                                 inquiry_id,
                             )
-                    # Mark as read so we don't reprocess it next tick.
                     conn.store(mid, "+FLAGS", "\\Seen")
                 # Unmatched messages are left unseen for a human to handle.
         finally:

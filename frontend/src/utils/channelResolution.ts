@@ -1,13 +1,5 @@
-// Resolves a manufacturer's *preferred* outreach channel and buckets
-// selections accordingly. This is the single source of truth for "which
-// channel applies to this manufacturer" — Email/Call/Web Form eligibility
-// must never be inferred purely from which contact fields happen to be
-// populated (that was the bug this file fixes).
-//
-// Canonical preferred_channel values, verified directly against the live
-// database (not assumed): "Email", "Phone", "Web Form", "HCP Portal",
-// "Fax", "Other" — plus unset/null. Only the first three have any outreach
-// mechanism in this app.
+// Canonical source for manufacturer channel eligibility — never infer from
+// which contact fields are populated (verified preferred_channel values: Email/Phone/Web Form/HCP Portal/Fax/Other).
 
 export type ResolvedChannel = "email" | "call" | "webform" | "unsupported";
 

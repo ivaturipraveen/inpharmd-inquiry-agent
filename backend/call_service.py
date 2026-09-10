@@ -63,8 +63,6 @@ def _phone_number_id() -> str:
     )
 
 
-# ---------- Business-hours parsing ----------
-
 @dataclass
 class HoursWindow:
     weekdays: set[int]          # 0=Mon ... 6=Sun
@@ -188,8 +186,6 @@ def next_business_hours_start(text: Optional[str], now_utc: Optional[datetime] =
     return None
 
 
-# ---------- Outbound call ----------
-
 def _build_call_payload(
     *,
     inquiry_id: int,
@@ -206,9 +202,8 @@ def _build_call_payload(
     transfer_name = os.getenv("TRANSFER_PHARMACIST_NAME", "Leah")
     transfer_phone = os.getenv("TRANSFER_PHARMACIST_PHONE", "+15134906650")
 
-    # Warmer, less scripted opener — the agent will continue from here naturally
-    # using its system prompt. We deliberately don't list the question in the
-    # opener; the agent should small-talk into it.
+    # Warmer, less scripted opener — the agent continues via its system prompt;
+    # the question is deliberately omitted so it can small-talk into it.
     if is_test:
         first_message = (
             f"Hi, this is Ivy from InpharmD — this is a test call. "
@@ -325,14 +320,8 @@ class ConversationPollResult:
     fail_reason: Optional[str] = None      # only set when outcome == POLL_FAILED
 
 
-# Verified directly against ElevenLabs' current API docs (GET
-# /v1/convai/conversations/{conversation_id}) — not assumed:
-#   - initiated / in-progress / processing = ongoing, not terminal
-#   - done / failed = terminal
-#   - analysis.call_successful: "success" | "failure" | "unknown"
-#   - analysis.transcript_summary: string
-#   - metadata.call_duration_secs: number
-#   - transcript: list of {role, message, time_in_call_secs, ...}
+# Verified against ElevenLabs' API docs (GET /conversations/{id}), not
+# assumed: initiated/in-progress/processing = ongoing; done/failed = terminal.
 _IN_PROGRESS_STATUSES = {"initiated", "in-progress", "processing"}
 _TERMINAL_STATUSES = {"done", "failed"}
 

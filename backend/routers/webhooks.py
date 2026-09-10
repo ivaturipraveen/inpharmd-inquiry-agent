@@ -112,10 +112,8 @@ async def elevenlabs_post_call(
     )
     matched_via_inquiry_id = False
     if not obj:
-        # call_conversation_id didn't match — the conversation may belong to an
-        # inquiry whose row currently holds a *different* call's id (e.g. after an
-        # ambiguous-timeout retry placed a second real call). Fall back to the
-        # inquiry_id dynamic variable we send on every outbound call.
+        # call_conversation_id didn't match (e.g. after an ambiguous-timeout retry
+        # placed a second call) — fall back to the inquiry_id dynamic variable.
         fallback_inquiry_id = _extract_inquiry_id(body)
         if fallback_inquiry_id is not None:
             obj = (
@@ -139,10 +137,8 @@ async def elevenlabs_post_call(
         log.error("Unmatched ElevenLabs post-call webhook persisted for review (conversation_id=%s)", convo_id)
         return {"matched": False, "conversation_id": convo_id}
 
-    # Re-fetch with a row lock before mutating — so a concurrent reconciliation
-    # poll or manual call-result entry for the same inquiry can't race with
-    # this webhook (see call_outcome_service.apply_call_outcome, used by all
-    # three writers).
+    # Row-locks before mutating so a concurrent reconciliation poll or manual
+    # entry can't race this webhook (all three share apply_call_outcome).
     # joinedload + FOR UPDATE fails on this nullable relation (Postgres); obj.manufacturer lazy-loads below instead.
     locked = (
         db.query(Inquiry)
@@ -156,14 +152,8 @@ async def elevenlabs_post_call(
         return {"matched": False, "conversation_id": convo_id}
     obj = locked
 
-    # Matched by the incoming conversation_id, not obj.call_completed_at —
-    # that Inquiry-level field is also set by submit_answer's mid-call
-    # partial result, which must NOT block this webhook from still filling
-    # in the fuller transcript for the SAME call. CallLog.resolved_at is set
-    # only by a terminal writer (this webhook, reconciliation, or manual
-    # entry), never by submit_answer, so it precisely distinguishes "this
-    # call's webhook already fired" from "the agent already reported an
-    # in-call answer but the real webhook hasn't arrived yet".
+    # Matched by conversation_id, not call_completed_at (also set by submit_answer's
+    # partial result) — CallLog.resolved_at alone marks this call's webhook as fired.
     existing_log = (
         db.query(CallLog)
         .filter(CallLog.inquiry_id == obj.id, CallLog.conversation_id == convo_id)
@@ -172,17 +162,13 @@ async def elevenlabs_post_call(
     )
     already_resolved = (
         (existing_log is not None and existing_log.resolved_at is not None)
-        # Defensive fallback for a row with no CallLog counterpart at all
-        # (shouldn't happen once the one-time backfill migration has run) —
-        # never overwrite a confirmed result blindly.
+        # Defensive fallback for a row with no CallLog counterpart (shouldn't
+        # happen post-backfill) — never overwrite a confirmed result blindly.
         or (existing_log is None and obj.call_completed_at is not None)
     )
     if already_resolved:
-        # Transcript arrived later than the resolving webhook (e.g. ElevenLabs
-        # finishes transcription after "call ended"): backfill it and retry
-        # the legacy POST without re-running apply_call_outcome. event_key
-        # dedup in maybe_post_for_inquiry still blocks a re-post if one
-        # already succeeded.
+        # Transcript arrived later than the resolving webhook — backfill it and
+        # retry the legacy POST; event_key dedup still blocks a re-post if one succeeded.
         incoming_transcript = _extract_transcript(body)
         existing_transcript = existing_log.transcript if existing_log else obj.call_transcript
         if incoming_transcript and not existing_transcript:
@@ -230,9 +216,8 @@ async def elevenlabs_post_call(
     )
     provider_status = "no_answer" if duration and duration < 8 else raw_provider_status
 
-    # Core outcome — committed immediately, before the optional LLM-extraction
-    # step below, so a failure there can never discard the confirmed result
-    # ElevenLabs just gave us.
+    # Committed immediately, before optional LLM extraction below, so a failure
+    # there can never discard the confirmed result ElevenLabs gave us.
     apply_call_outcome(
         db, obj,
         provider_status=provider_status, summary=summary, transcript=transcript,
@@ -240,9 +225,8 @@ async def elevenlabs_post_call(
     )
     db.commit()
 
-    # If we have a transcript but no clean answer yet, try LLM extraction.
-    # Best-effort only: any failure here (config, API error, timeout, etc.)
-    # must never roll back or discard the core result committed above.
+    # Best-effort LLM extraction when we have a transcript but no clean answer —
+    # any failure here must never roll back the core result committed above.
     if obj.call_transcript and not obj.final_answer and summary_service.is_configured():
         try:
             extracted = summary_service.extract_answer_from_transcript(
@@ -274,15 +258,8 @@ async def elevenlabs_post_call(
         except Exception:
             log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
 
-    # Post to Slack when the call produced a real answer (mirror of the email path).
-    # Denylist the outcomes that are NOT a real manufacturer response; everything
-    # else with a final_answer posts. The post-call webhook may set provider_status
-    # to ElevenLabs' own string (e.g. "done"/"success") when submit_answer didn't
-    # run, so an allowlist would miss those legitimate answers.
-    # "closed" is included alongside "call_completed" because apply_call_outcome
-    # deliberately leaves status at "closed" for a follow-up call on a closed
-    # inquiry (see call_outcome_service) — without it, a genuinely answered
-    # follow-up call would satisfy every other condition here yet never notify.
+    # Denylist (not allowlist) so webhook-set legitimate statuses still notify;
+    # "closed" is included since a closed inquiry's follow-up call stays closed.
     _NO_ANSWER = ("voicemail", "no_answer", "wrong_number", "call_back_later", "follow_up_via_email", "initiated")
     if (
         not is_test

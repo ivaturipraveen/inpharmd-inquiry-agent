@@ -26,11 +26,8 @@ _MAX_TEXT = 2900
 # Slack hard-limits plain_text inside a button to 75 chars — overshooting
 # returns 400 invalid_blocks for the whole message.
 _MAX_BUTTON_LABEL = 70
-# Slack allows max 25 elements in an actions block and max 50 blocks per
-# message. Cap attachment rendering well below both limits. With 5 fixed
-# header/body blocks + up to 10 summary blocks + 1 actions block (1 "View"
-# button + up to 10 attachment buttons), we stay at most 17 blocks / 11
-# action elements — comfortably within all limits.
+# Slack caps actions blocks at 25 elements / 50 blocks per message — this
+# keeps rendered attachments comfortably under both limits.
 _MAX_ATT_IN_SLACK = 10
 
 
@@ -363,8 +360,6 @@ def notify_reply(
                 },
             })
 
-    # Action button row: UI link (transcript for calls / thread for emails)
-    # plus one button per attachment when files were captured.
     action_elements = []
     if inquiry_url:
         action_elements.append({

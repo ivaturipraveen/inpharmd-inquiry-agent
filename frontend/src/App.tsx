@@ -24,9 +24,8 @@ const readHash = (): TabKey => {
 };
 
 const readAuth = (): AuthUser | null => {
-  // A cached user is only valid if we still have a session token to send
-  // with API calls. Otherwise the user was "logged in" by the old fake
-  // login flow (or the token was cleared by a 401) — force re-login.
+  // A cached user is only valid if we still have a session token — otherwise
+  // it's a stale login (old flow, or cleared by a 401) — force re-login.
   if (!session.get()) {
     localStorage.removeItem(AUTH_KEY);
     return null;
@@ -50,9 +49,8 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // When any API call 401s, api.ts clears the session token and fires this
-  // event. We drop the cached user so the app routes back to login
-  // immediately instead of looping on more 401s.
+  // When any API call 401s, api.ts fires this event — drop the cached user
+  // so the app routes back to login instead of looping on more 401s.
   useEffect(() => {
     const onExpired = () => {
       localStorage.removeItem(AUTH_KEY);
@@ -62,9 +60,8 @@ export default function App() {
     return () => window.removeEventListener("inpharmd:session-expired", onExpired);
   }, []);
 
-  // Validate the cached session token on app load — if the backend has
-  // forgotten it (e.g. DB reset, token rotated, deploy with cleared db),
-  // route back to login instead of showing a broken authenticated UI.
+  // Validate the cached session on app load — if the backend forgot it (DB
+  // reset, token rotated), route back to login instead of a broken UI.
   useEffect(() => {
     const token = session.get();
     if (!token || !user) {

@@ -1,9 +1,5 @@
-// Lightweight client-side "is the manufacturer open right now?" check.
-// Mirrors the canonical patterns handled by backend `call_service.parse_hours`
-// so the UI can warn before dispatch — backend remains the source of truth.
-//
-// Returns true/false when we can determine, or null when we can't parse the
-// string (caller should treat null as "let the server decide").
+// Client-side "is the manufacturer open now?" check, mirroring backend
+// call_service.parse_hours — returns null (not error) when unparseable.
 
 const TZ_MAP: Record<string, string> = {
   ET: "America/New_York",

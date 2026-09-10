@@ -43,14 +43,8 @@ class ManufacturerContact(Base):
     inquiries = relationship("Inquiry", back_populates="manufacturer", cascade="all, delete-orphan")
 
 
-# Inquiry lifecycle:
-#   draft           -> created, not yet sent
-#   email_sent      -> email delivered to manufacturer, awaiting response
-#   email_responded -> manufacturer replied (response stored)
-#   call_pending    -> SLA elapsed without response, agent call queued
-#   call_completed  -> agent call done, transcript / summary stored
-#   closed          -> inquiry resolved
-#   failed          -> manual mark of unrecoverable failure
+# Inquiry lifecycle: draft -> email_sent -> email_responded -> call_pending ->
+# call_completed -> closed (or needs_attention/failed).
 INQUIRY_STATUSES = (
     "draft",
     "email_pending",   # scheduled; scheduler will send at email_scheduled_for
@@ -68,10 +62,8 @@ class Inquiry(Base):
     __tablename__ = "inquiries"
 
     id = Column(Integer, primary_key=True, index=True)
-    # Owner — the InpharmD user who created this outreach. The Outreach tab
-    # filters by this so each user only sees their own outreach inquiries.
-    # Nullable so legacy rows (created before this column existed) still load,
-    # but the API treats unowned rows as invisible.
+    # Owner — the Outreach tab filters by this so each user sees only their own.
+    # Nullable for legacy rows; the API treats unowned rows as invisible.
     user_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -89,10 +81,8 @@ class Inquiry(Base):
     question = Column(Text, nullable=False)
     requester_name = Column(String(255))
     requester_email = Column(String(255))
-    # The requesting pharmacist's team/organization (e.g. "MedStar Health").
-    # For InpharmD-sourced inquiries this comes from the platform's
-    # inquiry_submitter_details.team_name; for manual inquiries the user may
-    # optionally type it in. Used in the outbound manufacturer email.
+    # Requesting pharmacist's team/org (e.g. "MedStar Health") — from InpharmD's
+    # inquiry_submitter_details.team_name, or typed in manually.
     team_name = Column(Text)
 
     # Wait this many hours after the email is sent before falling back to a call.
@@ -106,11 +96,8 @@ class Inquiry(Base):
     email_response_at = Column(DateTime(timezone=True))
     email_response = Column(Text)
 
-    # Groups inquiries created together by one bulk_create_inquiries call
-    # (email channel only) so a single Slack notification can be sent for the
-    # whole batch, both at schedule time and at completion. Distinct from
-    # source_inquiry_uuid, which groups by MUE source inquiry and can span
-    # many separate dispatch actions over time.
+    # Groups inquiries from one bulk_create_inquiries call (email only) for a
+    # single batch Slack notification — distinct from source_inquiry_uuid.
     bulk_batch_id = Column(String(64), index=True, nullable=True)
 
     call_scheduled_for = Column(DateTime(timezone=True))
@@ -125,38 +112,22 @@ class Inquiry(Base):
     max_retries = Column(Integer, nullable=False, default=2)
     next_retry_at = Column(DateTime(timezone=True), index=True)
 
-    # Set when an outbound-call HTTP request timed out with no response, so
-    # we cannot tell whether ElevenLabs actually placed the call. While this
-    # is non-null, the inquiry is unconditionally excluded from automatic
-    # fallback/retry call placement (never re-checked against "now" for
-    # eligibility) — only a webhook match or _resolve_ambiguous_call_timeouts
-    # clears it, so there's no time-based window where a second automatic
-    # call could sneak in before the row is moved to needs_attention.
+    # Set when an outbound-call request timed out with no response — while
+    # non-null, unconditionally excludes this inquiry from auto retry/fallback.
     call_outcome_unknown_until = Column(DateTime(timezone=True), nullable=True)
 
-    # Write-once: set the moment the manufacturer is FIRST actually contacted
-    # (real email send, or an initial call placement) — never at draft/create/
-    # schedule time, and never overwritten by a later fallback call or retry.
-    # This is the start of the 48-hour no-response window, independent of
-    # which channel or how many retries/fallbacks happen afterward.
+    # Write-once: set at first real contact (email send or initial call) — starts
+    # the 48h no-response window; never overwritten by later retries/fallback.
     first_contacted_at = Column(DateTime(timezone=True), nullable=True)
-    # Set only immediately after a confirmed successful "no response after
-    # 48h" Slack post — mirrors BulkEmailBatch.completed_notified_at's
-    # send-first-then-mark invariant so the notification fires exactly once.
+    # Set only after a confirmed "no response after 48h" Slack post (send-first-
+    # then-mark) so the notification fires exactly once.
     no_response_notified_at = Column(DateTime(timezone=True), nullable=True)
-    # Write-once: set the moment close_inquiry actually closes this inquiry
-    # (the only code path that ever sets status="closed"). Never touched by
-    # any follow-up email/call action, which is what lets the Timeline place
-    # "Closed" in its correct chronological position even when a follow-up
-    # happens afterward. Legacy rows closed before this column existed are
-    # backfilled once from updated_at (see main.py's _ensure_columns).
+    # Write-once, set only by close_inquiry — never touched by a later follow-up,
+    # so the Timeline can place "Closed" correctly. Backfilled once in main.py.
     closed_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Stuck-call reconciliation tracking (see scheduler._reconcile_stuck_calls).
-    # Persisted (not in-memory) so backoff progress survives scheduler/server
-    # restarts. Both reset to 0/NULL the moment a row leaves call_pending via
-    # any path (webhook, reconciliation, or manual entry) — no stale
-    # reconciliation metadata lingers on a resolved inquiry.
+    # Reconciliation backoff tracking (scheduler._reconcile_stuck_calls), persisted
+    # so it survives restarts; reset to 0/NULL once the call resolves.
     call_reconcile_failure_count = Column(Integer, nullable=False, default=0, server_default="0")
     call_reconcile_next_attempt_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -174,34 +145,25 @@ class Inquiry(Base):
     pdf_filename = Column(String(512))
     pdf_summary = Column(Text)
 
-    # When this inquiry was forwarded FROM the InpharmD platform (via the
-    # "Contact manufacturer" action on the Inpharmd Inquiries tab), we store
-    # the original staging-side UUID here so we can POST the manufacturer's
-    # response back to the legacy /api/legacy/manufacturing_response endpoint.
+    # Set when forwarded from the InpharmD platform — stores the staging-side
+    # UUID so we can POST the manufacturer's response back to the legacy endpoint.
     source_inquiry_uuid = Column(String(128), index=True)
     legacy_response_posted_at = Column(DateTime(timezone=True))
     legacy_attachment_url_count = Column(Integer, nullable=False, default=0, server_default="0")
-    # Stores the event key of the most recently successfully POSTed response
-    # (e.g. "call:<conversation_id>" or "email:<EmailReply.id>"). Used by
-    # maybe_post_for_inquiry to skip re-posting the exact same event while
-    # still allowing genuinely new responses to go through.
+    # Event key of the most recent successful legacy POST (e.g. "call:<id>" or
+    # "email:<EmailReply.id>") — lets maybe_post_for_inquiry dedup exact repeats.
     legacy_last_event_key = Column(String(255), nullable=True)
 
-    # When the InpharmD inquiry was a Medication-Use Evaluation with an Excel
-    # attachment, we store the doc URL + the row this inquiry's manufacturer
-    # lives in, so the email-reply hook can update the "Manufacturer Response"
-    # column in that row and re-upload an updated copy.
+    # For MUE inquiries with an Excel attachment — doc URL + row, so the email-
+    # reply hook can update "Manufacturer Response" and re-upload.
     source_excel_url = Column(Text)
     source_excel_sheet = Column(String(255))
     source_excel_row = Column(Integer)
     # Per-row product details extracted from the MUE Excel alongside the manufacturer name.
     medication_name = Column(Text)
     pi_storage_data = Column(Text)
-    # Raw content of InpharmD's "Temperature Excursion Request" form field
-    # (API key `mue_details`) — distinct from `question` (the "New Inquiry"
-    # box's `title`). Batch-level, same for every target created from one
-    # source InpharmD inquiry. TE-only in practice: staging only ever
-    # populates it on temperature-excursion inquiries.
+    # Raw "Temperature Excursion Request" text (API field mue_details), distinct
+    # from question — batch-level, same for every target from one source inquiry.
     mue_details = Column(Text)
     # DailyMed-enriched fields: canonical PI URL and storage/handling text.
     pi_link = Column(Text)
@@ -209,19 +171,11 @@ class Inquiry(Base):
     excel_response_url = Column(Text)
     excel_response_posted_at = Column(DateTime(timezone=True))
 
-    # Original attachments from the source InpharmD platform inquiry (JSON
-    # list of {file_name, doc_url}), captured once at bulk_create_inquiries
-    # time — see attachment_extraction_service.py. Independent of
-    # source_excel_url (which is the MUE tracking workbook specifically);
-    # this holds the full attachment list as the platform sent it.
+    # All original attachments from the source InpharmD inquiry (JSON list of
+    # {file_name, doc_url}) — independent of source_excel_url (the MUE workbook).
     source_attachments_json = Column(Text, nullable=True)
-    # Cached result of the one-time structured-field extraction (JSON dict)
-    # run against source_attachments_json for the stability-excursion email
-    # template (see email_service.py / attachment_extraction_service.py).
-    # Written ONLY on a successful extraction — including a successful run
-    # that found no relevant fields — never on a timeout/download/API
-    # failure, so a transient failure doesn't permanently block retrying on
-    # the next send attempt (scheduled-send retries every tick on failure).
+    # Cached structured-field extraction (JSON) from source_attachments_json —
+    # written only on success (incl. "nothing found"), never on transient failure.
     attachment_extraction_cache = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -362,9 +316,8 @@ class User(Base):
     # leaves the server. Re-fetched on every login.
     staging_token = Column(Text, nullable=False)
 
-    # Whatever the staging /v2/login response carries about the user. We
-    # store the id + a JSON blob for display so we don't refetch on every
-    # request.
+    # Whatever the staging /v2/login response carries about the user — stored
+    # so we don't refetch on every request.
     staging_user_id = Column(String(64))
     display_name = Column(String(255))
     profile_json = Column(Text)

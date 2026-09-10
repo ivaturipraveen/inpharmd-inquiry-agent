@@ -71,10 +71,8 @@ interface AttachmentExtractionState {
 
 const CTX_KEY = "inpharmd:contact-manufacturer:ctx";
 
-// The backend is the single source of truth for Inquiry.subject — it always
-// overwrites it to `Drug information request [InpharmD #<id>]` once the row
-// exists. This placeholder is shown pre-creation everywhere; it is never
-// sent to the backend as a meaningful value (accepted but discarded).
+// Backend always overwrites Inquiry.subject once the row exists — this
+// placeholder is shown pre-creation only, never a meaningful sent value.
 const PENDING_SUBJECT = "Drug information request [InpharmD #pending]";
 
 const readQuery = (): URLSearchParams => {
@@ -164,18 +162,16 @@ export default function ContactManufacturerPage() {
   const [loadingMfrs, setLoadingMfrs] = useState(true);
   const [existingInquiries, setExistingInquiries] = useState<Inquiry[]>([]);
   const [pendingInquiryInput, setPendingInquiryInput] = useState<InquiryInput | null>(null);
-  // Tracks the inquiry id created during the deferred-create flow. Prevents a
-  // duplicate inquiry if the second step (sendEmail / triggerCall) fails and
-  // the user retries — subsequent attempts reuse this id instead of creating again.
+  // Tracks the inquiry id from the deferred-create flow — if sendEmail/triggerCall
+  // fails and the user retries, reuse this id instead of creating again.
   const [pendingCreatedId, setPendingCreatedId] = useState<number | null>(null);
   // Multi-manufacturer manual flow: holds InquiryFormData with manufacturer_ids.length > 1
   const [pendingBulkManualInput, setPendingBulkManualInput] = useState<InquiryFormData | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // "Already contacted" detail popup — reuses InquiryDetail exactly as the
-  // Manufacturer Outreach page (InquiriesPage.tsx) does, so clicking a
-  // contacted row here opens the identical popup with identical actions.
+  // "Already contacted" popup reuses InquiryDetail exactly as InquiriesPage.tsx —
+  // clicking a contacted row here opens the identical popup and actions.
   const [selectedContactedInquiry, setSelectedContactedInquiry] = useState<Inquiry | null>(null);
 
   // "Add manufacturer" modal
@@ -188,17 +184,14 @@ export default function ContactManufacturerPage() {
   const [manualOverride, setManualOverride] = useState(false);
   // selectedKeys: `${attIdx}:${rowIndex}` for every checked row across all files.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
-  // Per-row fallback-hours override, keyed by the same selKey(attIdx, rowIndex)
-  // as selectedKeys. A row with no entry here falls back to the batch-level
-  // `fallbackHours` below — same override-with-default semantics the backend
-  // already applies to BulkTarget.fallback_after_hours.
+  // Per-row fallback-hours override, keyed like selectedKeys — falls back to
+  // the batch-level fallbackHours, same override-with-default semantics as the backend.
   const [rowFallbackHours, setRowFallbackHours] = useState<Record<string, number>>({});
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState(PENDING_SUBJECT);
   const [question, setQuestion] = useState("");
-  // Requesting pharmacist's team/organization — shared across the Excel
-  // ("multi") flow's own bulkCreate call and, as defaultTeamName, the
-  // single-manufacturer InquiryForm below.
+  // Requesting pharmacist's team/org — shared by the multi-flow's bulkCreate
+  // call and, as defaultTeamName, the single-manufacturer InquiryForm.
   const [teamName, setTeamName] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
   const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
@@ -228,14 +221,8 @@ export default function ContactManufacturerPage() {
 
   useEffect(() => {
     if (ctx) sessionStorage.removeItem(CTX_KEY);
-    // Subject is always backend-generated — never seeded from ctx.title.
-    // The original MUE title still seeds the question/details field. When
-    // InpharmD also sent mue_details (the "Temperature Excursion Request"
-    // text), it's appended as a second paragraph in the same editable
-    // textarea — both are free-form editable from here on as one blob, so
-    // it is NOT also submitted as a separate mue_details field (that would
-    // duplicate it in the outbound email — see the two bulkCreate calls
-    // below, which now always send mue_details: null).
+    // Subject is always backend-generated; the MUE title (+ mue_details, if any)
+    // seeds the editable question field as one blob — never also sent as mue_details (would duplicate it).
     if (ctx?.title) {
       setQuestion(ctx.mue_details ? `${ctx.title}\n\n${ctx.mue_details}` : ctx.title);
     }
@@ -303,12 +290,8 @@ export default function ContactManufacturerPage() {
     };
   }, [loadExistingInquiries]);
 
-  // Action dispatch for the "Already contacted" popup — mirrors
-  // InquiriesPage.tsx's handleAction/handleDelete exactly (same action
-  // strings, same api.inquiries.* calls) so InquiryDetail behaves
-  // identically regardless of which page opened it. Refreshes this page's
-  // own existingInquiries (instead of InquiriesPage's inquiries list) so
-  // the Already Contacted cards immediately reflect the change.
+  // Mirrors InquiriesPage.tsx's handleAction/handleDelete exactly so InquiryDetail
+  // behaves identically; refreshes this page's own existingInquiries instead.
   const handleContactedAction = async (action: string, payload?: any) => {
     if (!selectedContactedInquiry) return;
     const current = selectedContactedInquiry;
@@ -396,11 +379,8 @@ export default function ContactManufacturerPage() {
     return m;
   }, [existingInquiries]);
 
-  // Every manufacturer_id claimed by a matched row in any attachment, across
-  // all files — used to find already-contacted manufacturers that aren't
-  // represented by any row in the current extraction (e.g. contacted via the
-  // manual flow, or no longer matching this Excel's text) so they don't
-  // silently vanish from "Already contacted" once matching finishes.
+  // manufacturer_ids claimed by any matched row — used to find contacted
+  // manufacturers not in the current extraction so they don't vanish from the list.
   const claimedContactedIds = useMemo(() => {
     const ids = new Set<number>();
     for (const s of attachmentExtractions) {
@@ -417,12 +397,8 @@ export default function ContactManufacturerPage() {
     );
   }, [contactedMfrMap, claimedContactedIds]);
 
-  // Single source of truth for the "Already contacted" list — merges rows
-  // matched in the current extraction with unclaimed contacted inquiries
-  // into ONE deduplicated-by-manufacturer list, so the page never renders
-  // two separately-headed "Already contacted" sections for the same MUE,
-  // and the same manufacturer can never appear twice even if it happens to
-  // match a row in more than one attachment.
+  // Single source of truth for "Already contacted" — merges extraction matches
+  // with unclaimed contacted inquiries into one deduped-by-manufacturer list.
   type ContactedDisplayItem = {
     key: string;
     name: string;
@@ -507,10 +483,8 @@ export default function ContactManufacturerPage() {
     [ctx],
   );
 
-  // Stable reference — used as onClose in ChannelChooser and as cleanup after
-  // every successful action. Also referenced in the Escape useEffect dep array,
-  // so a new function reference on every render would tear down and re-add the
-  // listener on each parent re-render while the modal is open.
+  // Stable reference (used as onClose + post-action cleanup + an effect dep) —
+  // a new reference every render would tear down/re-add the Escape listener.
   const closePending = useCallback(() => {
     setPendingInquiryInput(null);
     setPendingCreatedId(null);
@@ -674,9 +648,8 @@ export default function ContactManufacturerPage() {
             medication_name: r.medication_name || null,
             pi_storage_data: r.pi_storage || null,
             pi_link: r.pi_link || null,
-            // Per-row override when the user picked one; otherwise the
-            // batch-level fallbackHours applies (same default the backend
-            // already falls back to when this field is omitted).
+            // Per-row override when picked; otherwise the batch-level fallbackHours
+            // applies (same default the backend falls back to when omitted).
             fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
           }));
         if (targets.length > 0) byFile.push({ s, targets });
@@ -703,9 +676,8 @@ export default function ContactManufacturerPage() {
           source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
           source_excel_sheet: s.result!.sheet_name,
           attachments: ctx.attachments,
-          // Already folded into `question` above (see the ctx effect) as an
-          // editable second paragraph — sending it here too would duplicate
-          // it in the outbound email.
+          // Already folded into `question` above (see the ctx effect) — sending it
+          // here too would duplicate it in the outbound email.
           mue_details: null,
           dispatch_channel: channel,
         });
@@ -1171,12 +1143,8 @@ export default function ContactManufacturerPage() {
                   );
                 })}
 
-                {/* Single "Already contacted" section for the whole MUE —
-                    merges rows matched in this extraction with contacted
-                    manufacturers not represented by any row (manual flow,
-                    or no longer textually matching this Excel), deduplicated
-                    by manufacturer so nothing shows twice and nothing
-                    silently vanishes once matching completes. */}
+                {/* Single Already-Contacted section for the MUE — merges extraction matches with
+                    unclaimed inquiries, deduped by manufacturer so nothing shows twice or vanishes. */}
                 {allContactedDisplayItems.length > 0 && (
                   <div className="contacted-section" style={{ marginTop: attachmentExtractions.some(x => x.result) ? "24px" : "0" }}>
                     <div className="contacted-section-header">
@@ -1291,11 +1259,8 @@ export default function ContactManufacturerPage() {
               const noneSelected = total === 0;
               const anyBusy = submitting !== null;
 
-              // One manufacturer per selected row (rows, not manufacturers —
-              // matches bulkCreate's one-Inquiry-per-row semantics). Each
-              // row's eligibility is driven by its manufacturer's own
-              // preferred_channel, never by which contact fields happen to
-              // be populated.
+              // One manufacturer per selected row (matches bulkCreate's one-Inquiry-per-row
+              // semantics) — eligibility from the manufacturer's own preferred_channel.
               const rowManufacturers = allSelectedRows
                 .map((r) => (r.matched_id ? mfrById[r.matched_id] : undefined))
                 .filter((m): m is ManufacturerContact => !!m);
@@ -1304,10 +1269,8 @@ export default function ContactManufacturerPage() {
               const reachableByEmail = buckets.email.length;
               const fallbackEligibleCount = buckets.email.filter((m) => m.fallback_call_enabled && m.mi_phone).length;
 
-              // Effective fallback hours actually used per email-eligible,
-              // fallback-eligible row — respects each row's own override
-              // (rowFallbackHours) instead of always showing the batch
-              // default, matching what bulkCreate actually dispatches with.
+              // Effective fallback hours per eligible row — respects each row's own
+              // override instead of always showing the batch default.
               const fallbackEligibleHours = attachmentExtractions.flatMap((s, attIdx) =>
                 (s.result?.rows ?? [])
                   .filter((r) => selectedKeys.has(selKey(attIdx, r.row_index)) && r.matched_id != null)
@@ -1334,9 +1297,8 @@ export default function ContactManufacturerPage() {
               const callableNow = buckets.call.length - outOfHoursNow;
               const totalCallable = buckets.call.length;
 
-              // Web form: dedupe by manufacturer (not by row) — a manufacturer
-              // referenced by several selected rows should still only count,
-              // list, and open once.
+              // Web form: dedupe by manufacturer, not row — one referenced by several
+              // selected rows should still only count/list/open once.
               const webFormManufacturers = Array.from(
                 new Map(buckets.webform.map((m) => [m.id, m] as const)).values(),
               ) as (ManufacturerContact & { mi_web_form_url: string })[];
@@ -1349,10 +1311,8 @@ export default function ContactManufacturerPage() {
                 webFormUrls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
               };
 
-              // Manufacturers whose preferred channel is supported but
-              // unreachable, or whose preferred channel has no outreach
-              // mechanism in this app — deduped by manufacturer so the same
-              // one doesn't repeat once per selected row.
+              // Manufacturers with an unreachable or unsupported preferred channel —
+              // deduped by manufacturer so the same one doesn't repeat per selected row.
               const attentionItems = Array.from(
                 new Map(
                   [
@@ -1597,10 +1557,8 @@ export default function ContactManufacturerPage() {
           ? mfrById[pendingInquiryInput.manufacturer_id]
           : undefined;
 
-        // Idempotent create: if a previous attempt already created the inquiry
-        // (pendingCreatedId is set) reuse that id instead of creating again.
-        // This prevents duplicate drafts when sendEmail / triggerCall fails and
-        // the user retries from within the same modal session.
+        // Idempotent create — reuse pendingCreatedId if a previous attempt already
+        // created the inquiry, so a sendEmail/triggerCall retry can't duplicate it.
         const getOrCreateId = async (): Promise<number> => {
           if (pendingCreatedId != null) return pendingCreatedId;
           const created = await api.inquiries.create(pendingInquiryInput);
@@ -1648,8 +1606,7 @@ export default function ContactManufacturerPage() {
           .filter((x): x is ManufacturerContact => x != null);
 
         // Only manufacturers where a fallback call could actually happen are
-        // "applicable" for this comparison — matches InquiryForm's own
-        // fallback-eligibility check (fallback_call_enabled && mi_phone).
+        // "applicable" — matches InquiryForm's own eligibility check.
         const eligibleFallbackHours = pendingBulkManualInput.targets
           .filter(t => {
             const mfr = mfrById[t.manufacturer_id];
@@ -1659,11 +1616,8 @@ export default function ContactManufacturerPage() {
         const fallbackHoursVaries = new Set(eligibleFallbackHours).size > 1;
 
         const bulkDispatch = async (channel: "email" | "call" | "none") => {
-          // For an actual dispatch (not "save as draft"), only include
-          // targets whose manufacturer's preferred_channel resolves to this
-          // channel and has the required contact info — mirrors the Excel
-          // bulk flow's handleBulkSubmit. "none" (Save as Draft) keeps every
-          // selected target, unfiltered, as before.
+          // Real dispatch (not draft) filters to targets whose preferred_channel
+          // matches and is reachable, mirroring the Excel flow; "none" keeps all targets.
           const targets = pendingBulkManualInput.targets.filter((t) => {
             if (channel === "none") return true;
             const mfr = mfrById[t.manufacturer_id];
@@ -1686,9 +1640,8 @@ export default function ContactManufacturerPage() {
             source_excel_url: null,
             source_excel_sheet: null,
             attachments: ctx.attachments,
-            // Already folded into `question` above (see the ctx effect) as an
-            // editable second paragraph — sending it here too would duplicate
-            // it in the outbound email.
+            // Already folded into `question` above (see the ctx effect) — sending it
+            // here too would duplicate it in the outbound email.
             mue_details: null,
             dispatch_channel: channel,
           });
