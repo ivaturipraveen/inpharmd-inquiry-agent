@@ -322,10 +322,10 @@ def send_inquiry_email(
         "personalizations": [
             {
                 "to": [{"email": to_email}],
-                "cc": [{"email": "sharanya@brightcone.com"}],
+                "cc": [{"email": "Leah@inpharmd.com"}],
                 "bcc": [
-                    {"email": "tulsee@brightcone.com"},
-                    {"email": "chinna@brightcone.com"},
+                    {"email": "tulsee@inpharmd.com"},
+                    {"email": "chinna@inpharmd.com"},
                 ],
             }
         ],
