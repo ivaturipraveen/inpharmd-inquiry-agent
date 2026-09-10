@@ -18,18 +18,14 @@ const STATUS_FILTERS = [
   { value: "closed", label: "Closed" },
 ];
 
-// Status buckets — single source of truth, used by both the page-level
-// stat tiles AND the per-MUE-group "X responded · Y awaiting · Z draft"
-// pills. Without this they drifted: tiles counted only email_responded
-// + call_completed, group counted those plus `closed`, so a closed
-// inquiry made the two readouts disagree by one.
+// Single source of truth for stat tiles AND per-MUE-group pills — without
+// it they drifted (tiles vs. group counted `closed` differently by one).
 const RESPONDED_STATUSES = ["email_responded", "call_completed", "closed"];
 const AWAITING_STATUSES = ["email_pending", "email_sent", "call_pending", "call_scheduled"];
 const DRAFT_STATUSES = ["draft"];
 
-// Bucket filter values used by the stat-tile click handlers. The
-// filter dropdown still uses exact status values from STATUS_FILTERS;
-// `matchesStatusFilter` handles both.
+// Bucket filter values used by the stat-tile click handlers — the dropdown
+// still uses exact STATUS_FILTERS values; matchesStatusFilter handles both.
 const BUCKET_FILTERS = new Set(["responded", "awaiting", "drafts"]);
 
 function matchesStatusFilter(
@@ -41,12 +37,8 @@ function matchesStatusFilter(
   if (filter === "responded") return RESPONDED_STATUSES.includes(status);
   if (filter === "awaiting") return AWAITING_STATUSES.includes(status);
   if (filter === "drafts") return DRAFT_STATUSES.includes(status);
-  // An inquiry that got a completed call and then a later email reply ends up
-  // with status "email_responded" (the email path always overwrites status on
-  // the first reply, regardless of a prior completed call — see
-  // graph_service.py / imap_service.py / email_inbound.py). Surface it under
-  // "Call Completed" too, without reinterpreting call_completed_at for any
-  // other status (needs_attention/closed are deliberately excluded).
+  // A call-completed inquiry with a later email reply ends up status
+  // "email_responded" — surface it under "Call Completed" too (other statuses untouched).
   if (filter === "call_completed") {
     return (
       status === "call_completed" ||
@@ -103,10 +95,8 @@ export default function InquiriesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // If the hash carries ?id=NN (e.g. from a Slack deep-link), pop open that inquiry
-  // once the list is loaded. One-shot via this ref — without it, closing the modal
-  // (which every action now does immediately) would re-trigger this effect and
-  // reopen the same inquiry, since the ?id= stays in the URL until a tab change.
+  // Pop open the inquiry from ?id=NN (Slack deep-link) once loaded. One-shot via
+  // this ref — otherwise closing the modal would re-trigger and reopen it.
   const deepLinkAppliedRef = useRef(false);
   useEffect(() => {
     if (deepLinkAppliedRef.current) return;
@@ -174,10 +164,8 @@ export default function InquiriesPage() {
     });
   }, [inquiries, statusFilter, search]);
 
-  // Group inquiries forwarded from the same MUE Excel together. The Outreach
-  // tab shows ONE collapsible "MUE" row per source_inquiry_uuid (with the N
-  // manufacturer children nested inside), and standalone single-manufacturer
-  // inquiries as ordinary rows.
+  // Group inquiries from the same MUE Excel into one collapsible row per
+  // source_inquiry_uuid; standalone inquiries render as ordinary rows.
   type Row =
     | { kind: "single"; inquiry: Inquiry }
     | { kind: "group"; uuid: string; children: Inquiry[] };
@@ -244,9 +232,8 @@ export default function InquiriesPage() {
 
   const handleAction = async (action: string, payload?: any) => {
     if (!selected) return;
-    // Close the modal immediately — success/error banners render on the
-    // page behind it, so leaving the modal open hides them until the user
-    // closes it manually. The action still runs to completion below.
+    // Close the modal immediately — banners render behind it and would stay
+    // hidden until manually closed. The action still runs to completion.
     const current = selected;
     setSelected(null);
     try {
@@ -412,9 +399,8 @@ export default function InquiriesPage() {
           </div>
           <select
             className="filter-select"
-            // Show the dropdown as "All statuses" when a bucket filter
-            // (set via the stat tiles) is active — bucket values aren't
-            // options, so a raw value= would render blank and look broken.
+            // Show "All statuses" when a bucket filter (from stat tiles) is active —
+            // bucket values aren't real options, so a raw value= would render blank.
             value={BUCKET_FILTERS.has(statusFilter) ? "" : statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
           >
@@ -486,9 +472,8 @@ export default function InquiriesPage() {
                       >
                         <td className="cell-muted">#{i.id}</td>
                         <td className="cell-wrap">
-                          {/* subject is the [InpharmD #id]-tagged outbound email
-                              subject, not meant for display — show the actual
-                              question instead, matching the MUE group row below. */}
+                          {/* subject is the [InpharmD #id]-tagged outbound email subject, not for
+                              display — show the actual question instead. */}
                           <div className="cell-primary">{i.question}</div>
                           {i.mue_details && <div className="cell-primary">{i.mue_details}</div>}
                         </td>
@@ -571,9 +556,8 @@ export default function InquiriesPage() {
                           <span className="mue-badge">MUE</span>
                         </td>
                         <td className="mue-subject-cell cell-wrap">
-                          {/* Subject is now per-inquiry (unique [InpharmD #id] per
-                              child), so it can't represent the whole MUE group —
-                              show the shared original MUE title/question instead. */}
+                          {/* Subject is per-inquiry now, so it can't represent the whole MUE group —
+                              show the shared original MUE question instead. */}
                           <div className="cell-primary">{sample.question}</div>
                           {sample.mue_details && <div className="cell-primary">{sample.mue_details}</div>}
                         </td>

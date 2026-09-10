@@ -2,15 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiMeta } from "../api";
 import { startContactManufacturerFlow } from "./ContactManufacturerPage";
 
-// Open MUE inquiries endpoint shape:
-//   { data: [ {
-//       inquiry_uuid: string,
-//       title: string,
-//       inquiry_submitter: string,
-//       inquiry_types: string[],
-//       attachments: [{ id, file_name, doc_url }],
-//       inquiry_submitter_details: { id, email, first_name, last_name, ... }
-//     } ] }
+// Open MUE inquiries response: { data: [{ inquiry_uuid, title,
+// inquiry_submitter, inquiry_types[], attachments, inquiry_submitter_details }] }
 
 type Attachment = { id: number; file_name: string; doc_url: string };
 
@@ -44,9 +37,8 @@ const truncate = (s: string, n = 80): string =>
 const shortUuid = (uuid: string): string =>
   uuid ? uuid.slice(0, 8) : "—";
 
-// TE = temperature excursion (overrides project type entirely); DI = no
-// project type assigned (staging's own value is the literal string "None");
-// PT = a real project type is set.
+// TE = temperature excursion (overrides project type); DI = no project type
+// (staging's literal value is "None"); PT = a real project type is set.
 const typeCode = (i: MueInquiry): "TE" | "DI" | "PT" => {
   if (i.temperature_excursion === true) return "TE";
   if (!i.project_types || i.project_types === "None") return "DI";
@@ -110,23 +102,15 @@ export default function ExternalInquiriesPage() {
   const [withAttachmentsOnly, setWithAttachmentsOnly] = useState(false);
   const [selected, setSelected] = useState<MueInquiry | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  // Viewport-anchored coords for the popover. We render it with
-  // `position: fixed` because the table sits inside `.table-scroll`
-  // (overflow-x:auto) which would otherwise clip the dropdown.
+  // Viewport-anchored coords for the popover — rendered `position: fixed`
+  // since the table's `.table-scroll` (overflow-x:auto) would otherwise clip it.
   const [menuAnchor, setMenuAnchor] = useState<{ top: number; right: number } | null>(null);
   const menuPopoverRef = useRef<HTMLDivElement | null>(null);
   // Sequence counter — incremented on every load call so a stale response
   // from a previous in-flight request is silently discarded.
   const loadSeqRef = useRef(0);
-  // The in-flight request's AbortController, if any — aborted whenever a
-  // newer load() supersedes it (rapid pagination/filter changes), so a
-  // superseded page/filter request stops consuming backend/staging
-  // resources instead of just having its result silently discarded by
-  // loadSeqRef above. The two mechanisms are complementary, not
-  // redundant: abort stops wasted work; loadSeqRef is the correctness
-  // backstop that still holds even if a response manages to arrive
-  // despite the abort (e.g. it was already in flight past the point
-  // where abort takes effect).
+  // AbortController for the in-flight request — aborted when a newer load()
+  // supersedes it. Complements loadSeqRef: abort stops wasted work, loadSeqRef is the correctness backstop.
   const abortRef = useRef<AbortController | null>(null);
 
   // Debounce search: commit to API 400 ms after the user stops typing, and
@@ -149,9 +133,8 @@ export default function ExternalInquiriesPage() {
     attachOnly: boolean,
     forceFresh: boolean,
   ) => {
-    // Cancel whatever request is still in flight before starting a new
-    // one — rapid pagination/filter changes must not leave superseded
-    // requests running to completion against our backend and staging.
+    // Cancel any in-flight request first — rapid pagination/filter changes must
+    // not leave superseded requests running against backend/staging.
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -177,13 +160,8 @@ export default function ExternalInquiriesPage() {
       setMeta(meta);
       if (data?.meta && typeof data.meta.total_pages === "number") {
         setStagingMeta(data.meta as StagingMeta);
-        // Stay in sync with what the server actually served — the filtered
-        // path clamps out-of-range pages server-side, and the unfiltered
-        // path's dataset can change between live requests (no stable
-        // snapshot), so the page we asked for isn't guaranteed to be the
-        // page we got back. Trusting meta.page (rather than only comparing
-        // against total_pages) keeps the pager correct for both paths and
-        // both causes.
+        // Trust the server's returned page (not just total_pages) — the filtered
+        // path clamps server-side, and the unfiltered path's dataset can shift live.
         if (typeof data.meta.page === "number" && data.meta.page !== pageNum) {
           setPage(data.meta.page);
         }
@@ -202,13 +180,8 @@ export default function ExternalInquiriesPage() {
     load(page, search, typeFilter, withAttachmentsOnly, false);
   }, [load, page, search, typeFilter, withAttachmentsOnly]);
 
-  // Abort whatever request is still in flight if the page unmounts (e.g.
-  // the user switches to a different tab) — otherwise it runs to
-  // completion against our backend and staging for nothing, same waste
-  // the supersede-on-newer-load abort above prevents for rapid
-  // pagination/filter changes. Empty deps: this must only run its cleanup
-  // on actual unmount, never between renders, so it can't abort a request
-  // that a subsequent load() call just started.
+  // Abort the in-flight request on unmount so it doesn't run to completion
+  // for nothing. Empty deps — must only fire on actual unmount, not renders.
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
@@ -268,9 +241,8 @@ export default function ExternalInquiriesPage() {
       : [];
     return list
       .map((row: any): MueInquiry | null => {
-        // Tolerate two shapes:
-        //   1) flat MUE shape: { inquiry_uuid, title, … }
-        //   2) JSON:API legacy: { id, type, attributes: { … } }
+        // Tolerate two shapes: flat MUE ({ inquiry_uuid, title, ... }) or
+        // JSON:API legacy ({ id, type, attributes: {...} }).
         if (row?.inquiry_uuid || row?.title) {
           return row as MueInquiry;
         }
@@ -288,7 +260,6 @@ export default function ExternalInquiriesPage() {
       .filter(Boolean) as MueInquiry[];
   }, [raw]);
 
-  // ----- Stats -----
   const stats = useMemo(() => {
     const byType: Record<string, number> = {};
     const submitters = new Set<string>();
@@ -668,8 +639,6 @@ export default function ExternalInquiriesPage() {
   );
 }
 
-// ─────────────────────── Page numbers ────────────────────────────
-
 const PageNumbers = ({
   current,
   total,
@@ -717,8 +686,6 @@ const PageNumbers = ({
     </span>
   );
 };
-
-// ───────────────────────── Detail modal ─────────────────────────
 
 const DetailModal = ({
   inquiry,
@@ -814,8 +781,6 @@ const DetailModal = ({
   );
 };
 
-// ───────────────────────── Cache badge ─────────────────────────
-
 const fmtAge = (seconds: number): string => {
   if (seconds < 60) return `${seconds}s ago`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
@@ -865,8 +830,6 @@ const CacheBadge = ({ meta, loadedAt }: CacheBadgeProps) => {
   return null;
 };
 
-// ─────────────────────────── Stat tile ───────────────────────────
-
 type IconKey = "list" | "paperclip" | "dot";
 
 interface StatTileProps {
@@ -874,10 +837,8 @@ interface StatTileProps {
   value: number;
   tone: "good" | "warn" | "bad" | "info" | "neutral";
   icon: IconKey;
-  // While a request is in flight, `value` (when it falls back to the
-  // page-scoped `stats.*`) still reflects the *previous* response's data —
-  // real numbers, just for the wrong page/filter. Showing a placeholder
-  // instead avoids presenting stale counts as if they were current.
+  // While in flight, `value` (page-scoped stats.*) still reflects the previous
+  // response — show a placeholder instead of presenting stale counts as current.
   loading?: boolean;
 }
 

@@ -22,7 +22,7 @@ from typing import Optional
 log = logging.getLogger("inquiry.s3")
 
 _DEFAULT_PREFIX = "inquiry-pdfs/"
-_DEFAULT_TTL = 60 * 60 * 24 * 7  # 7 days
+_DEFAULT_TTL = 60 * 60 * 24 * 7
 
 # Lazy import — boto3 only loaded when we actually upload, so the rest of the
 # app boots fine in environments that don't ship the dependency.

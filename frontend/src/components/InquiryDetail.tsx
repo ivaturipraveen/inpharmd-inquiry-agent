@@ -52,23 +52,15 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const m = inquiry.manufacturer;
   const isTestCall = inquiry.is_test_call ?? false;
 
-  // The manufacturer's preferred_channel is the source of truth for which
-  // action a draft should offer — never "whichever contact fields happen to
-  // be populated". Only relevant to draft-status gating below; every other
-  // status (email_sent, needs_attention, call_completed) already reflects a
-  // channel that was actually dispatched earlier and is left untouched.
+  // preferred_channel decides which action a draft offers — never inferred
+  // from populated fields. Only relevant to draft gating; other statuses reflect an already-dispatched channel.
   const preferredChannel = resolvePreferredChannel(m);
   const emailReachable = isEmailReachable(m);
   const callReachable = isCallReachable(m);
   const webFormReachable = isWebFormReachable(m);
 
-  // Mirrors backend routers.inquiries._call_in_flight exactly (not just
-  // status === "call_pending") — a follow-up call placed on a closed
-  // inquiry deliberately never changes status, so status alone can't tell
-  // "call in progress" apart from "call already resolved" there. The
-  // call_completed_at < call_scheduled_for fallback (rather than a plain
-  // null check) also covers rows placed before trigger_call started
-  // clearing call_completed_at on every new placement.
+  // Mirrors backend _call_in_flight exactly (not just status=="call_pending") —
+  // a closed inquiry's follow-up call never changes status, so this can't rely on it alone.
   const callInFlight = !!(
     inquiry.call_conversation_id &&
     inquiry.call_scheduled_for &&
@@ -79,20 +71,14 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const isCallScheduled = inquiry.status === "call_scheduled";
   const isScheduled = inquiry.status === "email_pending";
   const canRecordEmail = inquiry.status === "email_sent";
-  // The user can always call the manufacturer again, regardless of status —
-  // including closed/completed. The only real blockers are: no phone number
-  // on file, a call already in progress, and test-call inquiries (which must
-  // never place a production call). The backend enforces the same three
-  // conditions server-side (trigger_call's _call_in_flight check, missing-
-  // phone 400, is_test_call 409) — this mirrors, not replaces, that.
+  // The user can always call again, regardless of status — blocked only by no
+  // phone, an in-flight call, or is_test_call (backend enforces the same three).
   const canTriggerCall = !isTestCall && !callInFlight && callReachable;
-  // Statuses where the inquiry is already resolved one way or another —
-  // calling from here is unambiguously a follow-up, not part of the
-  // original dispatch/retry flow, so the button is labeled accordingly.
+  // Statuses where the inquiry is already resolved — calling from here is a
+  // follow-up, not the original dispatch/retry flow, so labeled accordingly.
   const isResolvedStatus = ["closed", "email_responded", "call_completed"].includes(inquiry.status);
-  // callInFlight is included so the manual recovery form still appears for
-  // a closed inquiry's follow-up call that's stuck (e.g. a missed webhook
-  // still awaiting reconciliation) — status alone stays "closed" there.
+  // callInFlight is included so the recovery form still appears for a closed
+  // inquiry's stuck follow-up call — status alone stays "closed" there.
   const canRecordCall = inquiry.status === "call_pending" || inquiry.status === "needs_attention" || callInFlight;
   const canClose = !["closed"].includes(inquiry.status);
 
@@ -172,10 +158,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             )}
           </div>
 
-          {/* Final Answer shows automatically once the agent or AI has captured one.
-              When the reply included an attachment, we surface three distinct pieces
-              top-to-bottom: the manufacturer's direct response, the AI summary
-              of the attachment, and the link to download it. */}
+          {/* Shows once final_answer/pdf_summary/pdf_url exist — order is: direct
+              response, AI attachment summary, download link. */}
           {(inquiry.final_answer || inquiry.pdf_summary || inquiry.pdf_url) && (
             <div className="detail-section answer-box answer-box-prominent">
               <div className="answer-label">
@@ -252,10 +236,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Email Thread — inbound manufacturer replies AND outbound
-              follow-up emails, in chronological order, visually
-              distinguished by direction. Only rendered when email_replies
-              data is available. The Final Answer box above is untouched. */}
+          {/* Email Thread — inbound replies + outbound follow-ups, chronological,
+              only rendered when email_replies data is available. */}
           {(inquiry.email_replies?.length ?? 0) > 0 && (() => {
             let inboundCount = 0;
             return (
@@ -342,14 +324,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Timeline — built as a data array and sorted by real timestamp so
-              it stays genuinely chronological now that follow-up emails and
-              follow-up calls can happen at any point, including after the
-              inquiry is closed. Every existing entry's condition, title,
-              meta text, and body content is unchanged from before — only
-              its position among the others is now computed instead of
-              fixed. Entries with no real timestamp (shouldn't normally
-              happen) sort last, same as the old fixed order. */}
+          {/* Timeline — built as a sorted data array so entries stay chronological
+              even with follow-ups after closing; entries with no timestamp sort last. */}
           {(() => {
             const toMs = (s?: string | null): number | null => {
               if (!s) return null;
@@ -441,19 +417,13 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 });
               });
 
-            // One entry per CallLog — each physical call (initial, retry,
-            // fallback, every follow-up) gets its own Timeline entry with
-            // its own transcript, instead of a single entry that only ever
-            // reflected the most recent call (see models.CallLog). Sorted
-            // oldest-first here purely to number "Agent call" vs "Follow-up
-            // call N" correctly; final placement in the Timeline still uses
-            // each entry's own sortAt below, same as every other entry type.
+            // One entry per CallLog — each physical call gets its own entry+transcript
+            // (see models.CallLog); sorted oldest-first only to number "Follow-up call N".
             const callLogs = [...(inquiry.call_logs ?? [])].sort(
               (a, b) => (toMs(a.started_at) ?? 0) - (toMs(b.started_at) ?? 0)
             );
-            // Deep-link target (#inquiries?id=N&focus=transcript) opens the
-            // most recent call's transcript — only one <details> may carry
-            // this id, so it's assigned to the last transcript-bearing log.
+            // Deep-link target (#...&focus=transcript) opens the most recent call's
+            // transcript — only the last transcript-bearing log gets this id.
             const lastTranscriptLogId = [...callLogs].reverse().find((l) => l.transcript)?.id;
             if (callLogs.length > 0) {
               callLogs.forEach((log, idx) => {
@@ -488,9 +458,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 });
               });
             } else if (callInFlight || inquiry.call_completed_at) {
-              // Fallback for inquiries with no CallLog rows yet (e.g. this
-              // request predates the one-time backfill migration) — mirrors
-              // the single-entry behavior this replaced.
+              // Fallback for inquiries with no CallLog rows yet (predates the backfill
+              // migration) — mirrors the single-entry behavior this replaced.
               entries.push({
                 key: "call",
                 sortAt:
@@ -522,11 +491,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             if (inquiry.status === "closed") {
               entries.push({
                 key: "closed",
-                // closed_at is write-once, set the moment close_inquiry runs.
-                // Legacy rows closed before this column existed are
-                // backfilled from updated_at server-side (see main.py); this
-                // client-side fallback only matters for the brief window
-                // before that backfill has run.
+                // closed_at is write-once (see close_inquiry); this updated_at fallback only
+                // matters for the brief window before the server-side backfill runs.
                 sortAt: toMs(inquiry.closed_at) ?? toMs(inquiry.updated_at) ?? SORT_LAST,
                 status: "done",
                 title: "Closed",
@@ -572,7 +538,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Draft actions */}
           {isDraft && (
             <div className="detail-section action-panel">
               <div className="detail-label">Draft</div>
@@ -692,7 +657,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Scheduled email actions */}
           {isScheduled && (
             <div className="detail-section action-panel">
               <div className="detail-label">
@@ -783,7 +747,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {/* Action panels */}
           {canRecordEmail && (
             <div className="detail-section action-panel">
               <div className="detail-label">Log email response</div>

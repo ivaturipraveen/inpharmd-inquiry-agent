@@ -27,22 +27,13 @@ import httpx
 log = logging.getLogger("inquiry.inpharmd")
 
 
-# Heroku free-tier can take a long time to wake up + the inquiries list
-# is ~4MB. Different timeouts per endpoint, with retries on transient
-# upstream failures (502/503/504/network/timeout).
+# Heroku cold-starts can be slow and the inquiries list is ~4MB — timeouts
+# vary per endpoint, with retries on transient upstream failures.
 DEFAULT_TIMEOUT_SECONDS = 20.0
 LIST_TIMEOUT_SECONDS = 60.0
 MAX_RETRIES = 2
-# Lightweight single-page fetch (external_inquiries.py's unfiltered-browsing
-# path) uses a shorter timeout and fewer retries than the heavy 5000-record
-# full-list fetch above — that one genuinely needs headroom for a cold
-# Heroku dyno serving a ~4MB payload; a ~20-row page doesn't, and every page
-# click now hits staging live (no cache), so a hanging request here ties up
-# a backend thread for every in-flight browse instead of just the first
-# fetch in a 5-minute window. Worst case: ~20s + 1s backoff + ~20s ≈ 41s,
-# vs. the full-fetch path's ~60s×3 + backoffs ≈ 184s. Does not change
-# DEFAULT_TIMEOUT_SECONDS/LIST_TIMEOUT_SECONDS/MAX_RETRIES or any existing
-# caller — see `timeout`/`max_retries` params on list_inquiries()/_call().
+# Page-browsing uses a shorter timeout/fewer retries than the full 5000-row
+# fetch — a hanging request here would tie up a thread on every page click.
 PAGE_LIST_TIMEOUT_SECONDS = 20.0
 PAGE_LIST_MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = (1.0, 3.0)  # one entry per retry attempt
@@ -212,9 +203,6 @@ def _call(
     raise InpharmdAPIError(status_code=502, message="Unknown error after retries")
 
 
-# ─────────────────────────── Public API ───────────────────────────
-
-
 def login(email: str, password: str, channel_id: Optional[str] = None) -> Dict[str, Any]:
     """Exchange email + password for an InpharmD access_token. Returns the
     raw upstream JSON so the caller can decide what to persist."""
@@ -262,14 +250,8 @@ def list_inquiries(
     **extra_params: Any,
 ) -> Any:
     params = {"access_token": access_token, **{k: v for k, v in extra_params.items() if v is not None}}
-    # Open Medication Use Evaluation (MUE) inquiries with submitter attachments.
-    # Response shape (per swagger):
-    #   { data: [ { inquiry_uuid, title, inquiry_submitter, inquiry_types[],
-    #               attachments: [{id, file_name, doc_url}],
-    #               inquiry_submitter_details: {…} } ] }
-    # Defaults preserve exact prior behavior for every existing caller (the
-    # 5000-row full-list fetch); external_inquiries.py's unfiltered-page
-    # path passes PAGE_LIST_TIMEOUT_SECONDS/PAGE_LIST_MAX_RETRIES explicitly.
+    # MUE inquiries with submitter attachments — response shape (per swagger):
+    # { data: [{ inquiry_uuid, title, attachments: [...], inquiry_submitter_details }] }
     return _call(
         "GET", "/api/v2/inquiries/open_mue_inquiries", params=params,
         timeout=timeout, max_retries=max_retries,

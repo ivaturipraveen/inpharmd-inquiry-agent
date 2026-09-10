@@ -23,9 +23,8 @@ from models import InquiryAttachment
 
 log = logging.getLogger("inquiry.inbound_attachments")
 
-# Single source of truth for accepted attachment types (ext → canonical MIME type).
-# graph_service and imap_service import these directly so there is only one list
-# to update when adding new types.
+# Single source of truth (ext -> MIME) — graph_service/imap_service import
+# this directly, so update only here when adding new types.
 SUPPORTED_EXTENSIONS: dict[str, str] = {
     ".pdf":  "application/pdf",
     ".doc":  "application/msword",

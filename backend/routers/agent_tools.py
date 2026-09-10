@@ -90,7 +90,6 @@ def submit_answer(
 
     now = datetime.now(timezone.utc)
 
-    # Compose a human-readable summary from the structured fields
     parts: list[str] = []
     if payload.answer:
         parts.append(payload.answer.strip())
@@ -114,9 +113,8 @@ def submit_answer(
         completed_at=now,
     )
 
-    # Closed stays closed — a follow-up call's outcome must not silently
-    # reopen an inquiry the user deliberately closed. final_answer/summary
-    # are still recorded normally below regardless of status.
+    # Closed stays closed — a follow-up outcome must not reopen it; final_answer
+    # is still recorded normally below regardless of status.
     was_closed = obj.status == "closed"
 
     if payload.outcome == "answered":
@@ -131,7 +129,6 @@ def submit_answer(
         followup_note = f"Rep promised to follow up via email to {obj.requester_email or 'requester'}."
         obj.final_answer = f"{summary}\n\n{followup_note}" if summary else followup_note
     elif payload.outcome in ("voicemail", "wrong_number", "no_answer", "call_back_later"):
-        # Call attempted but no useful info
         if not was_closed:
             obj.status = "call_completed"
         obj.final_answer = summary or f"Call ended without an answer ({payload.outcome})."

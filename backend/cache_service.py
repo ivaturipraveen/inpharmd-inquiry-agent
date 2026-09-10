@@ -24,7 +24,7 @@ from typing import Any, Optional, Tuple
 
 log = logging.getLogger("inquiry.cache")
 
-DEFAULT_TTL_SECONDS = 300  # 5 minutes
+DEFAULT_TTL_SECONDS = 300
 MAX_ENTRIES = 256          # crude LRU-ish cap so a runaway cache key set can't OOM us
 
 
@@ -71,7 +71,6 @@ def set(key: str, value: Any, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
     """Store a value. Evicts the oldest entry if we'd exceed MAX_ENTRIES."""
     with _lock:
         if len(_store) >= MAX_ENTRIES and key not in _store:
-            # evict the entry with the oldest stored_at
             oldest_key = min(_store, key=lambda k: _store[k].stored_at)
             log.info("cache evict (cap reached) key=%s", oldest_key)
             _store.pop(oldest_key, None)

@@ -105,9 +105,8 @@ const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, on
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        // Only close when the mousedown started on the backdrop itself —
-        // otherwise dragging from inside an input (e.g. text selection) past
-        // the edge would dismiss the dialog mid-edit.
+        // Only close when mousedown started on the backdrop itself — otherwise
+        // dragging a text selection past the edge would dismiss the dialog.
         if (e.target === e.currentTarget) onClose();
       }}
     >

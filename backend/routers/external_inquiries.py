@@ -80,10 +80,8 @@ def _full_list_cache_key(user_id: int) -> str:
     return f"external:full:{user_id}"
 
 
-# Fetch the entire staging dataset in one shot. Staging has no apparent cap on
-# per_page and we confirmed values of 500 work fine. 5 000 is a safe ceiling
-# for the foreseeable future; if the dataset ever exceeds it the meta.total_pages
-# check below will log a warning so it's easy to spot.
+# Fetch the entire dataset in one shot — 5000 is a safe per_page ceiling;
+# if the dataset ever exceeds it, the total_pages check below warns.
 _FULL_FETCH_PER_PAGE = 5000
 
 
@@ -173,16 +171,8 @@ def _list_unfiltered_page(token: str, page: int, per_page: int) -> dict:
 
     total_pages = staging_meta.get("total_pages", 1)
     reported_page = staging_meta.get("page", page)
-    # Staging echoes back whatever page was requested without clamping it
-    # against total_pages (verified against its Rails source — .paginate()
-    # doesn't reject/adjust an out-of-range page, it just returns no rows).
-    # Since this path has no stable snapshot — every page is a fresh live
-    # query — the dataset can legitimately shrink between two page requests
-    # in the same browsing session, making a previously-valid page number
-    # invalid. Clamp our own reported meta.page the same way the filtered
-    # path already does, so the frontend's page-state sync (which trusts
-    # meta.page) can self-correct on the next render instead of leaving the
-    # pager pointed at a page that no longer exists.
+    # Staging doesn't clamp an out-of-range page (verified in its Rails source) —
+    # clamp our own reported page so the frontend's pager can self-correct.
     if isinstance(total_pages, int) and total_pages > 0:
         reported_page = min(reported_page, total_pages)
 
@@ -240,7 +230,6 @@ def list_external_inquiries(
                 detail=f"Staging error {e.status_code}: {e.message}. No cached data available yet.",
             )
 
-    # Filter in-process against the full cached list.
     filtered = all_items
     if search:
         q = search.strip().lower()
@@ -251,7 +240,6 @@ def list_external_inquiries(
     if with_attachments:
         filtered = [i for i in filtered if i.get("attachments")]
 
-    # Paginate the filtered result.
     total_entries = len(filtered)
     total_pages = max(1, (total_entries + per_page - 1) // per_page)
     page = min(page, total_pages)
@@ -343,9 +331,8 @@ class ExtractManufacturersResponse(BaseModel):
     medication_col_header: Optional[str] = None   # None = column not found in file
     pi_storage_col_header: Optional[str] = None   # None = column not found in file
     ndc_col_header: Optional[str] = None           # None = NDC column not present in file
-    # Our own S3 copy of the workbook — the bulk_create endpoint stamps this
-    # as `source_excel_url` on every inquiry so the response-writeback path
-    # always operates on our copy (no dependence on the 10s InpharmD signed URL).
+    # Our own S3 copy — bulk_create stamps this as source_excel_url so writeback
+    # operates on our copy, not the short-lived InpharmD signed URL.
     excel_s3_url: Optional[str] = None
 
 
@@ -383,15 +370,12 @@ async def extract_manufacturers(
     mfrs = db.query(ManufacturerContact).all()
     matches = excel_service.match_manufacturers(rows, mfrs)
 
-    # DailyMed NDC enrichment — fills pi_link + pi_storage on matched rows
-    # that carry an NDC but are missing those fields. Runs concurrently
-    # (semaphore-capped), writes results to the persistent dailymed_cache table,
-    # and never raises (failures are logged and the row is left unchanged).
+    # DailyMed NDC enrichment — fills pi_link/pi_storage on matched rows
+    # concurrently (semaphore-capped); never raises, failures leave rows unchanged.
     await dailymed_service.enrich_rows(matches, db)
 
-    # Mirror the workbook into our own S3 right now, before any responses
-    # arrive. Every inquiry created from this dispatch will point at this
-    # URL so writeback always works against our copy.
+    # Mirror the workbook to our own S3 before any responses arrive — every
+    # inquiry from this dispatch points at this URL for writeback.
     s3_url: Optional[str] = None
     try:
         from urllib.parse import urlparse, unquote
@@ -410,11 +394,8 @@ async def extract_manufacturers(
     except Exception as e:
         log.warning("external.extract S3 upload failed (will fall back to InpharmD url): %s", e)
 
-    # Write PI link + storage data back into the workbook for DailyMed-enriched
-    # rows, re-upload to S3 under mue-pi-enriched/, and POST to staging so the
-    # platform sees the enriched sheet immediately. If this succeeds, use the
-    # enriched URL as source_excel_url so future response writeback builds on
-    # the PI-enriched copy rather than the pristine original.
+    # Writes PI-enriched data back to the workbook and re-uploads; on success,
+    # future writeback builds on the enriched copy instead of the original.
     if s3_url and payload.inquiry_uuid and any(
         getattr(m, "pi_link", None) or getattr(m, "pi_storage", None) for m in matches
     ):
@@ -458,7 +439,6 @@ async def extract_manufacturers(
     )
 
 
-# Small debug endpoint so the frontend (and you) can see what's cached.
 @router.get("/_debug/cache")
 def cache_state(current: User = Depends(get_current_user)) -> Any:
     return cache_service.stats()

@@ -1,8 +1,5 @@
-// Single canonical list of fallback-time choices. Every UI that lets a user
-// pick a fallback duration (single-manufacturer Contact Manufacturer form,
-// per-manufacturer rows in the same form, the Excel/MUE bulk form) must
-// render from this list rather than defining its own options, so the set of
-// choices stays identical everywhere in the app.
+// Canonical fallback-time choices — every UI picker must render from this
+// list so the options stay identical everywhere (single-form, per-row, bulk).
 export const FALLBACK_PRESETS: { hours: number; label: string }[] = [
   { hours: 0, label: "5 min (testing)" },
   { hours: 12, label: "12 hours" },

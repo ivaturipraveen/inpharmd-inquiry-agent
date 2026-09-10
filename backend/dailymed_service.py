@@ -51,8 +51,6 @@ _RETRY_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 1.0           # seconds; doubled on each retry
 
 
-# ─────────────────────── NDC normalisation ───────────────────────
-
 def _normalize_ndc(ndc: str) -> str:
     """Strip whitespace and Excel float suffixes (.0, .00, …).
 
@@ -63,8 +61,6 @@ def _normalize_ndc(ndc: str) -> str:
     s = re.sub(r"\.0+$", "", s)   # "0143-9504-01.0" → "0143-9504-01"
     return s
 
-
-# ─────────────────────────── DB cache ────────────────────────────
 
 def _load_cache(
     ndcs: list[str], db: Session
@@ -120,8 +116,6 @@ def _save_cache(
         db.rollback()
         log.warning("dailymed: cache write failed: %s", exc)
 
-
-# ──────────────────────── XML parsing ────────────────────────────
 
 _STORAGE_HEADING_RE    = re.compile(r"^\s*storage(\s+conditions?)?\s*$", re.IGNORECASE)
 _STORAGE_HEADING_STRIP = re.compile(r"^storage(\s+conditions?)?\s*", re.IGNORECASE)
@@ -185,7 +179,6 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
             break  # only check the very first child element
         return None
 
-    # ── Pass 1: dedicated 44425-7 subsection ─────────────────────────
     for sec in root.findall(".//h:section", ns):
         code_el = sec.find("h:code", ns)
         if code_el is not None and code_el.get("code") == _STORAGE_CODE:
@@ -196,10 +189,8 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
                     log.debug("dailymed: storage from 44425-7")
                     return result
 
-    # ── Pass 2: inline paragraph scan inside 34069-5 ─────────────────
-    # Some SPLs embed "Storage" / "Storage Conditions" as an underlined
-    # <content> heading inside a <paragraph> within the flat 34069-5 text,
-    # rather than using a separate 44425-7 subsection.
+    # Some SPLs embed "Storage" as an underlined <content> heading inside a
+    # <paragraph>, rather than a separate 44425-7 subsection.
     for sec in root.findall(".//h:section", ns):
         code_el = sec.find("h:code", ns)
         if code_el is None or code_el.get("code") != _HOW_SUPPLIED_CODE:
@@ -237,8 +228,6 @@ def _extract_storage_text(xml_bytes: bytes) -> Optional[str]:
     return None
 
 
-# ─────────────────────── DailyMed API calls ──────────────────────
-
 async def _http_get(
     client: httpx.AsyncClient,
     url: str,
@@ -275,7 +264,6 @@ async def _lookup_ndc_api(
     (network error, NDC not found, section absent). This function never raises.
     """
     try:
-        # Step 1: resolve NDC → setid via JSON search endpoint
         r = await _http_get(
             client,
             f"{_DAILYMED_API}/spls.json",
@@ -300,7 +288,6 @@ async def _lookup_ndc_api(
         pi_link = f"{_DAILYMED_UI}?setid={setid}"
         log.debug("dailymed: NDC %r → setid=%s title=%r", ndc, setid, record.get("title", "")[:60])
 
-        # Step 2: fetch the full SPL XML and extract section 34069-5
         xml_r = await _http_get(client, f"{_DAILYMED_API}/spls/{setid}.xml")
         xml_r.raise_for_status()
 
@@ -314,8 +301,6 @@ async def _lookup_ndc_api(
         log.warning("dailymed: lookup failed for NDC %r: %s", ndc, exc)
         return None, None, None
 
-
-# ──────────────────────── Public interface ───────────────────────
 
 async def enrich_rows(rows: list, db: Session) -> None:
     """Fill in *pi_link* and *pi_storage* in-place for rows that carry an NDC
@@ -333,13 +318,11 @@ async def enrich_rows(rows: list, db: Session) -> None:
 
     Never raises — any per-NDC failure is logged and that row is left unchanged.
     """
-    # ── Step 1: collect work ──────────────────────────────────────
     ndcs_to_rows: dict[str, list] = {}
     for row in rows:
         ndc = getattr(row, "ndc", None)
         if not ndc:
             continue
-        # Skip rows that are already fully populated
         if getattr(row, "pi_link", None) and getattr(row, "pi_storage", None):
             continue
         norm = _normalize_ndc(ndc)
@@ -351,7 +334,6 @@ async def enrich_rows(rows: list, db: Session) -> None:
 
     log.info("dailymed.enrich: %d unique NDCs to resolve", len(ndcs_to_rows))
 
-    # ── Step 2: batch cache check ─────────────────────────────────
     cache = _load_cache(list(ndcs_to_rows.keys()), db)
     to_fetch: dict[str, list] = {}
 
@@ -368,7 +350,6 @@ async def enrich_rows(rows: list, db: Session) -> None:
 
     log.info("dailymed.enrich: %d cache misses → fetching from DailyMed", len(to_fetch))
 
-    # ── Step 3: concurrent HTTP fetches ──────────────────────────
     sem = asyncio.Semaphore(_MAX_CONCURRENT)
 
     async def fetch_one(ndc_norm: str):
@@ -385,7 +366,6 @@ async def enrich_rows(rows: list, db: Session) -> None:
             return_exceptions=True,
         )
 
-    # ── Step 4: apply and collect for cache write ─────────────────
     for outcome in outcomes:
         if isinstance(outcome, Exception):
             log.warning("dailymed.enrich: unexpected gather error: %s", outcome)
@@ -394,7 +374,6 @@ async def enrich_rows(rows: list, db: Session) -> None:
         new_results[ndc_norm] = (setid, link, storage)
         _apply(to_fetch[ndc_norm], link, storage)
 
-    # ── Step 5: persist to DB cache ───────────────────────────────
     if new_results:
         _save_cache(new_results, db)
         log.info("dailymed.enrich: cached %d new entries", len(new_results))

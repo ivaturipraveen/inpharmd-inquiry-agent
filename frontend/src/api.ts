@@ -21,10 +21,8 @@ export class UnauthorizedError extends Error {
   }
 }
 
-// When any API call returns 401 we clear the session AND broadcast an
-// event so the top-level App can drop the cached user object too. Without
-// this, App.tsx keeps showing the authenticated UI even though every
-// subsequent API call will 401.
+// On 401, clear the session AND broadcast an event so App.tsx drops the
+// cached user — otherwise it keeps showing authenticated UI that will 401.
 const handleUnauthorized = (text: string) => {
   session.clear();
   try {
@@ -59,9 +57,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// Variant of `request` that also returns selected response headers — used
-// by the external-inquiries page so it can show "Loaded from cache N min ago"
-// and the underlying upstream error when we serve stale data.
+// Variant of `request` that also returns response headers — lets the
+// external-inquiries page show cache age / upstream error when serving stale data.
 export interface ApiMeta {
   cache: "HIT" | "MISS" | "STALE" | null;
   cacheAgeSeconds: number | null;
@@ -300,10 +297,8 @@ export const api = {
     logout: () => request<{ ok: boolean }>(`/api/auth/logout`, { method: "POST" }),
   },
   externalInquiries: {
-    // Pass-through from staging — we keep it loosely typed because the
-    // upstream schema isn't fully nailed down on our side yet.
-    // Returns the data PLUS cache metadata so the UI can show
-    // "Loaded from cache N min ago" / upstream error info.
+    // Pass-through from staging, loosely typed since the upstream schema isn't
+    // fully nailed down — returns data PLUS cache metadata for the UI.
     list: (
       params?: {
         page?: number;

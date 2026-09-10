@@ -198,9 +198,8 @@ def create_inquiry(
     obj = Inquiry(**data, status="draft", user_id=current_user.id)
     db.add(obj)
     db.flush()
-    # Backend is the single source of truth for the outbound subject tag —
-    # discard whatever free-text subject the client sent once the real id
-    # exists, mirroring send_inquiry_email's own subject override.
+    # Backend is the single source of truth for the subject tag — discard the
+    # client's free-text subject once the real id exists.
     obj.subject = _default_subject(obj.id)
     db.commit()
     return _get_or_404(db, obj.id, current_user)
@@ -262,9 +261,8 @@ async def bulk_create_inquiries(
             question=payload.question,
             requester_name=requester_name,
             requester_email=requester_email,
-            # Per-target override wins when provided (manual multi-manufacturer
-            # flow); the Excel/MUE flow never sets this, so it always falls
-            # back to the batch-level value — unchanged for that flow.
+            # Per-target override wins when provided (manual multi-manufacturer flow);
+            # Excel/MUE never sets this, so it falls back to the batch-level value.
             fallback_after_hours=(
                 tgt.fallback_after_hours
                 if tgt.fallback_after_hours is not None
@@ -295,12 +293,8 @@ async def bulk_create_inquiries(
     dispatched = 0
 
     if channel == "email":
-        # Every inquiry gets its own stagger slot in selection order.
-        # No two inquiries share the same email_scheduled_for, even if they
-        # target the same manufacturer or recipient address.
-        # First email: T+EMAIL_SCHEDULE_DELAY_MINUTES. Each subsequent email:
-        # +1 minute after the previous one (slot is 1-indexed, so slot 1 adds
-        # zero extra minutes, slot 2 adds one, etc.)
+        # Every inquiry gets its own stagger slot — first at T+EMAIL_SCHEDULE_DELAY_MINUTES,
+        # each subsequent one +1 minute later, so none share email_scheduled_for.
         bulk_base = _now()
         slot = 0
         batch_id: Optional[str] = None
@@ -339,8 +333,7 @@ async def bulk_create_inquiries(
         db.commit()
 
         if batch_id and batch_items:
-            # The inquiries above are already committed and successfully
-            # scheduled regardless of what happens next — a failure here must
+            # Inquiries above are already committed/scheduled — a failure here must
             # never turn a successful dispatch into a misleading API failure.
             try:
                 db.add(BulkEmailBatch(batch_id=batch_id))
@@ -363,9 +356,8 @@ async def bulk_create_inquiries(
                 log.exception("Slack bulk-scheduled notification failed for batch %s", batch_id)
 
     elif channel == "call":
-        # Group by phone number so multiple MUE rows resolving to the same
-        # manufacturer place ONE call, not N. All siblings share the returned
-        # conversation_id so any inbound outcome updates every row.
+        # Group by phone so multiple MUE rows resolving to the same manufacturer
+        # place ONE call, not N — siblings share the conversation_id.
         call_groups: dict[str, list[Inquiry]] = {}
         for obj in list(created_objs):
             if obj.call_conversation_id:
@@ -427,9 +419,8 @@ async def bulk_create_inquiries(
                 sib.next_retry_at = None
                 if sib.first_contacted_at is None:
                     sib.first_contacted_at = now
-                # One CallLog row per sibling inquiry, even though they all
-                # share the same physical call/conversation_id — each
-                # sibling is its own Inquiry row with its own Timeline.
+                # One CallLog row per sibling inquiry even though they share one physical
+                # call/conversation_id — each sibling has its own Inquiry row and Timeline.
                 call_log_service.start_call_log(
                     db, sib,
                     conversation_id=conv_id,
@@ -475,8 +466,6 @@ def delete_inquiry(
     db.commit()
     return None
 
-
-# ---------- Lifecycle transitions ----------
 
 @router.post("/{inquiry_id}/send-email", response_model=InquiryOut)
 def send_email(
@@ -605,9 +594,8 @@ def send_now(
             detail=f"{mfr.manufacturer} has no email address on file",
         )
 
-    # Best-effort — never raises; returns all-"" fields if nothing was
-    # extractable or extraction failed, in which case the template below
-    # falls back to its normal "Not provided" placeholders.
+    # Best-effort — never raises; returns all-"" fields on failure, so the
+    # template below falls back to its "Not provided" placeholders.
     excursion_fields = attachment_extraction_service.get_or_extract(
         db, locked, manufacturer_name=mfr.manufacturer
     )
@@ -660,13 +648,10 @@ def record_email_response(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Ownership check + 404 guard.
     _get_or_404(db, inquiry_id, current_user)
 
-    # Acquire row-level lock and refresh attributes from DB — populate_existing()
-    # ensures the in-memory object reflects the current DB state even if the
-    # session already held a pre-lock snapshot from _get_or_404 above.
-    # Mirrors cancel_scheduled_email, send_now, trigger_call in this file.
+    # populate_existing() refreshes from DB even if _get_or_404 cached a pre-lock
+    # snapshot — same pattern as cancel_scheduled_email/send_now/trigger_call.
     # joinedload + FOR UPDATE fails on this nullable relation (Postgres); obj.manufacturer lazy-loads below instead.
     obj = (
         db.query(Inquiry)
@@ -681,11 +666,8 @@ def record_email_response(
 
     new_text = (payload.response or "").strip()
 
-    # Find the single manual EmailReply for this inquiry, identified by the
-    # "__manual__" sentinel in smtp_message_id. Using a non-null sentinel (rather
-    # than NULL) prevents collision with rare real SendGrid replies that arrive
-    # without a Message-ID header, and lets the existing partial unique index
-    # on (inquiry_id, smtp_message_id) enforce one manual reply per inquiry.
+    # Manual EmailReply identified by the "__manual__" sentinel (not NULL) so it
+    # doesn't collide with real Message-ID-less replies and the unique index still applies.
     existing_manual = (
         db.query(EmailReply)
         .filter(
@@ -728,15 +710,12 @@ def record_email_response(
     obj.call_scheduled_for = None
 
     if text_changed:
-        # Clear the legacy POST guard only when it already points at this exact
-        # reply's event_key. If it points to a different event (real email, call)
-        # the new event_key already differs and maybe_post_for_inquiry fires
-        # without needing the guard cleared.
+        # Clear the legacy POST guard only if it points at this exact reply's event_key —
+        # a different stored event_key already differs, so maybe_post_for_inquiry fires anyway.
         if obj.legacy_last_event_key == f"email:{email_reply.id}":
             obj.legacy_last_event_key = None
-        # Allow Excel writeback to re-run with the corrected text.
-        # _pick_latest_excel_url always fetches the newest sibling's combined
-        # file, so only this inquiry's row is overwritten; siblings are safe.
+        # Allow Excel writeback to re-run with the corrected text — _pick_latest_excel_url
+        # fetches the newest sibling's file, so only this inquiry's row is overwritten.
         obj.excel_response_posted_at = None
 
     db.commit()
@@ -884,24 +863,18 @@ async def trigger_call(
             status_code=409,
             detail="Cannot trigger a production call on a test call inquiry.",
         )
-    # Deliberately no "status == closed" guard: a follow-up call must remain
-    # possible for a closed inquiry (see status-preservation handling below,
-    # where `locked.status` is left untouched when it's already "closed").
+    # Deliberately no status==closed guard — a follow-up call must remain possible
+    # (locked.status is left untouched below when already "closed").
     if _call_in_flight(obj):
         raise HTTPException(
             status_code=409,
             detail="A call is already in progress for this inquiry. Wait for it to complete before placing another.",
         )
-    # Deliberately no "already successfully answered" guard: a follow-up
-    # call must remain possible even after a completed, answered call (e.g.
-    # the user has a further question) — the in-flight check above is the
-    # only duplicate-prevention needed.
+    # Deliberately no "already answered" guard — a follow-up call must remain
+    # possible (e.g. a further question); in-flight check above is the only guard.
 
-    # Manual call placement is intentionally independent of the email/fallback
-    # workflow — an inquiry that already has an email sent or a fallback call
-    # scheduled can still be called manually at any time. (Duplicate-call,
-    # closed, phone-number, test-call, and business-hours protections above
-    # and below still apply.)
+    # Manual call placement is independent of the email/fallback workflow — an
+    # inquiry with an email sent or fallback scheduled can still be called manually.
 
     mfr = db.get(ManufacturerContact, obj.manufacturer_id)
     if not mfr:
@@ -930,10 +903,8 @@ async def trigger_call(
     )
     if locked is None:
         raise HTTPException(status_code=404, detail="Inquiry not found")
-    # Re-check the guards on the now-locked row in case state changed between the
-    # initial read and the lock acquisition. Uses the same status-independent
-    # in-flight check as above, so this still catches a concurrent duplicate
-    # even when status is (and remains) "closed".
+    # Re-check guards on the now-locked row in case state changed since the initial
+    # read — same status-independent in-flight check, so it still catches a concurrent duplicate.
     if _call_in_flight(locked):
         raise HTTPException(
             status_code=409,
@@ -960,18 +931,11 @@ async def trigger_call(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to place call: {e}")
 
-    # Moving off "email_sent" here also cancels any pending fallback call:
-    # the background scanner (scheduler._scan_and_trigger_fallback_calls)
-    # only ever matches status == "email_sent", so once this manual call is
-    # placed the fallback job can never pick this inquiry up again, even if
-    # a fallback was already scheduled.
+    # Moving off "email_sent" also cancels any pending fallback call — the
+    # background scanner only ever matches status=="email_sent".
     now = _now()
-    # A closed inquiry stays closed — a follow-up call must never silently
-    # reopen it. call_scheduled_for/call_conversation_id/call_provider_status
-    # are still updated unconditionally below, both so the post-call webhook
-    # can find and record against this row, and so _call_in_flight() (which
-    # doesn't look at status at all) correctly detects this call as
-    # in-progress even while status stays "closed".
+    # Closed stays closed — call fields still update unconditionally below so the
+    # webhook can find this row and _call_in_flight() (status-independent) detects it.
     if locked.status != "closed":
         locked.status = "call_pending"
     locked.call_scheduled_for = now
@@ -979,19 +943,12 @@ async def trigger_call(
         resp.get("conversation_id") or resp.get("conversationId")
     )
     locked.call_provider_status = resp.get("status") or "initiated"
-    # Cleared on every new placement, not just the first — call_completed_at
-    # otherwise keeps holding the PRIOR call's completion timestamp for a
-    # follow-up call (status intentionally doesn't change for a closed
-    # inquiry, so it can't be used to tell "new call placed" apart from
-    # "old call already resolved"). Left stale, this new call's own webhook
-    # would be misread as a duplicate/already-resolved delivery by both
-    # routers.webhooks' guard and scheduler._reconcile_stuck_calls, and
-    # silently ignored.
+    # Cleared on every placement — otherwise it'd hold a prior call's completion
+    # timestamp, making this call's own webhook look like a stale duplicate.
     locked.call_completed_at = None
     locked.next_retry_at = None  # manual trigger cancels any pending auto-retry
-    # Only the manufacturer's actual first contact counts — if email was
-    # already sent, that (not this call) was first contact, so this is a
-    # no-op guard, not an overwrite.
+    # Only the actual first contact counts — if email was already sent, that (not
+    # this call) was first contact, so this is a no-op guard.
     if locked.first_contacted_at is None:
         locked.first_contacted_at = now
     call_log_service.start_call_log(
@@ -1214,21 +1171,16 @@ def record_call_result(
     """Manual entry point: lets a human (or another integration) attach the
     call result without going through the ElevenLabs webhook."""
     _get_or_404(db, inquiry_id, current_user)  # ownership/404 check
-    # Row lock: a manual entry can race with the webhook or the stuck-call
-    # reconciliation job resolving the same inquiry concurrently. Unlike
-    # those two automated writers, manual entry deliberately does NOT skip
-    # on obj.call_completed_at IS NOT NULL — a human explicitly recording a
-    # result is an intentional override, not a race, and is allowed to
-    # supersede an automated one.
+    # Row lock: can race with the webhook/reconciliation. Unlike those, manual
+    # entry deliberately does NOT skip on completed_at IS NOT NULL — it's an intentional override.
     obj = (
         db.query(Inquiry)
         .filter(Inquiry.id == inquiry_id)
         .with_for_update()
         .first()
     )
-    # Same closed-inquiry status preservation as trigger_call/webhooks —
-    # a manually-recorded result for a closed inquiry's follow-up call
-    # must not reopen it.
+    # Same closed-inquiry status preservation as trigger_call/webhooks — a
+    # manually-recorded result must not reopen a closed inquiry.
     if obj.status != "closed":
         obj.status = "call_completed"
     now = _now()
@@ -1265,9 +1217,8 @@ def close_inquiry(
     obj = _get_or_404(db, inquiry_id, current_user)
     obj.status = "closed"
     obj.email_scheduled_for = None  # cancel any pending schedule
-    # Write-once — closing an already-closed inquiry (should not normally
-    # happen; the frontend hides the button once closed) must not move the
-    # timestamp forward.
+    # Write-once — closing an already-closed inquiry (shouldn't normally happen)
+    # must not move the timestamp forward.
     if obj.closed_at is None:
         obj.closed_at = _now()
     db.commit()
@@ -1340,13 +1291,11 @@ async def reprocess_pdf(
     mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
 
     # Stage the delete inside the transaction — only committed if at least one
-    # upload succeeds. If everything fails, we never call db.commit() and the
-    # get_db finally-close rolls the delete back, leaving the original rows intact.
+    # upload succeeds; otherwise get_db's rollback restores the original rows.
     db.query(InquiryAttachment).filter(InquiryAttachment.inquiry_id == inquiry_id).delete()
 
-    # Clear backward-compat scalars now; they'll be set from the first
-    # successfully-uploaded attachment. If all uploads fail, the transaction
-    # rolls back and these assignments are discarded too.
+    # Clear backward-compat scalars now — set from the first successful upload
+    # below, or discarded on rollback if every upload fails.
     obj.pdf_url = None
     obj.pdf_filename = None
     obj.pdf_summary = None

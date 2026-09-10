@@ -30,9 +30,8 @@ from models import Inquiry, User
 
 log = logging.getLogger("inquiry.excel_writeback")
 
-# POST /api/v2/inquiries/open_mue_inquiries/{inquiry_uuid}/sheet
-#   ?access_token=<user staging token>
-#   form field: s3_url=<re-uploaded xlsx URL>
+# POST /api/v2/inquiries/open_mue_inquiries/{uuid}/sheet?access_token=<token>
+# form field: s3_url=<re-uploaded xlsx URL>
 V2_SHEET_PATH_TEMPLATE = "/api/v2/inquiries/open_mue_inquiries/{uuid}/sheet"
 _DOWNLOAD_TIMEOUT_SECONDS = 30
 
@@ -86,11 +85,8 @@ def _download(url: str, *, token: Optional[str]) -> bytes:
     from urllib.parse import urlparse
     host = (urlparse(url).hostname or "").lower()
     final_url = url
-    # Inject access_token ONLY for InpharmD's app host (heroku/localhost).
-    # Skip *.amazonaws.com — presigned URLs depend on the exact query string
-    # so merging extra params via httpx clobbers AWSAccessKeyId/Signature
-    # /Expires and the request 403s. Our own bucket inpharmd-assistant.s3
-    # matches the loose "inpharmd in host" test, which is the bug this fixes.
+    # Inject access_token only for InpharmD's app host — *.amazonaws.com is
+    # skipped since merging params into a presigned URL breaks its signature.
     if (
         token
         and not host.endswith(".amazonaws.com")
@@ -110,9 +106,8 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
     endpoint. Auth is the per-user staging access_token (query param), payload
     is multipart form with a single `s3_url` field — matches the API doc."""
     try:
-        # Inside the try: _base_url() raises InpharmdConfigError when
-        # INPHARMD_API_BASE_URL is unset, and this function must return a bool
-        # rather than propagate.
+        # _base_url() raises InpharmdConfigError when unset — this function must
+        # return a bool rather than propagate.
         base = inpharmd_service._base_url()
     except inpharmd_service.InpharmdConfigError as e:
         log.error("excel_writeback: v2 sheet POST skipped — %s", e)
@@ -258,11 +253,8 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         )
         return False
 
-    # Latest version wins — but "latest" is across ALL siblings sharing this
-    # source_inquiry_uuid (one MUE Excel forwarded to N manufacturers). If we
-    # only looked at this inquiry's own excel_response_url, later responses
-    # would download the original (sans earlier sibling edits) and clobber
-    # them on re-upload.
+    # "Latest" spans ALL siblings sharing source_inquiry_uuid — using only this
+    # inquiry's own URL would clobber earlier siblings' edits on re-upload.
     base_url = _pick_latest_excel_url(db, inquiry)
     token = _pick_user_token(db, inquiry)
     if not token:
@@ -309,12 +301,8 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         inquiry.id, len(updated_bytes),
     )
 
-    # Upload the updated workbook to a SINGLE deterministic key per MUE
-    # inquiry. Every reply for the same source_inquiry_uuid overwrites the
-    # same object — one file in S3 per MUE inquiry, not N.
-    # The presigned URL returned here changes per call (fresh signature),
-    # but it always points at the same key holding the latest cumulative
-    # state. Format-aware: a CSV source stays a CSV on the way out.
+    # One deterministic S3 key per MUE inquiry — every reply overwrites the same
+    # object (fresh presigned URL each time); format-aware, CSV stays CSV.
     fmt = "csv" if updated_bytes[:4] != b"PK\x03\x04" else "xlsx"
     if fmt == "csv":
         ext = "csv"
@@ -342,7 +330,6 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         inquiry.id, new_url[:200],
     )
 
-    # Tell the platform the new file is available.
     log.info(
         "pipeline: writeback step 4/4 (v2 POST /sheet) inquiry=%s uuid=%s",
         inquiry.id, inquiry.source_inquiry_uuid,

@@ -132,9 +132,8 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         # Event-level legacy POST dedup key — "call:<conversation_id>" or "email:<EmailReply.id>".
         # Replaces the attachment-count heuristic with true per-event identity.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS legacy_last_event_key VARCHAR(255)",
-        # Set when an outbound-call HTTP request times out with no response, so we can't
-        # tell whether ElevenLabs actually placed the call. While non-null, the inquiry is
-        # excluded from automatic fallback/retry call placement.
+        # Set when an outbound-call request times out with no response (unknown if
+        # ElevenLabs placed it) — while non-null, excluded from auto retry/fallback.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_outcome_unknown_until TIMESTAMPTZ",
         # Groups inquiries from one bulk_create_inquiries email dispatch for batch-level
         # Slack notifications (schedule + completion).
@@ -148,18 +147,14 @@ CREATE TABLE IF NOT EXISTS dailymed_cache (
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS first_contacted_at TIMESTAMPTZ",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS no_response_notified_at TIMESTAMPTZ",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ",
-        # One-time backfill for inquiries closed before this column existed —
-        # safe to re-run on every startup: WHERE excludes non-closed rows
-        # entirely and excludes already-backfilled/newly-set rows, so this
-        # is a no-op after the first successful run.
+        # One-time backfill for inquiries closed before this column existed — the
+        # WHERE clause makes it a no-op on every subsequent startup.
         "UPDATE inquiries SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL",
         # Stuck-call reconciliation tracking (see scheduler._reconcile_stuck_calls).
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_reconcile_failure_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS call_reconcile_next_attempt_at TIMESTAMPTZ",
-        # Per-call history — one row per physical call placed for an inquiry
-        # (initial, retries, fallback, every follow-up), so repeat calls no
-        # longer overwrite each other's transcript/summary the way the
-        # single-row inquiries.call_* columns do. See models.CallLog.
+        # Per-call history — one row per physical call (initial, retries, fallback,
+        # follow-ups), so repeats don't overwrite the single-row call_* columns.
         """
 CREATE TABLE IF NOT EXISTS call_logs (
     id              SERIAL PRIMARY KEY,
@@ -177,15 +172,8 @@ CREATE TABLE IF NOT EXISTS call_logs (
 """,
         "CREATE INDEX IF NOT EXISTS ix_call_logs_inquiry_id ON call_logs (inquiry_id)",
         "CREATE INDEX IF NOT EXISTS ix_call_logs_conversation_id ON call_logs (conversation_id)",
-        # One-time backfill: every inquiry that already has a call on record
-        # (under the old single-row model) gets exactly one CallLog row
-        # representing it, so existing calls aren't invisible to the new
-        # history view. NOT EXISTS makes this safe to re-run on every
-        # startup — an inquiry only ever gets backfilled once, even if it
-        # places new (separately-logged) calls afterward. Pre-existing
-        # completed calls are backfilled as already resolved (resolved_at =
-        # completed_at) since we cannot know in hindsight whether a webhook
-        # or submit_answer alone produced the stored result.
+        # One-time backfill: gives every pre-existing call a CallLog row (NOT EXISTS
+        # keeps this idempotent); backfilled rows are marked already-resolved.
         """
 INSERT INTO call_logs (inquiry_id, conversation_id, is_test_call, started_at, completed_at, resolved_at, provider_status, transcript, summary)
 SELECT
@@ -202,18 +190,16 @@ FROM inquiries i
 WHERE i.call_conversation_id IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM call_logs cl WHERE cl.inquiry_id = i.id)
 """,
-        # Original platform attachment list + cached structured-field
-        # extraction for the stability-excursion email template. See
-        # models.Inquiry and attachment_extraction_service.py.
+        # Original platform attachment list + cached structured-field extraction
+        # for the stability-excursion email template. See attachment_extraction_service.py.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_attachments_json TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS attachment_extraction_cache TEXT",
         # Raw "Temperature Excursion Request" text from InpharmD (API field
         # `mue_details`) — see models.Inquiry.mue_details.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS mue_details TEXT",
     ]
-    # Each statement runs in its own transaction so a Postgres error on one
-    # statement does not abort the rest (a single engine.begin() block puts
-    # all subsequent conn.execute() calls in aborted state after any failure).
+    # Each statement runs in its own transaction — one engine.begin() block would
+    # put all subsequent conn.execute() calls in aborted state after a failure.
     for sql in statements:
         try:
             with engine.begin() as conn:

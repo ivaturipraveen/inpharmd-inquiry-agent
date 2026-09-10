@@ -71,17 +71,11 @@ def _build_body(
     pi_link: Optional[str] = None,
     team_name: Optional[str] = None,
     is_followup: bool = False,
-    # Raw InpharmD "Temperature Excursion Request" text (API field
-    # `mue_details`), distinct from `question`. Appended as an unlabeled
-    # second paragraph inside the client-approved "Additional details"
-    # bullet, right after the question — never a new bullet/label of its
-    # own, and omitted entirely when empty. is_followup=True ignores it —
-    # a manual follow-up isn't the original MUE submission.
+    # Appended as an unlabeled 2nd paragraph inside the existing "Additional
+    # details" bullet — never its own bullet; skipped when is_followup=True.
     mue_details: Optional[str] = None,
-    # Temperature-excursion / product-detail fields for the new template
-    # (see attachment_extraction_service.py). All optional/default None —
-    # every field renders as "Not provided" when absent, so this never
-    # breaks or looks malformed for an inquiry with no extracted data.
+    # Product/excursion fields for the new template (see
+    # attachment_extraction_service.py) — render as "Not provided" when absent.
     strength: Optional[str] = None,
     dosage_form: Optional[str] = None,
     ndc: Optional[str] = None,
@@ -176,11 +170,6 @@ def _build_body(
     signature_plain = "\n".join(sig_lines_plain)
     signature_html = "<p>" + "<br>\n".join(sig_lines_html) + "</p>"
 
-    # "Additional details" is the client-approved bullet for the free-text
-    # question — do not remove it. mue_details (InpharmD's separate
-    # "Temperature Excursion Request" text) is appended right after the
-    # question, inside this same bullet, as an unlabeled second paragraph —
-    # never a new bullet/label of its own, and omitted entirely when empty.
     mue_text = (mue_details or "").strip() or None
     additional_details_value = f"{question}\n{mue_text}" if mue_text else question
 
@@ -302,11 +291,8 @@ def send_inquiry_email(
     """
     cfg = SendGridConfig.from_env()
 
-    # Inquiry.subject is the single source of truth — the caller always
-    # passes the current, already-tag-guaranteed value (see
-    # routers.inquiries._with_subject_tag), so it's sent verbatim here. Do
-    # not rebuild it: users can freely edit it after creation, and that edit
-    # must be what actually goes out in the email.
+    # Sent verbatim — the caller already guarantees the tag (see
+    # routers.inquiries._with_subject_tag); don't rebuild it or user edits are lost.
     tagged_subject = subject
     plain, html = _build_body(
         inquiry_id=inquiry_id,

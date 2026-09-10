@@ -180,9 +180,8 @@ def _get_body(msg: dict) -> str:
 
 def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     """Process one Graph message. Returns reply data if the inquiry was updated, else None."""
-    # When Graph mark-read is unavailable (missing Mail.ReadWrite), messages
-    # stay unread and re-appear on every poll. Skip anything we've already
-    # touched this process lifetime so we don't spam logs / API calls.
+    # When mark-read is unavailable (missing Mail.ReadWrite), unread messages
+    # reappear every poll — skip anything already touched this process lifetime.
     if msg["id"] in _PROCESSED_MESSAGE_IDS:
         return None
     subject = msg.get("subject", "") or ""
@@ -203,11 +202,8 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         log.info("Reply tagged inquiry %s but no such record; skipping", inquiry_id)
         _mark_read(token, mailbox, msg["id"])
         return None
-    # Deliberately no "status == closed" skip here: routers.inquiries.
-    # send_followup_email reuses this same subject tag for follow-up emails
-    # sent on closed inquiries, so a manufacturer's reply to one must still
-    # be captured (see the closed-status guard below instead, which records
-    # the reply without reopening the inquiry).
+    # No status==closed skip here — follow-up emails reuse this tag, so a reply
+    # to one must still be captured (closed-status guard is below instead).
 
     # Dedup by Graph message ID — prevents the same email from being processed
     # twice across process restarts or concurrent deploys.
@@ -242,11 +238,8 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         inquiry_id, sender, mfr_name, len(body or ""), len(reply or ""),
     )
 
-    # ---- Document attachments (one or more) ----
-    # Build a lowercased copy of the raw HTML body once so we can do a fast
-    # case-insensitive substring check for each attachment's Content-ID.
-    # Only populated when the message body is HTML; plain-text bodies never
-    # contain cid: references so we leave it empty and skip the check.
+    # Lowercase the HTML body once for a fast CID substring check per attachment;
+    # left empty for plain-text bodies (no cid: references to match).
     _body_block = msg.get("body") or {}
     _html_body_lower = (
         (_body_block.get("content") or "").lower()
@@ -261,10 +254,8 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
             doc = _download_attachment(token, mailbox, msg["id"], meta["id"], meta["name"])
             if not doc:
                 continue
-            # Skip CID-referenced inline images (e.g. email-signature logos).
-            # Strip angle brackets that some clients wrap around the Content-ID
-            # value, then check whether cid:{id} appears in the HTML body.
-            # isInline is intentionally not used — it is unreliable across clients.
+            # Skip CID-referenced inline images (e.g. signature logos) by checking
+            # cid:{id} in the HTML body — isInline is unreliable across clients.
             _cid = (doc.get("content_id") or "").strip("<>").lower()
             if _cid and _html_body_lower and f"cid:{_cid}" in _html_body_lower:
                 log.info(
@@ -280,9 +271,8 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         _mark_read(token, mailbox, msg["id"])
         return None
 
-    # Create the EmailReply row with the plain-text body. Flush to get reply_id
-    # before process_attachments links InquiryAttachment rows to it.
-    # We update body below once we have the attachment summary as a fallback.
+    # Create the EmailReply row and flush to get reply_id before linking
+    # attachments; body is updated below with the attachment-summary fallback.
     email_reply = EmailReply(
         inquiry_id=inquiry_id,
         direction="inbound",
@@ -319,11 +309,8 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     if is_first_reply:
         obj.email_response = reply_text
         obj.email_response_at = email_reply.sent_at
-        # A closed inquiry stays closed — a reply to a follow-up email sent
-        # after closing must not silently reopen it. email_response/
-        # email_response_at/final_answer are still recorded normally above
-        # and below regardless of status, matching the same pattern used for
-        # follow-up calls (routers.agent_tools, call_outcome_service).
+        # Closed stays closed — a follow-up reply must not reopen it; fields are
+        # still recorded regardless (same pattern as follow-up calls).
         if obj.status != "closed":
             obj.status = "email_responded"
         obj.next_retry_at = None
@@ -333,9 +320,8 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
         obj.pdf_filename = pdf_filename
         obj.pdf_summary = pdf_summary
     else:
-        # Subsequent reply: re-synthesize final_answer from ALL replies in order,
-        # each with its body + attachment summaries, so downstream systems always
-        # receive the most complete answer.
+        # Subsequent reply: re-synthesize final_answer from ALL replies in order
+        # (body + attachment summaries) so downstream always gets the full picture.
         all_replies = (
             db.query(EmailReply)
             .filter(EmailReply.inquiry_id == obj.id)
@@ -477,9 +463,8 @@ def _download_attachment(
     name = (data.get("name") or original_name or "attachment").replace("\x00", "").strip()[:512] or "attachment"
     ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     content_type = inbound_attachment_service.SUPPORTED_EXTENSIONS.get(ext, "application/octet-stream")
-    # contentId is the MIME Content-ID for this attachment (e.g. "logo@company.com" or
-    # "<logo@company.com>"). Returned here so callers can detect CID-referenced inline
-    # images without relying on the unreliable isInline flag.
+    # MIME Content-ID for this attachment — returned so callers can detect
+    # CID-referenced inline images without relying on unreliable isInline.
     content_id = (data.get("contentId") or "").strip()
     return {"name": name, "bytes": raw, "content_type": content_type, "content_id": content_id}
 

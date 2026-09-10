@@ -25,9 +25,8 @@ from openpyxl.workbook import Workbook
 
 log = logging.getLogger("inquiry.excel")
 
-# How the writeback / extract paths tell xlsx and csv apart. xlsx is just a
-# zip — the first bytes are the PK\x03\x04 ZIP local-file-header signature.
-# Anything else, we treat as csv (covers utf-8, latin-1, with or without BOM).
+# xlsx is a zip — first bytes are the PK\x03\x04 signature; anything else
+# is treated as csv (utf-8, latin-1, with or without BOM).
 _XLSX_MAGIC = b"PK\x03\x04"
 
 
@@ -47,10 +46,8 @@ def _decode_csv(buf: bytes) -> str:
             continue
     return buf.decode("utf-8", errors="replace")
 
-# Header search patterns are ordered — the parser picks the FIRST tier that
-# matches anywhere in the workbook. We prefer the Medication/Vaccine column
-# over a generic "Manufacturer" so we don't grab e.g. "Fridge/Freezer
-# Manufacturer" by accident in stability-excursion templates.
+# Tiers are ordered — first match wins, so Medication/Vaccine beats a generic
+# "Manufacturer" (avoids grabbing e.g. "Fridge/Freezer Manufacturer").
 MEDICATION_NAME_HEADER_TIERS: tuple[tuple[set[str], tuple[str, ...]], ...] = (
     ({"medication", "name"}, ("medicationname", "vaccinename", "medicationvaccinename")),
     ({"vaccine", "name"}, ()),
@@ -280,7 +277,6 @@ def _extract_from_csv(csv_bytes: bytes) -> tuple[list[ExtractedRow], ColumnLocat
             f"Could not find a Manufacturer column in the CSV. Headers I saw: {preview or '(none)'}"
         )
 
-    # Find optional extra columns
     def _find_csv_col(tiers):
         for required_tokens, exact_norms in tiers:
             for idx, n, _toks in indexed:
@@ -353,7 +349,6 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
                 "Could not find a Manufacturer column in the workbook. "
                 f"Headers I saw: {preview}"
             )
-        # Optionally find Medication/Vaccine Name, PI Storage, and NDC columns
         med_loc = _find_column(wb, MEDICATION_NAME_HEADER_TIERS)
         pi_loc = _find_column(wb, PI_STORAGE_HEADER_TIERS)
         ndc_loc = _find_column(wb, NDC_HEADER_TIERS)
@@ -370,7 +365,6 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
 
         ws = wb[loc.sheet_name]
 
-        # Determine column range to iterate (span all detected columns at once)
         all_cols = [loc.col]
         if med_loc and med_loc.sheet_name == loc.sheet_name:
             all_cols.append(med_loc.col)
@@ -386,9 +380,8 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
             ws.iter_rows(min_row=loc.header_row + 1, min_col=min_col, max_col=max_col),
             start=loc.header_row + 1,
         ):
-            # Build column-index → value map using iteration position, not
-            # c.column, because openpyxl read-only mode returns EmptyCell
-            # objects for empty cells which have no .column attribute.
+            # Map by iteration position, not c.column — openpyxl read-only mode returns
+            # EmptyCell objects for empty cells, which have no .column attribute.
             cell_map: dict[int, str] = {}
             for col_pos, c in enumerate(row_cells, start=min_col):
                 cell_map[col_pos] = str(c.value).strip() if c.value is not None else ""
@@ -408,9 +401,6 @@ def extract_manufacturer_rows(xlsx_bytes: bytes) -> tuple[list[ExtractedRow], Co
         return rows, loc, extra_cols
     finally:
         wb.close()
-
-
-# ──────────────────────────── Matching ────────────────────────────
 
 
 @dataclass
@@ -459,7 +449,6 @@ def match_manufacturers(
             out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none", **extra))
             continue
 
-        # 1) exact
         m = by_norm.get(nkey)
         if m:
             out.append(
@@ -469,7 +458,6 @@ def match_manufacturers(
             )
             continue
 
-        # 2) substring either way
         sub_hit = None
         for mnorm, mtoks, candidate in indexed:
             if not mnorm:
@@ -485,7 +473,6 @@ def match_manufacturers(
             )
             continue
 
-        # 3) token superset
         loose_hit = None
         for mnorm, mtoks, candidate in indexed:
             if rtoks and rtoks.issubset(mtoks):
@@ -501,9 +488,6 @@ def match_manufacturers(
 
         out.append(ManufacturerMatch(row.row_index, row.raw_name, None, None, "none", **extra))
     return out
-
-
-# ─────────────────────────── Writeback ───────────────────────────
 
 
 def _write_response_csv(

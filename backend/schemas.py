@@ -114,9 +114,8 @@ class InquiryBase(BaseModel):
     requester_name: Optional[str] = None
     requester_email: Optional[str] = None
     fallback_after_hours: int = 24
-    # Set when this inquiry was forwarded from an InpharmD platform inquiry.
-    # We POST the manufacturer's response back to the legacy endpoint using
-    # this uuid once a final answer is captured.
+    # Set when forwarded from an InpharmD platform inquiry — used to POST the
+    # manufacturer's response back to the legacy endpoint.
     source_inquiry_uuid: Optional[str] = None
     # Set when forwarded from a MUE inquiry with an Excel attachment, so the
     # response writeback can find the right row to update.
@@ -136,14 +135,11 @@ class InquiryCreate(InquiryBase):
 # ---------- Bulk dispatch (multiple manufacturers, one query) ----------
 class BulkTarget(BaseModel):
     manufacturer_id: int
-    # Optional per-target row index in the source Excel.
     source_excel_row: Optional[int] = None
-    # Product details extracted from the MUE Excel for this row.
     medication_name: Optional[str] = None
     pi_storage_data: Optional[str] = None
-    # Per-target override of the batch-level fallback_after_hours below.
-    # None (the default) means "use the batch-level value" — this keeps the
-    # Excel/MUE bulk flow (which never sets this) unchanged.
+    # Per-target override of the batch-level fallback_after_hours — None means
+    # "use the batch-level value" (keeps the Excel/MUE flow unchanged).
     fallback_after_hours: Optional[int] = None
     # DailyMed-enriched fields (populated by the extract-manufacturers endpoint).
     pi_link: Optional[str] = None
@@ -164,21 +160,16 @@ class BulkInquiryCreate(BaseModel):
     source_inquiry_uuid: Optional[str] = None
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
-    # Original attachments from the source InpharmD platform inquiry (all of
-    # them, not just the MUE Excel workbook) — stored verbatim as JSON on
-    # each created Inquiry for later, on-demand, best-effort structured-field
-    # extraction. See models.Inquiry.source_attachments_json.
+    # All original attachments from the source InpharmD inquiry (not just the
+    # MUE workbook) — stored as JSON for later extraction; see models.Inquiry.
     attachments: Optional[list[SourceAttachment]] = None
-    # Raw content of InpharmD's "Temperature Excursion Request" form field
-    # (API key `mue_details`), distinct from `question`. Same for every
-    # target in the batch — see models.Inquiry.mue_details.
+    # Raw "Temperature Excursion Request" text (API field mue_details),
+    # distinct from question — same for every target in the batch.
     mue_details: Optional[str] = None
     # Same requesting team for every manufacturer in the batch (not per-target).
     team_name: Optional[str] = None
-    # Dispatch channel applied to every created inquiry:
-    #   "email" — send email to each manufacturer (default)
-    #   "call"  — place a voice-agent call to each manufacturer
-    #   "none"  — create as drafts only; user dispatches later from Outreach
+    # Dispatch channel for every created inquiry: "email" (default), "call",
+    # or "none" (drafts only, dispatched later from Outreach).
     dispatch_channel: str = "email"
     # Legacy alias kept so the previous send_email=True payload still works.
     send_email: Optional[bool] = None

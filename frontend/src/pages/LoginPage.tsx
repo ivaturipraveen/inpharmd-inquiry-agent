@@ -34,7 +34,6 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // OTP step
   const [otpState, setOtpState] = useState<OtpState | null>(null);
   const [otp, setOtp] = useState("");
   const [resending, setResending] = useState(false);
@@ -121,7 +120,6 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
     </div>
   );
 
-  // ── OTP screen ──────────────────────────────────────────────────────────────
   if (otpState) {
     return (
       <main className="auth-page">
@@ -179,7 +177,6 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
     );
   }
 
-  // ── Sign-in screen ───────────────────────────────────────────────────────────
   return (
     <main className="auth-page">
       <div className="auth-card">

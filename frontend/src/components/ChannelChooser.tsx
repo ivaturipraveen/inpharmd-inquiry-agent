@@ -37,11 +37,8 @@ const ChannelChooser: FC<Props> = ({
   const m = manufacturers[0];
   const isMulti = manufacturers.length > 1;
 
-  // Single source of truth for channel eligibility: each manufacturer's own
-  // preferred_channel decides which one card applies to them — never "every
-  // card whose contact field happens to be populated". A manufacturer with
-  // preferred_channel="Phone" who also has an email on file is NOT counted
-  // as email-eligible.
+  // Each manufacturer's own preferred_channel decides which card applies —
+  // never inferred from which contact fields happen to be populated.
   const buckets = bucketByPreferredChannel(manufacturers);
 
   const emailEligibleCount = buckets.email.length;
@@ -49,21 +46,15 @@ const ChannelChooser: FC<Props> = ({
   const inHours = isWithinBusinessHoursNow(m?.mi_phone_hours);
   const outOfHours = inHours === false;
 
-  // Every manufacturer whose preferred channel is Web Form AND who has a
-  // URL on file. Kept per-manufacturer (not deduped) so each can be listed
-  // and opened individually — most browsers block every window.open() after
-  // the first one triggered by a single click, so a bulk "open all" button
-  // can silently drop later tabs.
+  // Kept per-manufacturer (not deduped) so each can be opened individually —
+  // browsers block window.open() calls after the first per click.
   const webFormManufacturers = buckets.webform as (ManufacturerContact & { mi_web_form_url: string })[];
   const webFormCapableCount = webFormManufacturers.length;
   const webFormUrls = Array.from(new Set(webFormManufacturers.map(x => x.mi_web_form_url)));
   const webFormLabel = webFormCapableCount === 1 ? "Open Web Form" : "Open Web Forms";
 
-  // Manufacturers whose preferred channel is a supported one but the
-  // required contact field is missing, or whose preferred channel has no
-  // outreach mechanism in this app at all. Never silently offered another
-  // channel — surfaced explicitly instead (see the "needs attention" block
-  // in the render below).
+  // Manufacturers with a missing required field, or no supported outreach
+  // mechanism at all — surfaced explicitly, never silently reassigned.
   const attentionItems: { name: string; reason: string }[] = [
     ...buckets.emailUnreachable.map(x => ({
       name: x.manufacturer,

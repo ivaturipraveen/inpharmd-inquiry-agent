@@ -39,17 +39,14 @@ _NO_RESPONSE_TICK_SECONDS = int(os.getenv("NO_RESPONSE_TICK_SECONDS", "1800"))
 # outreach pending, before the Slack notice fires.
 NO_RESPONSE_ALERT_HOURS = int(os.getenv("NO_RESPONSE_ALERT_HOURS", "48"))
 
-# Stuck-call reconciliation (see _reconcile_stuck_calls). A call_pending
-# inquiry with no confirming webhook is otherwise stuck forever — this job
-# polls ElevenLabs directly using call_conversation_id to recover.
+# Stuck-call reconciliation — a call_pending inquiry with no confirming
+# webhook is otherwise stuck forever; this polls ElevenLabs to recover.
 CALL_RECONCILE_TICK_SECONDS = int(os.getenv("CALL_RECONCILE_TICK_SECONDS", "300"))
 CALL_STUCK_THRESHOLD_MINUTES = int(os.getenv("CALL_STUCK_THRESHOLD_MINUTES", "10"))
 CALL_RECONCILE_MAX_AGE_HOURS = int(os.getenv("CALL_RECONCILE_MAX_AGE_HOURS", "24"))
 CALL_RECONCILE_BATCH_SIZE = int(os.getenv("CALL_RECONCILE_BATCH_SIZE", "25"))
-# Exponential backoff for consecutive provider-poll failures (timeout,
-# network error, invalid response) — NOT applied when the provider
-# successfully confirms the call is still in progress, which keeps the full
-# 5-minute cadence instead.
+# Exponential backoff for consecutive poll failures — NOT applied when the
+# provider confirms still-in-progress, which keeps the full 5-min cadence.
 _CALL_RECONCILE_BACKOFF_BASE_MINUTES = 5
 _CALL_RECONCILE_BACKOFF_CAP_MINUTES = 180
 CALL_UNRESOLVED_MESSAGE = (
@@ -86,9 +83,8 @@ def _due_inquiries(db):
                 # Fallback calls (email_sent_at set) are one-shot; the webhook marks
                 # them needs_attention directly rather than feeding the retry loop.
                 Inquiry.email_sent_at.is_(None),
-                # A prior attempt's outcome is unresolved (HTTP timeout, no response) —
-                # unconditionally excluded regardless of how long ago that was; only a
-                # webhook match or _resolve_ambiguous_call_timeouts clears this.
+                # A prior attempt's outcome is unresolved — unconditionally excluded until
+                # a webhook match or _resolve_ambiguous_call_timeouts clears it.
                 Inquiry.call_outcome_unknown_until.is_(None),
             )
         )
@@ -116,9 +112,8 @@ def _place_retry(db, obj: Inquiry) -> None:
             requester_email=obj.requester_email,
         )
     except call_service.CallOutcomeUnknown:
-        # The request timed out with no response — we cannot tell whether ElevenLabs
-        # already placed the call. Do NOT leave this eligible for another automatic
-        # retry; park it until a webhook resolves it or the window expires to needs_attention.
+        # Timed out with no response — can't tell if ElevenLabs placed the call;
+        # park it until a webhook resolves it or the window expires.
         obj.call_outcome_unknown_until = _now() + timedelta(minutes=10)
         log.warning(
             "Retry call for inquiry %s timed out with unknown outcome; parked until %s",
@@ -195,10 +190,8 @@ def _scan_and_send_pending_emails() -> None:
 
     log.info("Scheduled email scan: %s due", len(pending))
 
-    # Build a map of inquiry_id → manufacturer from the initial unlocked read.
-    # This avoids re-joining in the FOR UPDATE query below — PostgreSQL rejects
-    # SELECT FOR UPDATE on the nullable side of an outer join (which joinedload
-    # produces), so the per-group locked query must not use joinedload.
+    # Map built from the initial unlocked read — Postgres rejects SELECT FOR
+    # UPDATE on the nullable side of an outer join, so the locked query can't joinedload.
     mfr_by_inquiry: dict[int, ManufacturerContact] = {}
     for obj in pending:
         if obj.manufacturer:
@@ -228,9 +221,8 @@ def _scan_and_send_pending_emails() -> None:
 
             try:
                 import attachment_extraction_service
-                # Best-effort — never raises; falls back to "" fields (the
-                # template's normal "Not provided" placeholders) if nothing
-                # was extractable or extraction failed.
+                # Best-effort — never raises; falls back to "" fields (the template's
+                # "Not provided" placeholders) if extraction failed.
                 excursion_fields = attachment_extraction_service.get_or_extract(
                     db2, locked, manufacturer_name=mfr.manufacturer
                 )
@@ -292,11 +284,7 @@ def _notify_completed_bulk_batches() -> None:
     db = SessionLocal()
     try:
         # Self-heal: bulk_create_inquiries may have failed to persist the
-        # BulkEmailBatch tracking row for a batch that was otherwise scheduled
-        # successfully (see the try/except around that insert). Backfill any
-        # bulk_batch_id present on Inquiry rows with no corresponding
-        # BulkEmailBatch row, so a transient failure there doesn't
-        # permanently strand the batch without a completion notification.
+        # BulkEmailBatch row — backfill any orphaned bulk_batch_id so it isn't stranded.
         existing_batch_ids = {b[0] for b in db.query(BulkEmailBatch.batch_id).all()}
         referenced_batch_ids = {
             b[0] for b in db.query(Inquiry.bulk_batch_id)
@@ -345,10 +333,8 @@ def _notify_completed_bulk_batches() -> None:
             if not members:
                 continue
 
-            # email_sent_at is only ever set at the moment of an actual send
-            # (below, and in POST /{id}/send-now) — unlike status, which can
-            # reach "closed" without an email ever going out (see
-            # close_inquiry, which sets status="closed" unconditionally).
+            # email_sent_at is only set at an actual send — unlike status, which can
+            # reach "closed" without an email ever going out (see close_inquiry).
             cancelled = [m for m in members if m.email_sent_at is None]
             sent_members = [m for m in members if m.email_sent_at is not None]
             sent_count = len(sent_members)
@@ -515,10 +501,8 @@ def _scan_and_trigger_fallback_calls() -> None:
                     requester_email=locked.requester_email,
                 )
             except call_service.CallOutcomeUnknown:
-                # The request timed out with no response — ElevenLabs may have already
-                # placed the call. Do NOT leave this row eligible for another automatic
-                # fallback attempt; park it until a webhook resolves it or the window
-                # expires to needs_attention (see _resolve_ambiguous_call_timeouts).
+                # Timed out with no response — ElevenLabs may have placed the call; park it
+                # until a webhook resolves it or the window expires (see _resolve_ambiguous_call_timeouts).
                 locked.call_outcome_unknown_until = _now() + timedelta(minutes=10)
                 db2.commit()
                 log.warning(
@@ -806,9 +790,8 @@ def _notify_no_response() -> None:
                 .with_for_update(skip_locked=True)
                 .first()
             )
-            # _no_response_eligible() is the single authoritative check for
-            # status + final_answer nuance (see its docstring) — not
-            # duplicated in this query's WHERE clause.
+            # _no_response_eligible() is the single authoritative check for status +
+            # final_answer nuance (see its docstring) — not duplicated in the WHERE clause.
             if not locked or not _no_response_eligible(locked):
                 db2.close()
                 continue
@@ -881,22 +864,15 @@ def _reconcile_stuck_calls() -> None:
     stuck_cutoff = now - timedelta(minutes=CALL_STUCK_THRESHOLD_MINUTES)
 
     def _force_unresolved(db_: Session, locked: Inquiry, message: str) -> None:
-        # A closed inquiry stays closed — an unresolved follow-up call must
-        # never reopen it into needs_attention. final_answer is still
-        # recorded (only as a fallback — see the `or` below — so an
-        # existing real answer from before the inquiry was closed is never
-        # overwritten) and reconciliation tracking is still cleared either
-        # way, matching the same pattern used everywhere else in this
-        # feature (apply_call_outcome, routers.inquiries, agent_tools).
+        # Closed stays closed — an unresolved follow-up call must never reopen it.
+        # final_answer/reconciliation tracking still update, matching other needs_attention sites.
         if locked.status != "closed":
             locked.status = "needs_attention"
         locked.final_answer = locked.final_answer or message
         locked.call_reconcile_failure_count = 0
         locked.call_reconcile_next_attempt_at = None
-        # Marks the CallLog for this specific call resolved too, with no
-        # fabricated transcript/summary — otherwise it would stay "open"
-        # forever and could be mismatched onto by a later, genuinely new
-        # follow-up call's completion write.
+        # Also resolves this call's CallLog with no fabricated data — otherwise it
+        # stays "open" and could be mismatched by a later follow-up call's write.
         call_log_service.force_close_call_log(db_, locked)
 
     # ---- Phase 1: past the 24h ceiling — no polling, ever. ----
@@ -906,16 +882,8 @@ def _reconcile_stuck_calls() -> None:
             r[0]
             for r in db.query(Inquiry.id)
             .filter(
-                # "closed" is included alongside "call_pending" because a
-                # follow-up call placed on a closed inquiry deliberately
-                # never changes status away from "closed" (see
-                # routers.inquiries.trigger_call) — without it here, such a
-                # call would never be eligible for reconciliation at all if
-                # its webhook is missed. call_completed_at IS NULL is what
-                # actually identifies an outstanding call now that
-                # trigger_call clears it on every new placement (including
-                # follow-up calls, which previously left a prior call's
-                # stale completion timestamp in place).
+                # "closed" is included since a follow-up call on a closed inquiry never
+                # changes status; call_completed_at IS NULL is what actually flags an outstanding call.
                 Inquiry.status.in_(("call_pending", "closed")),
                 Inquiry.call_conversation_id.isnot(None),
                 Inquiry.call_completed_at.is_(None),
@@ -1016,14 +984,8 @@ def _reconcile_stuck_calls() -> None:
                 db2.close()
                 continue
 
-            # Re-check the ceiling under lock — time may have advanced past
-            # it since the outer query ran (or another tick's phase 1 missed
-            # it due to the batch cap). Done as a query-level comparison
-            # (matching every other datetime check in this module) rather
-            # than a raw Python comparison against the already-fetched
-            # attribute, since SQLite (tests) round-trips
-            # DateTime(timezone=True) as tz-naive and a direct Python
-            # comparison against an aware `_now()` would raise.
+            # Re-check the ceiling under lock via a query comparison, not a Python
+            # comparison — SQLite (tests) round-trips DateTime as tz-naive, which would raise.
             past_ceiling = (
                 db2.query(Inquiry.id)
                 .filter(
@@ -1126,11 +1088,8 @@ def schedule_retry_after_failure(db, obj: Inquiry, delay_minutes: int = 2) -> No
         log.info("Inquiry %s is a test call; skipping retry scheduling", obj.id)
         return
 
-    # A closed inquiry must never be silently reopened by an automatic
-    # retry — a follow-up call on a closed inquiry is a one-off manual
-    # action, not the start of a retry loop. Called from both
-    # routers/agent_tools.py (submit_answer) and routers/webhooks.py
-    # (post-call webhook), so guarding here covers both call sites.
+    # A closed inquiry must never be silently reopened by an automatic retry —
+    # a follow-up call is a one-off action, not the start of a retry loop.
     if obj.status == "closed":
         log.info("Inquiry %s is closed; not scheduling an automatic retry", obj.id)
         return
