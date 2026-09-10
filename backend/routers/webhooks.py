@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 import legacy_response_service
 import summary_service
 from call_outcome_service import apply_call_outcome
+from call_service import IN_PROGRESS_STATUSES, classify_terminal_provider_status
 from database import get_db
 from models import CallLog, Inquiry, UnmatchedCallWebhook
 
@@ -207,17 +208,40 @@ async def elevenlabs_post_call(
     summary = _extract_summary(body)
     transcript = _extract_transcript(body)
 
-    # ElevenLabs payload may include duration / status — treat short/no-answer calls as voicemail
-    raw_provider_status = body.get("status") or "completed"
-    duration = (
-        body.get("duration_seconds")
-        or (body.get("data") or {}).get("duration_seconds")
-        or 0
+    # Real ElevenLabs post-call payload nests everything under `data` (verified against a live captured delivery) — status/duration/analysis are NOT top-level. Checking top-level too is lenient backward-compat for any flatter payload shape, matching _extract_summary/_extract_transcript's style.
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    raw_status = data.get("status") or body.get("status")
+    analysis = data.get("analysis") if isinstance(data.get("analysis"), dict) else (
+        body.get("analysis") if isinstance(body.get("analysis"), dict) else {}
     )
-    provider_status = "no_answer" if duration and duration < 8 else raw_provider_status
+    # Duration can legitimately be 0 (an unanswered call) — use explicit None-checks rather than `or` chaining, which would incorrectly treat a real 0 as "missing" and fall through to a less-specific source.
+    duration = None
+    for candidate in (
+        (data.get("metadata") or {}).get("call_duration_secs") if isinstance(data.get("metadata"), dict) else None,
+        (body.get("metadata") or {}).get("call_duration_secs") if isinstance(body.get("metadata"), dict) else None,
+        body.get("duration_seconds"),
+        data.get("duration_seconds"),
+    ):
+        if candidate is not None:
+            duration = candidate
+            break
+    # This is a post-call webhook — ElevenLabs only sends it once a call has ended — but defensively refuse to fabricate a terminal outcome if the payload's own status still says the call is ongoing.
+    if raw_status in IN_PROGRESS_STATUSES:
+        log.warning(
+            "Inquiry %s: post-call webhook reported non-terminal status %r; ignoring "
+            "without changing any state (conversation_id=%s)",
+            obj.id, raw_status, convo_id,
+        )
+        return {"matched": True, "conversation_id": convo_id, "ignored_non_terminal_status": raw_status}
 
-    # Committed immediately, before optional LLM extraction below, so a failure
-    # there can never discard the confirmed result ElevenLabs gave us.
+    # A missing/unrecognized status (malformed payload) falls through to the same call_successful/duration heuristic a "done" call would use — the only status value forced to a specific outcome is a real "failed".
+    provider_status = classify_terminal_provider_status(
+        status=raw_status,
+        call_successful=analysis.get("call_successful"),
+        duration_seconds=duration,
+    )
+
+    # Committed immediately, before optional LLM extraction below, so a failure there can never discard the confirmed result ElevenLabs gave us.
     apply_call_outcome(
         db, obj,
         provider_status=provider_status, summary=summary, transcript=transcript,
@@ -225,8 +249,7 @@ async def elevenlabs_post_call(
     )
     db.commit()
 
-    # Best-effort LLM extraction when we have a transcript but no clean answer —
-    # any failure here must never roll back the core result committed above.
+    # Best-effort LLM extraction when we have a transcript but no clean answer — any failure here must never roll back the core result committed above.
     if obj.call_transcript and not obj.final_answer and summary_service.is_configured():
         try:
             extracted = summary_service.extract_answer_from_transcript(
@@ -258,8 +281,7 @@ async def elevenlabs_post_call(
         except Exception:
             log.exception("Legacy POST failed for inquiry %s (call result stored)", obj.id)
 
-    # Denylist (not allowlist) so webhook-set legitimate statuses still notify;
-    # "closed" is included since a closed inquiry's follow-up call stays closed.
+    # Denylist (not allowlist) so webhook-set legitimate statuses still notify; "closed" is included since a closed inquiry's follow-up call stays closed.
     _NO_ANSWER = ("voicemail", "no_answer", "wrong_number", "call_back_later", "follow_up_via_email", "initiated")
     if (
         not is_test

@@ -56,6 +56,12 @@ CALL_NOT_FOUND_MESSAGE = (
     "Call outcome could not be confirmed — the call provider has no record of this "
     "conversation. Please verify manually."
 )
+# A call the provider never accepted/connected (still "initiated" with no accepted_time_unix_secs) gets a faster, distinct escalation than the 24h ceiling — this is an UNKNOWN outcome, never fabricated as no_answer.
+CALL_NEVER_ACCEPTED_TIMEOUT_MINUTES = int(os.getenv("CALL_NEVER_ACCEPTED_TIMEOUT_MINUTES", "45"))
+CALL_NEVER_ACCEPTED_MESSAGE = (
+    "Call outcome is unknown — the provider never confirmed this call was accepted "
+    "or connected. Please verify manually."
+)
 
 _scheduler: Optional[BackgroundScheduler] = None
 
@@ -1005,13 +1011,33 @@ def _reconcile_stuck_calls() -> None:
             result = call_service.get_conversation_status_sync(conversation_id)
 
             if result.outcome == call_service.CallPollOutcome.STILL_IN_PROGRESS:
-                # Provider successfully reached and confirmed ongoing — keep
-                # the full cadence, reset any prior failure streak.
-                locked.call_reconcile_failure_count = 0
-                locked.call_reconcile_next_attempt_at = _now() + timedelta(
-                    minutes=_CALL_RECONCILE_BACKOFF_BASE_MINUTES
+                # Never-accepted check: only applies when the provider has NOT reported an accepted_time_unix_secs at all — an accepted call with a missing webhook keeps going through normal reconciliation below. Compared via a query, not Python timedelta subtraction, for the same tz-naive-SQLite reason as the ceiling re-check above.
+                never_accepted_timed_out = (
+                    result.accepted_time_unix_secs is None
+                    and db2.query(Inquiry.id)
+                    .filter(
+                        Inquiry.id == inquiry_id,
+                        Inquiry.call_scheduled_for
+                        <= _now() - timedelta(minutes=CALL_NEVER_ACCEPTED_TIMEOUT_MINUTES),
+                    )
+                    .first()
+                    is not None
                 )
-                log.info("Inquiry %s: ElevenLabs confirmed call still in progress", inquiry_id)
+                if never_accepted_timed_out:
+                    # UNKNOWN outcome, not no_answer — the provider never said the call failed, it simply never confirmed acceptance.
+                    _force_unresolved(db2, locked, CALL_NEVER_ACCEPTED_MESSAGE)
+                    log.warning(
+                        "Inquiry %s: call never accepted by provider after %s minutes; "
+                        "marked needs_attention (unknown outcome, not fabricated)",
+                        inquiry_id, CALL_NEVER_ACCEPTED_TIMEOUT_MINUTES,
+                    )
+                else:
+                    # Provider successfully reached and confirmed ongoing — keep the full cadence, reset any prior failure streak.
+                    locked.call_reconcile_failure_count = 0
+                    locked.call_reconcile_next_attempt_at = _now() + timedelta(
+                        minutes=_CALL_RECONCILE_BACKOFF_BASE_MINUTES
+                    )
+                    log.info("Inquiry %s: ElevenLabs confirmed call still in progress", inquiry_id)
 
             elif result.outcome == call_service.CallPollOutcome.POLL_FAILED:
                 # Could NOT confirm anything — distinct from STILL_IN_PROGRESS.
