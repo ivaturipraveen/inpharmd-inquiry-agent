@@ -587,7 +587,23 @@ def poll_once() -> int:
                             "pipeline: slack notify_reply firing for inquiry %s (via graph poll)",
                             changed.get("inquiry_id"),
                         )
-                        slack_service.notify_reply(**changed)
+                        # Explicit kwargs, not **changed — `changed` carries
+                        # email_reply_id (needed by the legacy-POST dedup call
+                        # above) which notify_reply() does not accept.
+                        slack_service.notify_reply(
+                            inquiry_id=changed["inquiry_id"],
+                            manufacturer=changed["manufacturer"],
+                            subject=changed["subject"],
+                            question=changed["question"],
+                            answer=changed["answer"],
+                            requester_name=changed.get("requester_name"),
+                            requester_email=changed.get("requester_email"),
+                            sender_email=changed.get("sender_email"),
+                            pdf_url=changed.get("pdf_url"),
+                            pdf_filename=changed.get("pdf_filename"),
+                            pdf_summary=changed.get("pdf_summary"),
+                            inbound_attachments=changed.get("inbound_attachments"),
+                        )
                     else:
                         log.info(
                             "pipeline: slack notify SKIPPED for inquiry %s: SLACK_WEBHOOK_URL not configured",
