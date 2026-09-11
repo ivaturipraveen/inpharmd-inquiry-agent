@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
 
+import call_log_service
 import legacy_response_service
 import summary_service
 from call_outcome_service import apply_call_outcome
@@ -249,16 +250,33 @@ async def elevenlabs_post_call(
     )
     db.commit()
 
-    # Best-effort LLM extraction when we have a transcript but no clean answer — any failure here must never roll back the core result committed above.
-    if obj.call_transcript and not obj.final_answer and summary_service.is_configured():
+    # Per-call summary for THIS call's Slack card — generated unconditionally
+    # whenever a transcript exists and OpenAI is configured, regardless of
+    # whether Inquiry.final_answer already holds a value from an unrelated
+    # event (email, an earlier call). `call_summary_for_slack` is a local
+    # variable scoped to this one request — it is never read from anywhere
+    # persisted, so it cannot carry a stale cross-event value. Stays None
+    # if extraction doesn't run or fails — no placeholder, no fallback.
+    call_summary_for_slack = None
+    if obj.call_transcript and summary_service.is_configured():
         try:
             extracted = summary_service.extract_answer_from_transcript(
                 question=obj.question,
                 manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
                 transcript=obj.call_transcript,
             )
-            obj.call_summary = obj.call_summary or extracted
-            obj.final_answer = extracted
+            call_summary_for_slack = extracted
+            # Persist onto the specific CallLog row for this physical call —
+            # matched by conversation_id, the same row apply_call_outcome's
+            # record_terminal_result already wrote moments earlier. Existing
+            # per-call field, no schema change.
+            call_log_row = call_log_service.find_call_log_for_completion(db, obj, convo_id)
+            call_log_row.summary = extracted
+            # Inquiry-level final_answer aggregation is unchanged/untouched —
+            # same "don't downgrade an existing answer" behavior as before.
+            if not obj.final_answer:
+                obj.call_summary = obj.call_summary or extracted
+                obj.final_answer = extracted
             db.commit()
         except Exception:
             log.exception(
@@ -286,7 +304,6 @@ async def elevenlabs_post_call(
     if (
         not is_test
         and obj.status in ("call_completed", "closed")
-        and obj.final_answer
         and (obj.call_provider_status or "") not in _NO_ANSWER
     ):
         try:
@@ -297,7 +314,7 @@ async def elevenlabs_post_call(
                     manufacturer=obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer",
                     subject=obj.subject,
                     question=obj.question,
-                    answer=obj.final_answer,
+                    answer=call_summary_for_slack or "Summary unavailable — see transcript",
                     requester_name=obj.requester_name,
                     requester_email=obj.requester_email,
                     channel="call",
@@ -308,8 +325,8 @@ async def elevenlabs_post_call(
             log.exception("Slack notify failed for inquiry %s", obj.id)
     else:
         log.info(
-            "Call for inquiry %s not posted to Slack (status=%s provider_status=%s has_answer=%s)",
-            obj.id, obj.status, obj.call_provider_status, bool(obj.final_answer),
+            "Call for inquiry %s not posted to Slack (status=%s provider_status=%s)",
+            obj.id, obj.status, obj.call_provider_status,
         )
 
     return {"matched": True, "inquiry_id": obj.id}
