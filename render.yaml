@@ -19,7 +19,11 @@ services:
         sync: false
       # CORS origins for the deployed frontend (update with the real URL after first frontend deploy)
       - key: CORS_ORIGINS
-        value: https://inpharmd-inquiry-web.onrender.com,http://localhost:5173
+        value: https://mfr-stg.inpharmd.com,http://localhost:5173
+      # Base URL of the deployed frontend — used to build clickable links back
+      # into the app (e.g. the Slack "View inquiry" link)
+      - key: APP_BASE_URL
+        value: https://mfr-stg.inpharmd.com
       # ElevenLabs — fill in after creating the agent
       - key: ELEVENLABS_API_KEY
         sync: false
@@ -49,7 +53,7 @@ services:
     envVars:
       # Inject backend URL at build time so the SPA calls the right API
       - key: VITE_API_URL
-        value: https://inpharmd-inquiry-api.onrender.com
+        value: https://mfr-stg-api.inpharmd.com
     routes:
       # SPA fallback — every unknown path serves index.html
       - type: rewrite
