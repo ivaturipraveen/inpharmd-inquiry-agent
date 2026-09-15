@@ -208,12 +208,8 @@ class InquiryUpdate(BaseModel):
     final_answer: Optional[str] = None
 
 
-class ScheduledEmailContentUpdate(BaseModel):
-    subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
-    question: str
-
-
 class EmailDraftUpdate(BaseModel):
+    subject: Optional[str] = Field(None, max_length=INQUIRY_SUBJECT_MAX_LENGTH)
     body: str
 
 

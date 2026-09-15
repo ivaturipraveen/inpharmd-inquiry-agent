@@ -310,10 +310,6 @@ export default function ContactManufacturerPage() {
           await api.inquiries.update(current.id, { subject: payload.subject, question: payload.question });
           setBanner("Draft updated.");
           break;
-        case "editScheduledEmail":
-          await api.inquiries.editScheduledEmailContent(current.id, payload.subject, payload.question);
-          setBanner("Email content updated.");
-          break;
         case "sendNow":
           await api.inquiries.sendEmailNow(current.id);
           setBanner("Email sent immediately.");

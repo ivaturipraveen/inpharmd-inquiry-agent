@@ -34,7 +34,6 @@ from schemas import (
     InquiryCreate,
     InquiryOut,
     InquiryUpdate,
-    ScheduledEmailContentUpdate,
     TestCallPreviewPayload,
 )
 
@@ -624,39 +623,9 @@ def update_email_draft(
             status_code=409,
             detail="Cannot save draft: inquiry is no longer in the scheduling window.",
         )
+    if payload.subject is not None:
+        locked.subject = _with_subject_tag(payload.subject, locked.id)
     locked.email_body_override = payload.body.strip() or None
-    db.commit()
-    return _get_or_404(db, inquiry_id, current_user)
-
-
-@router.patch("/{inquiry_id}/scheduled-email-content", response_model=InquiryOut)
-def edit_scheduled_email_content(
-    inquiry_id: int,
-    payload: ScheduledEmailContentUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Update subject and question while the email is in the scheduling window.
-
-    Uses SELECT FOR UPDATE for the same reason as cancel: prevents a race where
-    the scheduler commits email_sent between the status check and the UPDATE."""
-    _get_or_404(db, inquiry_id, current_user)  # ownership check
-    locked = (
-        db.query(Inquiry)
-        .with_for_update()
-        .filter(Inquiry.id == inquiry_id, Inquiry.status == "email_pending")
-        .first()
-    )
-    if locked is None:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot edit: inquiry is no longer in the scheduling window (it may have already been sent).",
-        )
-    locked.subject = _with_subject_tag(payload.subject, locked.id)
-    locked.question = payload.question
-    # Draft was composed against the old subject/question — clear so
-    # Send Now recomposes fresh instead of sending stale text.
-    locked.email_body_override = None
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 

@@ -250,10 +250,6 @@ export default function InquiriesPage() {
           await api.inquiries.update(current.id, { subject: payload.subject, question: payload.question });
           setSuccess("Draft updated.");
           break;
-        case "editScheduledEmail":
-          await api.inquiries.editScheduledEmailContent(current.id, payload.subject, payload.question);
-          setSuccess("Email content updated.");
-          break;
         case "sendNow":
           await api.inquiries.sendEmailNow(current.id);
           setSuccess("Email sent immediately.");

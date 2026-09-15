@@ -22,7 +22,6 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [emailReply, setEmailReply] = useState("");
   const [callSummary, setCallSummary] = useState("");
   const [callTranscript, setCallTranscript] = useState("");
-  const [editingScheduled, setEditingScheduled] = useState(false);
   const [editingDraft, setEditingDraft] = useState(false);
   const [editSubject, setEditSubject] = useState("");
   const [editQuestion, setEditQuestion] = useState("");
@@ -674,105 +673,60 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 )}
               </div>
 
-              {editingScheduled ? (
-                <>
-                  <label className="detail-label" style={{ marginTop: 8 }}>Subject</label>
+              <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(() => onAction("sendNow"))}
+                >
+                  Send Now
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  disabled={busy || draftLoading}
+                  onClick={() =>
+                    run(async () => {
+                      setDraftLoading(true);
+                      try {
+                        const draft = await api.inquiries.getEmailDraft(inquiry.id);
+                        setDraftSubject(draft.subject);
+                        setDraftBody(draft.body);
+                        setPreviewingEmail(true);
+                      } finally {
+                        setDraftLoading(false);
+                      }
+                    })
+                  }
+                >
+                  Preview / Edit Email
+                </button>
+                <button
+                  className="btn btn-ghost-danger"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (confirm("Cancel the scheduled email and revert to draft?")) {
+                      run(() => onAction("cancelScheduledEmail"));
+                    }
+                  }}
+                >
+                  Cancel Send
+                </button>
+              </div>
+
+              {previewingEmail && (
+                <div className="detail-section" style={{ marginTop: 12, display: "flex", flexDirection: "column" }}>
+                  <label className="detail-label">Subject</label>
                   <input
                     type="text"
-                    value={editSubject}
-                    onChange={(e) => setEditSubject(e.target.value)}
+                    value={draftSubject}
+                    onChange={(e) => setDraftSubject(e.target.value)}
                     maxLength={1000}
+                    style={{ width: "100%" }}
                   />
-                  <label className="detail-label" style={{ marginTop: 8 }}>Question</label>
-                  <textarea
-                    value={editQuestion}
-                    onChange={(e) => setEditQuestion(e.target.value)}
-                    rows={4}
-                  />
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                    <button
-                      className="btn btn-primary"
-                      type="button"
-                      disabled={busy || !editSubject.trim() || !editQuestion.trim()}
-                      onClick={() =>
-                        run(async () => {
-                          await onAction("editScheduledEmail", { subject: editSubject, question: editQuestion });
-                          setEditingScheduled(false);
-                        })
-                      }
-                    >
-                      Save Changes
-                    </button>
-                    <button
-                      className="btn btn-ghost"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setEditingScheduled(false)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="btn btn-primary"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => run(() => onAction("sendNow"))}
-                  >
-                    Send Now
-                  </button>
-                  <button
-                    className="btn btn-ghost"
-                    type="button"
-                    disabled={busy || draftLoading}
-                    onClick={() =>
-                      run(async () => {
-                        setDraftLoading(true);
-                        try {
-                          const draft = await api.inquiries.getEmailDraft(inquiry.id);
-                          setDraftSubject(draft.subject);
-                          setDraftBody(draft.body);
-                          setPreviewingEmail(true);
-                        } finally {
-                          setDraftLoading(false);
-                        }
-                      })
-                    }
-                  >
-                    Preview / Edit Email
-                  </button>
-                  <button
-                    className="btn btn-ghost"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      setEditSubject(inquiry.subject);
-                      setEditQuestion(inquiry.question);
-                      setEditingScheduled(true);
-                    }}
-                  >
-                    Edit Content
-                  </button>
-                  <button
-                    className="btn btn-ghost-danger"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      if (confirm("Cancel the scheduled email and revert to draft?")) {
-                        run(() => onAction("cancelScheduledEmail"));
-                      }
-                    }}
-                  >
-                    Cancel Send
-                  </button>
-                </div>
-              )}
-
-              {previewingEmail && !editingScheduled && (
-                <div className="detail-section" style={{ marginTop: 12 }}>
-                  <label className="detail-label">Subject: {draftSubject}</label>
+                  <label className="detail-label" style={{ marginTop: 8 }}>Email body</label>
                   <textarea
                     value={draftBody}
                     onChange={(e) => setDraftBody(e.target.value)}
@@ -786,7 +740,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                       disabled={busy}
                       onClick={() =>
                         run(async () => {
-                          await api.inquiries.saveEmailDraft(inquiry.id, draftBody);
+                          await api.inquiries.saveEmailDraft(inquiry.id, draftSubject, draftBody);
                           setPreviewingEmail(false);
                         })
                       }

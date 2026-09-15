@@ -203,19 +203,14 @@ export const api = {
       request<Inquiry>(`/api/inquiries/${id}/close`, { method: "POST" }),
     cancelScheduledEmail: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/cancel-scheduled-email`, { method: "POST" }),
-    editScheduledEmailContent: (id: number, subject: string, question: string) =>
-      request<Inquiry>(`/api/inquiries/${id}/scheduled-email-content`, {
-        method: "PATCH",
-        body: JSON.stringify({ subject, question }),
-      }),
     getEmailDraft: (id: number) =>
       request<{ subject: string; body: string; is_edited: boolean }>(
         `/api/inquiries/${id}/email-draft`
       ),
-    saveEmailDraft: (id: number, body: string) =>
+    saveEmailDraft: (id: number, subject: string, body: string) =>
       request<Inquiry>(`/api/inquiries/${id}/email-draft`, {
         method: "PATCH",
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ subject, body }),
       }),
     extractPreview: (question: string, mueDetails?: string | null) =>
       request<{ drug_name: string }>(`/api/inquiries/extract-preview`, {
