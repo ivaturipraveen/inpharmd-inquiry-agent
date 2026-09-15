@@ -227,26 +227,39 @@ def _scan_and_send_pending_emails() -> None:
 
             try:
                 import attachment_extraction_service
-                # Best-effort — never raises; falls back to "" fields (the template's
-                # "Not provided" placeholders) if extraction failed.
-                excursion_fields = attachment_extraction_service.get_or_extract(
-                    db2, locked, manufacturer_name=mfr.manufacturer
-                )
-                message_id = email_service.send_inquiry_email(
-                    inquiry_id=locked.id,
-                    manufacturer_name=mfr.manufacturer,
-                    to_email=to_email_send,
-                    subject=locked.subject,
-                    question=locked.question,
-                    requester_name=locked.requester_name,
-                    requester_email=locked.requester_email,
-                    medication_name=locked.medication_name,
-                    pi_storage_data=locked.pi_storage_data,
-                    pi_link=locked.pi_link,
-                    team_name=locked.team_name,
-                    mue_details=locked.mue_details,
-                    **excursion_fields,
-                )
+                if locked.email_body_override:
+                    message_id = email_service.send_inquiry_email(
+                        inquiry_id=locked.id,
+                        manufacturer_name=mfr.manufacturer,
+                        to_email=to_email_send,
+                        subject=locked.subject,
+                        question=locked.question,
+                        requester_name=locked.requester_name,
+                        requester_email=locked.requester_email,
+                        body_override=locked.email_body_override,
+                    )
+                else:
+                    # Best-effort — never raises; falls back to "" fields
+                    # (the template's "Not provided" placeholders) if extraction failed.
+                    excursion_fields = attachment_extraction_service.get_or_extract(
+                        db2, locked, manufacturer_name=mfr.manufacturer
+                    )
+                    excursion_fields.pop("drug_name", None)
+                    message_id = email_service.send_inquiry_email(
+                        inquiry_id=locked.id,
+                        manufacturer_name=mfr.manufacturer,
+                        to_email=to_email_send,
+                        subject=locked.subject,
+                        question=locked.question,
+                        requester_name=locked.requester_name,
+                        requester_email=locked.requester_email,
+                        medication_name=locked.medication_name,
+                        pi_storage_data=locked.pi_storage_data,
+                        pi_link=locked.pi_link,
+                        team_name=locked.team_name,
+                        mue_details=locked.mue_details,
+                        **excursion_fields,
+                    )
             except Exception:
                 log.exception(
                     "Scheduled email send failed for inquiry %s; will retry on next tick",
@@ -261,6 +274,7 @@ def _scan_and_send_pending_emails() -> None:
             locked.email_sent_at = sent_at
             locked.email_message_id = message_id
             locked.email_scheduled_for = None
+            locked.email_body_override = None
             if locked.first_contacted_at is None:
                 locked.first_contacted_at = sent_at
             if mfr.fallback_call_enabled and mfr.mi_phone:

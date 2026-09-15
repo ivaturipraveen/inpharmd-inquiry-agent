@@ -208,6 +208,20 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ subject, question }),
       }),
+    getEmailDraft: (id: number) =>
+      request<{ subject: string; body: string; is_edited: boolean }>(
+        `/api/inquiries/${id}/email-draft`
+      ),
+    saveEmailDraft: (id: number, body: string) =>
+      request<Inquiry>(`/api/inquiries/${id}/email-draft`, {
+        method: "PATCH",
+        body: JSON.stringify({ body }),
+      }),
+    extractPreview: (question: string, mueDetails?: string | null) =>
+      request<{ drug_name: string }>(`/api/inquiries/extract-preview`, {
+        method: "POST",
+        body: JSON.stringify({ question, mue_details: mueDetails ?? null }),
+      }),
     sendEmailNow: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/send-now`, { method: "POST" }),
     extractAnswer: (id: number) =>

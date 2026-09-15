@@ -95,6 +95,8 @@ class Inquiry(Base):
     email_message_id = Column(String(255))
     email_response_at = Column(DateTime(timezone=True))
     email_response = Column(Text)
+    # NULL = send the auto-generated email; non-NULL = user-edited body sent verbatim.
+    email_body_override = Column(Text, nullable=True)
 
     # Groups inquiries from one bulk_create_inquiries call (email only) for a
     # single batch Slack notification — distinct from source_inquiry_uuid.

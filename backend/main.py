@@ -197,6 +197,7 @@ WHERE i.call_conversation_id IS NOT NULL
         # Raw "Temperature Excursion Request" text from InpharmD (API field
         # `mue_details`) — see models.Inquiry.mue_details.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS mue_details TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS email_body_override TEXT",
     ]
     # Each statement runs in its own transaction — one engine.begin() block would
     # put all subsequent conn.execute() calls in aborted state after a failure.

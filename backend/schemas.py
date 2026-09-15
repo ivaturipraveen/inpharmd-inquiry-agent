@@ -145,6 +145,15 @@ class BulkTarget(BaseModel):
     pi_link: Optional[str] = None
 
 
+class ExtractionPreviewRequest(BaseModel):
+    question: str
+    mue_details: Optional[str] = None
+
+
+class ExtractionPreviewResult(BaseModel):
+    drug_name: str = ""
+
+
 class SourceAttachment(BaseModel):
     file_name: str = ""
     doc_url: str = ""
@@ -204,6 +213,16 @@ class ScheduledEmailContentUpdate(BaseModel):
     question: str
 
 
+class EmailDraftUpdate(BaseModel):
+    body: str
+
+
+class EmailDraftOut(BaseModel):
+    subject: str
+    body: str
+    is_edited: bool
+
+
 class EmailResponsePayload(BaseModel):
     response: str
 
@@ -258,6 +277,7 @@ class InquiryOut(InquiryBase):
     pi_storage_data: Optional[str] = None
     pi_link: Optional[str] = None
     mue_details: Optional[str] = None
+    email_body_override: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None

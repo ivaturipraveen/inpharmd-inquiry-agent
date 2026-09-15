@@ -10,6 +10,7 @@ import {
 import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 import { DEFAULT_FALLBACK_HOURS, FALLBACK_PRESETS } from "../utils/fallback";
+import { api } from "../api";
 
 interface Props {
   manufacturers: ManufacturerContact[];
@@ -63,9 +64,22 @@ const InquiryForm: FC<Props> = ({
   const [targetData, setTargetData] = useState<
     Record<number, { medicationName: string; fallbackHours: number }>
   >({});
+  // Manufacturers whose Drug Name the user has personally edited — an
+  // extraction result must never overwrite these.
+  const [touchedDrugName, setTouchedDrugName] = useState<Record<number, boolean>>({});
+  const [lastExtractedDrugName, setLastExtractedDrugName] = useState("");
+  // Refs let the extraction effect read this state without depending on
+  // it, so selecting/touching manufacturers never retriggers a call.
+  const manufacturerIdsRef = useRef<number[]>(manufacturerIds);
+  const touchedDrugNameRef = useRef<Record<number, boolean>>({});
+  const extractionSeqRef = useRef(0);
+  const lastExtractedQuestionRef = useRef("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+
+  useEffect(() => { manufacturerIdsRef.current = manufacturerIds; }, [manufacturerIds]);
+  useEffect(() => { touchedDrugNameRef.current = touchedDrugName; }, [touchedDrugName]);
 
   useEffect(() => {
     if (defaultManufacturerId != null) {
@@ -81,11 +95,45 @@ const InquiryForm: FC<Props> = ({
     setTargetData(prev => {
       const next: typeof prev = {};
       for (const id of manufacturerIds) {
-        next[id] = prev[id] ?? { medicationName: "", fallbackHours: DEFAULT_FALLBACK_HOURS };
+        const seedName = prev[id]?.medicationName ?? (touchedDrugName[id] ? "" : lastExtractedDrugName);
+        next[id] = prev[id] ?? { medicationName: seedName, fallbackHours: DEFAULT_FALLBACK_HOURS };
       }
       return next;
     });
   }, [manufacturerIds]);
+
+  // Debounced Drug Name extraction from question text only — separate
+  // from the post-persistence, attachment-aware extraction for email generation.
+  useEffect(() => {
+    const trimmed = question.trim();
+    if (trimmed.length < 15) return;
+    if (trimmed === lastExtractedQuestionRef.current) return;
+
+    const timer = setTimeout(async () => {
+      const seq = ++extractionSeqRef.current;
+      try {
+        const { drug_name } = await api.inquiries.extractPreview(trimmed);
+        if (seq !== extractionSeqRef.current) return; // superseded — discard
+        lastExtractedQuestionRef.current = trimmed;
+        if (!drug_name) return;
+        setLastExtractedDrugName(drug_name);
+        setTargetData(prev => {
+          const next = { ...prev };
+          for (const id of manufacturerIdsRef.current) {
+            if (touchedDrugNameRef.current[id]) continue;
+            next[id] = {
+              ...(next[id] ?? { medicationName: "", fallbackHours: DEFAULT_FALLBACK_HOURS }),
+              medicationName: drug_name,
+            };
+          }
+          return next;
+        });
+      } catch {
+        // best-effort — leave every field exactly as it is on any failure
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [question]);
 
   const updateTarget = (
     id: number,
@@ -98,6 +146,9 @@ const InquiryForm: FC<Props> = ({
         ...patch,
       },
     }));
+    if (patch.medicationName !== undefined) {
+      setTouchedDrugName(prev => ({ ...prev, [id]: true }));
+    }
   };
 
   const selectedMfrs = useMemo(
