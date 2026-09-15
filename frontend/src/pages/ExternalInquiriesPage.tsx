@@ -247,19 +247,25 @@ export default function ExternalInquiriesPage() {
       .map((row: any): MueInquiry | null => {
         // Tolerate two shapes: flat MUE ({ inquiry_uuid, title, ... }) or
         // JSON:API legacy ({ id, type, attributes: {...} }).
+        let mapped: MueInquiry;
         if (row?.inquiry_uuid || row?.title) {
-          return row as MueInquiry;
+          mapped = row as MueInquiry;
+        } else {
+          const a = row?.attributes ?? {};
+          if (!a.title && !a.question && !row.id) return null;
+          mapped = {
+            inquiry_uuid: String(row.id ?? a.uuid ?? a.inquiry_uuid ?? ""),
+            title: String(a.title ?? a.question ?? ""),
+            inquiry_submitter: a.submitter ?? a["submitter-email"] ?? undefined,
+            inquiry_types: a["inquiry-types"] ?? a.inquiry_types ?? [],
+            attachments: a.attachments ?? a["all-documents"] ?? [],
+            inquiry_submitter_details: a["submitter-details"] ?? undefined,
+          };
         }
-        const a = row?.attributes ?? {};
-        if (!a.title && !a.question && !row.id) return null;
-        return {
-          inquiry_uuid: String(row.id ?? a.uuid ?? a.inquiry_uuid ?? ""),
-          title: String(a.title ?? a.question ?? ""),
-          inquiry_submitter: a.submitter ?? a["submitter-email"] ?? undefined,
-          inquiry_types: a["inquiry-types"] ?? a.inquiry_types ?? [],
-          attachments: a.attachments ?? a["all-documents"] ?? [],
-          inquiry_submitter_details: a["submitter-details"] ?? undefined,
-        };
+        // Some upstream titles carry stray leading/trailing whitespace
+        // (e.g. a literal "\r\n" wrapping the text) — normalize once here
+        // regardless of which shape the row arrived in.
+        return { ...mapped, title: String(mapped.title ?? "").trim() };
       })
       .filter(Boolean) as MueInquiry[];
   }, [raw]);
