@@ -422,12 +422,17 @@ _EXCURSION_FIELDS_SYSTEM = (
     "column. If the inquiry text does not state an excursion temperature/"
     "duration, leave those fields empty rather than substituting a storage "
     "condition. "
+    "drug_name is the specific product this inquiry is about. If exactly "
+    "one product is clearly identified, return its name. If the text "
+    "mentions more than one distinct, unrelated product with no clear way "
+    "to tell which one this inquiry concerns, return an empty string for "
+    "drug_name — never join multiple product names together or guess. "
     "Return ONLY a JSON object with exactly these string keys: "
-    "excursion_details, temperature_range, duration, num_excursions, "
-    "strength, dosage_form, ndc, lot_number, expiration_date, "
-    "quantity_affected. Use an empty string \"\" for any field that is not "
-    "explicitly stated for the relevant product(s) — never guess, infer, or "
-    "fabricate a value that isn't there."
+    "drug_name, excursion_details, temperature_range, duration, "
+    "num_excursions, strength, dosage_form, ndc, lot_number, "
+    "expiration_date, quantity_affected. Use an empty string \"\" for any "
+    "field that is not explicitly stated for the relevant product(s) — "
+    "never guess, infer, or fabricate a value that isn't there."
 )
 
 
@@ -467,9 +472,9 @@ def extract_structured_excursion_fields(
         snippet = snippet[:24_000] + "\n…[truncated]"
     if not snippet:
         return {
-            "excursion_details": "", "temperature_range": "", "duration": "",
-            "num_excursions": "", "strength": "", "dosage_form": "", "ndc": "",
-            "lot_number": "", "expiration_date": "", "quantity_affected": "",
+            "drug_name": "", "excursion_details": "", "temperature_range": "",
+            "duration": "", "num_excursions": "", "strength": "", "dosage_form": "",
+            "ndc": "", "lot_number": "", "expiration_date": "", "quantity_affected": "",
         }
 
     dn = (drug_name or "").strip()
@@ -494,11 +499,14 @@ def extract_structured_excursion_fields(
     import json as _json
     raw = (resp.choices[0].message.content or "{}").strip()
     parsed = _json.loads(raw)  # raises json.JSONDecodeError on malformed output — caller treats as failure
-    return {
+    result = {
         key: str(parsed.get(key) or "").strip()
         for key in (
-            "excursion_details", "temperature_range", "duration", "num_excursions",
-            "strength", "dosage_form", "ndc", "lot_number", "expiration_date",
-            "quantity_affected",
+            "drug_name", "excursion_details", "temperature_range", "duration",
+            "num_excursions", "strength", "dosage_form", "ndc", "lot_number",
+            "expiration_date", "quantity_affected",
         )
     }
+    if result["drug_name"]:
+        result["drug_name"] = result["drug_name"][0].upper() + result["drug_name"][1:]
+    return result

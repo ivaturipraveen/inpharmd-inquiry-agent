@@ -122,6 +122,7 @@ export interface Inquiry {
   // Raw "Temperature Excursion Request" text from InpharmD, distinct from
   // `question` — see backend models.Inquiry.mue_details.
   mue_details?: string | null;
+  email_body_override?: string | null;
   // Set when forwarded from an InpharmD platform inquiry (MUE Excel grouping).
   source_inquiry_uuid?: string | null;
   inbound_attachments?: InquiryAttachment[] | null;

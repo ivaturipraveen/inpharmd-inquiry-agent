@@ -1,5 +1,6 @@
 """Best-effort, on-demand extraction of temperature-excursion / product
-fields from an inquiry's original platform attachment(s), for the outbound
+fields from an inquiry's own text (question + mue_details) and, when
+present, its original platform attachment(s) — for the outbound
 stability-excursion manufacturer email (see email_service.py).
 
 Deliberately isolated from every other attachment mechanism in this app:
@@ -41,6 +42,7 @@ _DOWNLOAD_TIMEOUT_SECONDS = 10
 _TEXT_EXTRACTABLE_EXTENSIONS = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv")
 
 _EMPTY_FIELDS = {
+    "drug_name": "",
     "excursion_details": "", "temperature_range": "", "duration": "",
     "num_excursions": "", "strength": "", "dosage_form": "", "ndc": "",
     "lot_number": "", "expiration_date": "", "quantity_affected": "",
@@ -92,12 +94,14 @@ def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None)
 
     Checks the persisted cache first (never re-downloads/re-calls the LLM
     once a clean result — success or "nothing found" — already exists).
-    On any failure anywhere in the pipeline (no attachments, download
-    error, extraction error, LLM/timeout error, malformed response), logs
-    and returns an all-empty dict WITHOUT writing the cache, so the next
-    send attempt for this inquiry gets a fresh attempt. Never raises —
-    the caller (email_service via routers.inquiries/scheduler) must be
-    able to proceed with the send regardless of what happens here.
+    Always runs against the inquiry's own question + mue_details text, plus
+    any extractable attachment text when attachments exist. On any failure
+    anywhere in the pipeline (download error, extraction error, LLM/timeout
+    error, malformed response), logs and returns an all-empty dict WITHOUT
+    writing the cache, so the next send attempt for this inquiry gets a
+    fresh attempt. Never raises — the caller (email_service via
+    routers.inquiries/scheduler) must be able to proceed with the send
+    regardless of what happens here.
 
     manufacturer_name should be the already-resolved ManufacturerContact
     name (the caller already looks this up before sending) — passed
@@ -116,14 +120,17 @@ def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None)
             pass  # fall through and re-extract if the cached value is somehow corrupt
 
     attachments = _extractable_attachments(obj.source_attachments_json)
-    if not attachments:
-        return dict(_EMPTY_FIELDS)
 
     try:
         owner = db.get(User, obj.user_id) if obj.user_id else None
         access_token = owner.staging_token if owner else None
 
-        text_parts = [obj.question or ""]
+        # question and mue_details are two distinct free-text sources that
+        # can each independently carry excursion information (mue_details
+        # is the separate "Temperature Excursion Request" field for
+        # MUE-batch inquiries) — both are always considered, regardless of
+        # whether any attachment exists.
+        text_parts = [obj.question or "", obj.mue_details or ""]
         for att in attachments:
             try:
                 raw = _download(att["doc_url"], access_token)

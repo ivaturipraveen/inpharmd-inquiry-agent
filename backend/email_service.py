@@ -59,7 +59,7 @@ def _sig_lines(team: Optional[str], *, escape=None) -> list[str]:
     return lines
 
 
-def _build_body(
+def build_email_body(
     *,
     inquiry_id: int,
     manufacturer_name: str,
@@ -245,6 +245,17 @@ recommendations related to this excursion.</p>
     return plain, html
 
 
+def _plain_text_to_html(text: str) -> str:
+    """HTML for a user-edited draft — escape + newline-to-<br>, so the HTML
+    part matches exactly what was typed, no rich formatting assumed."""
+    import html as html_lib
+    escaped = html_lib.escape(text).replace("\n", "<br>\n")
+    return (
+        '<html><body style="font-family:Arial,sans-serif;font-size:14px;'
+        f'color:#222;line-height:1.6;">{escaped}</body></html>'
+    )
+
+
 def send_inquiry_email(
     *,
     inquiry_id: int,
@@ -270,6 +281,7 @@ def send_inquiry_email(
     temperature_range: Optional[str] = None,
     duration: Optional[str] = None,
     num_excursions: Optional[str] = None,
+    body_override: Optional[str] = None,
 ) -> str:
     """Send the inquiry email via the SendGrid API.
 
@@ -277,46 +289,55 @@ def send_inquiry_email(
     Replies are routed back to EMAIL_FROM so IMAP polling can capture them.
 
     is_followup=True renders `question` as a follow-up message rather than
-    the original inquiry (see _build_body) — used by
+    the original inquiry (see build_email_body) — used by
     routers.inquiries.send_followup_email. Default False, unchanged for
     every other existing caller.
 
     strength/dosage_form/ndc/lot_number/expiration_date/quantity_affected/
     excursion_details/temperature_range/duration/num_excursions are all
-    optional pass-throughs to _build_body's stability-excursion template —
-    see attachment_extraction_service.py for how callers obtain them.
-    Every existing caller that doesn't pass these keeps sending the exact
-    same "Not provided" placeholders it always has (no behavior change
-    unless a caller explicitly supplies real values).
+    optional pass-throughs to build_email_body's stability-excursion
+    template — see attachment_extraction_service.py for how callers obtain
+    them. Every existing caller that doesn't pass these keeps sending the
+    exact same "Not provided" placeholders it always has (no behavior
+    change unless a caller explicitly supplies real values).
+
+    body_override, when provided, replaces the auto-composed body entirely
+    and becomes the source for BOTH the plain and HTML parts — used by the
+    email-draft preview/edit feature. All excursion/product kwargs above
+    are ignored when body_override is set.
     """
     cfg = SendGridConfig.from_env()
 
     # Sent verbatim — the caller already guarantees the tag (see
     # routers.inquiries._with_subject_tag); don't rebuild it or user edits are lost.
     tagged_subject = subject
-    plain, html = _build_body(
-        inquiry_id=inquiry_id,
-        manufacturer_name=manufacturer_name,
-        question=question,
-        requester_name=requester_name,
-        requester_email=requester_email,
-        medication_name=medication_name,
-        pi_storage_data=pi_storage_data,
-        pi_link=pi_link,
-        team_name=team_name,
-        is_followup=is_followup,
-        mue_details=mue_details,
-        strength=strength,
-        dosage_form=dosage_form,
-        ndc=ndc,
-        lot_number=lot_number,
-        expiration_date=expiration_date,
-        quantity_affected=quantity_affected,
-        excursion_details=excursion_details,
-        temperature_range=temperature_range,
-        duration=duration,
-        num_excursions=num_excursions,
-    )
+    if body_override is not None:
+        plain = body_override
+        html = _plain_text_to_html(body_override)
+    else:
+        plain, html = build_email_body(
+            inquiry_id=inquiry_id,
+            manufacturer_name=manufacturer_name,
+            question=question,
+            requester_name=requester_name,
+            requester_email=requester_email,
+            medication_name=medication_name,
+            pi_storage_data=pi_storage_data,
+            pi_link=pi_link,
+            team_name=team_name,
+            is_followup=is_followup,
+            mue_details=mue_details,
+            strength=strength,
+            dosage_form=dosage_form,
+            ndc=ndc,
+            lot_number=lot_number,
+            expiration_date=expiration_date,
+            quantity_affected=quantity_affected,
+            excursion_details=excursion_details,
+            temperature_range=temperature_range,
+            duration=duration,
+            num_excursions=num_excursions,
+        )
 
     payload = {
         "personalizations": [

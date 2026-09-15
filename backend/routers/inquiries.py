@@ -24,7 +24,11 @@ from schemas import (
     BulkInquiryCreate,
     BulkInquiryResult,
     CallResultPayload,
+    EmailDraftOut,
+    EmailDraftUpdate,
     EmailResponsePayload,
+    ExtractionPreviewRequest,
+    ExtractionPreviewResult,
     FollowupEmailPayload,
     INQUIRY_SUBJECT_MAX_LENGTH,
     InquiryCreate,
@@ -121,6 +125,32 @@ def _get_or_404(
     if not obj:
         raise HTTPException(status_code=404, detail="Inquiry not found")
     return obj
+
+
+@router.post("/extract-preview", response_model=ExtractionPreviewResult)
+def extract_preview(
+    payload: ExtractionPreviewRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Best-effort drug-name extraction from raw, not-yet-persisted text —
+    prefills the manual multi-manufacturer form's Drug Name field(s) before
+    an Inquiry exists. Reuses the same core function get_or_extract() uses;
+    never persists/caches anything. Question-only by design — the
+    post-persistence, attachment-aware flow (get_or_extract) is separate
+    and unaffected."""
+    if not summary_service.is_configured():
+        return ExtractionPreviewResult(drug_name="")
+    combined = "\n\n".join(
+        p for p in (payload.question, payload.mue_details) if p and p.strip()
+    )
+    if not combined.strip():
+        return ExtractionPreviewResult(drug_name="")
+    try:
+        fields = summary_service.extract_structured_excursion_fields(combined)
+    except Exception:
+        log.exception("extract_preview: extraction failed")
+        return ExtractionPreviewResult(drug_name="")
+    return ExtractionPreviewResult(drug_name=fields.get("drug_name", ""))
 
 
 @router.get("", response_model=List[InquiryOut])
@@ -526,6 +556,75 @@ def cancel_scheduled_email(
         )
     locked.status = "draft"
     locked.email_scheduled_for = None
+    locked.email_body_override = None
+    db.commit()
+    return _get_or_404(db, inquiry_id, current_user)
+
+
+def _compose_email_preview(db: Session, locked: Inquiry, mfr: ManufacturerContact) -> tuple[str, str]:
+    """Compose the manufacturer email exactly as send_now/the scheduler
+    would, without sending — reuses email_service.build_email_body so the
+    preview can never drift from what actually gets sent."""
+    excursion_fields = attachment_extraction_service.get_or_extract(
+        db, locked, manufacturer_name=mfr.manufacturer
+    )
+    # drug_name is Inquiry.medication_name's own extraction concern, not an
+    # email-template field — the template already receives medication_name below.
+    excursion_fields = {k: v for k, v in excursion_fields.items() if k != "drug_name"}
+    plain, _html = email_service.build_email_body(
+        inquiry_id=locked.id,
+        manufacturer_name=mfr.manufacturer,
+        question=locked.question,
+        requester_name=locked.requester_name,
+        requester_email=locked.requester_email,
+        medication_name=locked.medication_name,
+        pi_storage_data=locked.pi_storage_data,
+        pi_link=locked.pi_link,
+        team_name=locked.team_name,
+        mue_details=locked.mue_details,
+        **excursion_fields,
+    )
+    return locked.subject, plain
+
+
+@router.get("/{inquiry_id}/email-draft", response_model=EmailDraftOut)
+def get_email_draft(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    obj = _get_or_404(db, inquiry_id, current_user)
+    if obj.status != "email_pending":
+        raise HTTPException(status_code=409, detail="No scheduled email draft for this inquiry")
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Manufacturer missing")
+    if obj.email_body_override is not None:
+        return EmailDraftOut(subject=obj.subject, body=obj.email_body_override, is_edited=True)
+    subject, plain = _compose_email_preview(db, obj, mfr)
+    return EmailDraftOut(subject=subject, body=plain, is_edited=False)
+
+
+@router.patch("/{inquiry_id}/email-draft", response_model=InquiryOut)
+def update_email_draft(
+    inquiry_id: int,
+    payload: EmailDraftUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_or_404(db, inquiry_id, current_user)
+    locked = (
+        db.query(Inquiry)
+        .with_for_update()
+        .filter(Inquiry.id == inquiry_id, Inquiry.status == "email_pending")
+        .first()
+    )
+    if locked is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot save draft: inquiry is no longer in the scheduling window.",
+        )
+    locked.email_body_override = payload.body.strip() or None
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -555,6 +654,9 @@ def edit_scheduled_email_content(
         )
     locked.subject = _with_subject_tag(payload.subject, locked.id)
     locked.question = payload.question
+    # Draft was composed against the old subject/question — clear so
+    # Send Now recomposes fresh instead of sending stale text.
+    locked.email_body_override = None
     db.commit()
     return _get_or_404(db, inquiry_id, current_user)
 
@@ -594,28 +696,40 @@ def send_now(
             detail=f"{mfr.manufacturer} has no email address on file",
         )
 
-    # Best-effort — never raises; returns all-"" fields on failure, so the
-    # template below falls back to its "Not provided" placeholders.
-    excursion_fields = attachment_extraction_service.get_or_extract(
-        db, locked, manufacturer_name=mfr.manufacturer
-    )
-
     try:
-        message_id = email_service.send_inquiry_email(
-            inquiry_id=locked.id,
-            manufacturer_name=mfr.manufacturer,
-            to_email=to_email,
-            subject=locked.subject,
-            question=locked.question,
-            requester_name=locked.requester_name,
-            requester_email=locked.requester_email,
-            medication_name=locked.medication_name,
-            pi_storage_data=locked.pi_storage_data,
-            pi_link=locked.pi_link,
-            team_name=locked.team_name,
-            mue_details=locked.mue_details,
-            **excursion_fields,
-        )
+        if locked.email_body_override:
+            message_id = email_service.send_inquiry_email(
+                inquiry_id=locked.id,
+                manufacturer_name=mfr.manufacturer,
+                to_email=to_email,
+                subject=locked.subject,
+                question=locked.question,
+                requester_name=locked.requester_name,
+                requester_email=locked.requester_email,
+                body_override=locked.email_body_override,
+            )
+        else:
+            # Best-effort — never raises; returns all-"" fields on failure,
+            # so the template below falls back to its "Not provided" placeholders.
+            excursion_fields = attachment_extraction_service.get_or_extract(
+                db, locked, manufacturer_name=mfr.manufacturer
+            )
+            excursion_fields.pop("drug_name", None)
+            message_id = email_service.send_inquiry_email(
+                inquiry_id=locked.id,
+                manufacturer_name=mfr.manufacturer,
+                to_email=to_email,
+                subject=locked.subject,
+                question=locked.question,
+                requester_name=locked.requester_name,
+                requester_email=locked.requester_email,
+                medication_name=locked.medication_name,
+                pi_storage_data=locked.pi_storage_data,
+                pi_link=locked.pi_link,
+                team_name=locked.team_name,
+                mue_details=locked.mue_details,
+                **excursion_fields,
+            )
     except email_service.EmailConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -626,6 +740,7 @@ def send_now(
     locked.email_sent_at = now
     locked.email_message_id = message_id
     locked.email_scheduled_for = None
+    locked.email_body_override = None
     if locked.first_contacted_at is None:
         locked.first_contacted_at = now
     if mfr.fallback_call_enabled and mfr.mi_phone:

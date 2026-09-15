@@ -45,6 +45,10 @@ const typeCode = (i: MueInquiry): "TE" | "DI" | "PT" => {
   return "PT";
 };
 
+// Always offered as filter chips, regardless of which types the current
+// page of results happens to contain.
+const ALL_TYPE_CODES: Array<"DI" | "PT" | "TE"> = ["DI", "PT", "TE"];
+
 // Human-readable version of typeCode() — TE/DI map to a descriptive label,
 // PT shows the actual project type string received from the API.
 const TYPE_DESCRIPTIVE_LABELS: Record<"TE" | "DI", string> = {
@@ -283,11 +287,6 @@ export default function ExternalInquiriesPage() {
     };
   }, [inquiries]);
 
-  const allTypes = useMemo(
-    () => Object.entries(stats.byType).sort((a, b) => b[1] - a[1]),
-    [stats.byType],
-  );
-
   const startContact = (i: MueInquiry) => {
     setOpenMenuId(null);
     startContactManufacturerFlow({
@@ -317,7 +316,7 @@ export default function ExternalInquiriesPage() {
       </div>
 
       {/* By-type chip filters */}
-      {allTypes.length > 0 && (
+      {inquiries.length > 0 && (
         <div className="ext-section">
           <div className="ext-section-head">
             <h3>By inquiry type</h3>
@@ -335,7 +334,7 @@ export default function ExternalInquiriesPage() {
             >
               All
             </button>
-            {allTypes.map(([t]) => (
+            {ALL_TYPE_CODES.map((t) => (
               <button
                 key={t}
                 type="button"

@@ -4,6 +4,7 @@ import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
 import { fmtFallbackStatus } from "../utils/fallback";
 import { resolvePreferredChannel, isEmailReachable, isCallReachable, isWebFormReachable } from "../utils/channelResolution";
+import { api } from "../api";
 
 interface Props {
   inquiry: Inquiry;
@@ -26,6 +27,10 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   const [editSubject, setEditSubject] = useState("");
   const [editQuestion, setEditQuestion] = useState("");
   const [followupBody, setFollowupBody] = useState("");
+  const [previewingEmail, setPreviewingEmail] = useState(false);
+  const [draftSubject, setDraftSubject] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [draftLoading, setDraftLoading] = useState(false);
 
   // When opened via a Slack "View transcript" deep-link (#inquiries?id=N&focus=transcript)
   // scroll the transcript into view after the modal renders.
@@ -721,6 +726,26 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                   <button
                     className="btn btn-ghost"
                     type="button"
+                    disabled={busy || draftLoading}
+                    onClick={() =>
+                      run(async () => {
+                        setDraftLoading(true);
+                        try {
+                          const draft = await api.inquiries.getEmailDraft(inquiry.id);
+                          setDraftSubject(draft.subject);
+                          setDraftBody(draft.body);
+                          setPreviewingEmail(true);
+                        } finally {
+                          setDraftLoading(false);
+                        }
+                      })
+                    }
+                  >
+                    Preview / Edit Email
+                  </button>
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
                     disabled={busy}
                     onClick={() => {
                       setEditSubject(inquiry.subject);
@@ -742,6 +767,41 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                   >
                     Cancel Send
                   </button>
+                </div>
+              )}
+
+              {previewingEmail && !editingScheduled && (
+                <div className="detail-section" style={{ marginTop: 12 }}>
+                  <label className="detail-label">Subject: {draftSubject}</label>
+                  <textarea
+                    value={draftBody}
+                    onChange={(e) => setDraftBody(e.target.value)}
+                    rows={16}
+                    style={{ width: "100%", fontFamily: "monospace" }}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        run(async () => {
+                          await api.inquiries.saveEmailDraft(inquiry.id, draftBody);
+                          setPreviewingEmail(false);
+                        })
+                      }
+                    >
+                      Save Draft
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setPreviewingEmail(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
