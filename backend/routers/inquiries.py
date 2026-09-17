@@ -947,6 +947,11 @@ async def trigger_call(
             status_code=409,
             detail="Cannot trigger a production call on a test call inquiry.",
         )
+    if obj.status == "email_pending":
+        raise HTTPException(
+            status_code=409,
+            detail="This inquiry has a scheduled email pending. Send Now or Cancel Send on the scheduled email before triggering a call.",
+        )
     # Deliberately no status==closed guard — a follow-up call must remain possible
     # (locked.status is left untouched below when already "closed").
     if _call_in_flight(obj):
@@ -989,6 +994,11 @@ async def trigger_call(
         raise HTTPException(status_code=404, detail="Inquiry not found")
     # Re-check guards on the now-locked row in case state changed since the initial
     # read — same status-independent in-flight check, so it still catches a concurrent duplicate.
+    if locked.status == "email_pending":
+        raise HTTPException(
+            status_code=409,
+            detail="This inquiry has a scheduled email pending. Send Now or Cancel Send on the scheduled email before triggering a call.",
+        )
     if _call_in_flight(locked):
         raise HTTPException(
             status_code=409,

@@ -141,7 +141,7 @@ def submit_answer(
                     obj.status = "needs_attention"
                 obj.next_retry_at = None
             else:
-                schedule_retry_after_failure(db, obj, delay_minutes=2)
+                schedule_retry_after_failure(db, obj)
 
     db.commit()
 

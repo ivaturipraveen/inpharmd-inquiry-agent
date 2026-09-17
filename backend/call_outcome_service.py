@@ -83,8 +83,10 @@ def apply_call_outcome(
         obj.call_provider_status = provider_status
 
     # needs_attention is included so a late-arriving real result still lands,
-    # instead of leaving the inquiry stuck on a "could not confirm" placeholder.
-    if obj.status in ("call_pending", "needs_attention"):
+    # unless retries are already exhausted — that needs_attention is final.
+    if obj.status == "call_pending" or (
+        obj.status == "needs_attention" and obj.retry_count < obj.max_retries
+    ):
         obj.status = "call_completed"
 
     # Fallback calls (email_sent_at set) are one-shot — voicemail/no_answer goes
@@ -94,8 +96,8 @@ def apply_call_outcome(
             if obj.status != "closed":
                 obj.status = "needs_attention"
             obj.next_retry_at = None
-        elif not obj.call_summary:
-            schedule_retry_after_failure(db, obj, delay_minutes=2)
+        elif not _had_prior_summary:
+            schedule_retry_after_failure(db, obj)
 
     # Resolved — no longer eligible for stuck-call reconciliation polling.
     obj.call_reconcile_failure_count = 0

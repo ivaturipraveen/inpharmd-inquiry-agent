@@ -295,6 +295,20 @@ export default function ContactManufacturerPage() {
   const handleContactedAction = async (action: string, payload?: any) => {
     if (!selectedContactedInquiry) return;
     const current = selectedContactedInquiry;
+    // Trigger Call keeps the modal open on failure so the error dialog
+    // appears over it, instead of the modal closing first.
+    if (action === "triggerCall") {
+      try {
+        await api.inquiries.triggerCall(current.id);
+      } catch (err: any) {
+        alert(err?.message ?? "Action failed.");
+        return;
+      }
+      setSelectedContactedInquiry(null);
+      setBanner("Call queued.");
+      loadExistingInquiries();
+      return;
+    }
     setSelectedContactedInquiry(null);
     try {
       switch (action) {
@@ -321,10 +335,6 @@ export default function ContactManufacturerPage() {
         case "sendFollowupEmail":
           await api.inquiries.sendFollowupEmail(current.id, payload.body);
           setBanner("Follow-up email sent.");
-          break;
-        case "triggerCall":
-          await api.inquiries.triggerCall(current.id);
-          setBanner("Call queued.");
           break;
         case "recordCallResult":
           await api.inquiries.recordCallResult(current.id, payload.summary, payload.transcript);
@@ -897,7 +907,7 @@ export default function ContactManufacturerPage() {
                           </span>
                         </div>
                       ) : (
-                        <StatusBadge status={inq.status} />
+                        <StatusBadge status={inq.status} next_retry_at={inq.next_retry_at} retry_count={inq.retry_count} max_retries={inq.max_retries} />
                       )}
                       <span className="contacted-row-id">#{inq.id}</span>
                     </div>
@@ -1182,7 +1192,7 @@ export default function ContactManufacturerPage() {
                                 </span>
                               </div>
                             ) : (
-                              <StatusBadge status={inq.status} />
+                              <StatusBadge status={inq.status} next_retry_at={inq.next_retry_at} retry_count={inq.retry_count} max_retries={inq.max_retries} />
                             )}
                             <span className="contacted-row-id">#{inq.id}</span>
                           </div>

@@ -19,6 +19,19 @@ log = logging.getLogger("inquiry.webhooks")
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
+# call_initiation_failure: documented failure_reason values that mean "we
+# know the call didn't connect" map onto our existing no_answer outcome.
+_CALL_INITIATION_FAILURE_MESSAGES = {
+    "no-answer": "Call could not be completed — no answer at the manufacturer's number.",
+    "busy": "Call could not be completed — the manufacturer's line was busy.",
+}
+# "unknown"/unrecognized reasons are indeterminate — same "never fabricate
+# a result" style as scheduler.CALL_NEVER_ACCEPTED_MESSAGE.
+_CALL_INITIATION_FAILURE_UNKNOWN_MESSAGE = (
+    "Call outcome is unknown — the telephony provider could not determine why "
+    "this call failed to connect. Please verify manually."
+)
+
 
 def _extract_conversation_id(body: Dict[str, Any]) -> Optional[str]:
     """ElevenLabs sometimes nests under `data` or `conversation` — be lenient."""
@@ -102,6 +115,7 @@ async def elevenlabs_post_call(
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
     body = await request.json()
+    event_type = body.get("type")
     convo_id = _extract_conversation_id(body)
     if not convo_id:
         raise HTTPException(status_code=400, detail="No conversation_id in payload")
@@ -205,6 +219,58 @@ async def elevenlabs_post_call(
             obj.id, obj.call_conversation_id, convo_id,
         )
         obj.call_conversation_id = obj.call_conversation_id or convo_id
+
+    if event_type == "call_initiation_failure":
+        # Telephony never connected — no transcript to extract, and this
+        # must never be classified as "completed" (the transcript path's value).
+        failure_reason = (body.get("data") or {}).get("failure_reason") if isinstance(body.get("data"), dict) else None
+
+        if failure_reason in _CALL_INITIATION_FAILURE_MESSAGES:
+            # "no-answer" / "busy" map onto our existing no_answer status;
+            # apply_call_outcome already encodes the correct retry/fallback timing.
+            provider_status = "no_answer"
+            apply_call_outcome(
+                db, obj,
+                provider_status=provider_status,
+                summary=None,
+                transcript=None,
+                conversation_id=convo_id,
+            )
+            obj.final_answer = obj.final_answer or _CALL_INITIATION_FAILURE_MESSAGES[failure_reason]
+            db.commit()
+            log.info(
+                "Inquiry %s: call_initiation_failure (failure_reason=%s) recorded as provider_status=%s",
+                obj.id, failure_reason, provider_status,
+            )
+            return {
+                "matched": True,
+                "conversation_id": convo_id,
+                "inquiry_id": obj.id,
+                "event_type": event_type,
+                "provider_status": provider_status,
+            }
+
+        # Indeterminate — never fabricate call_provider_status or a retry,
+        # same treatment scheduler._reconcile_stuck_calls uses (CALL_NEVER_ACCEPTED_MESSAGE).
+        if obj.status != "closed":
+            obj.status = "needs_attention"
+        obj.final_answer = obj.final_answer or _CALL_INITIATION_FAILURE_UNKNOWN_MESSAGE
+        obj.call_reconcile_failure_count = 0
+        obj.call_reconcile_next_attempt_at = None
+        call_log_service.force_close_call_log(db, obj)
+        db.commit()
+        log.info(
+            "Inquiry %s: call_initiation_failure (failure_reason=%s) treated as indeterminate; marked needs_attention",
+            obj.id, failure_reason,
+        )
+        return {
+            "matched": True,
+            "conversation_id": convo_id,
+            "inquiry_id": obj.id,
+            "event_type": event_type,
+            "provider_status": None,
+            "outcome": "indeterminate",
+        }
 
     summary = _extract_summary(body)
     transcript = _extract_transcript(body)

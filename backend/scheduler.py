@@ -1118,9 +1118,14 @@ def _scan_and_retry() -> None:
         db.close()
 
 
-def schedule_retry_after_failure(db, obj: Inquiry, delay_minutes: int = 2) -> None:
+RETRY_DELAY_MINUTES_BY_ATTEMPT = {0: 5, 1: 15}
+_RETRY_DELAY_DEFAULT_MINUTES = 15
+
+
+def schedule_retry_after_failure(db, obj: Inquiry) -> None:
     """Called from the call-result handlers when a call ends with a bad outcome.
-    Sets next_retry_at if retries remain, otherwise flips to needs_attention."""
+    Sets next_retry_at if retries remain (5 min for retry #1, 15 min for
+    retry #2), otherwise flips to needs_attention."""
     from datetime import timedelta
 
     # Test calls must never enter the retry/needs_attention workflow.
@@ -1139,6 +1144,7 @@ def schedule_retry_after_failure(db, obj: Inquiry, delay_minutes: int = 2) -> No
         obj.next_retry_at = None
         log.info("Inquiry %s exhausted retries; marked needs_attention", obj.id)
         return
+    delay_minutes = RETRY_DELAY_MINUTES_BY_ATTEMPT.get(obj.retry_count, _RETRY_DELAY_DEFAULT_MINUTES)
     obj.next_retry_at = _now() + timedelta(minutes=delay_minutes)
     log.info(
         "Inquiry %s scheduled retry #%s at %s",

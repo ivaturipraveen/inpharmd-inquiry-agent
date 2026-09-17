@@ -232,9 +232,23 @@ export default function InquiriesPage() {
 
   const handleAction = async (action: string, payload?: any) => {
     if (!selected) return;
+    const current = selected;
+    // Trigger Call keeps the modal open on failure so the error dialog
+    // appears over it, instead of the modal closing first.
+    if (action === "triggerCall") {
+      try {
+        await api.inquiries.triggerCall(current.id);
+      } catch (err: any) {
+        alert(err?.message ?? "Action failed.");
+        return;
+      }
+      setSelected(null);
+      setSuccess("Call queued.");
+      load();
+      return;
+    }
     // Close the modal immediately — banners render behind it and would stay
     // hidden until manually closed. The action still runs to completion.
-    const current = selected;
     setSelected(null);
     try {
       switch (action) {
@@ -261,10 +275,6 @@ export default function InquiriesPage() {
         case "sendFollowupEmail":
           await api.inquiries.sendFollowupEmail(current.id, payload.body);
           setSuccess("Follow-up email sent.");
-          break;
-        case "triggerCall":
-          await api.inquiries.triggerCall(current.id);
-          setSuccess("Call queued.");
           break;
         case "recordCallResult":
           await api.inquiries.recordCallResult(
@@ -485,7 +495,7 @@ export default function InquiriesPage() {
                         </td>
                         <td className="status-td">
                           <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-                            <StatusBadge status={i.status} />
+                            <StatusBadge status={i.status} next_retry_at={i.next_retry_at} retry_count={i.retry_count} max_retries={i.max_retries} />
                             {i.status === "email_pending" && i.email_scheduled_for && (
                               <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
                                 {new Date(i.email_scheduled_for) > new Date()
@@ -634,7 +644,7 @@ export default function InquiriesPage() {
                             <td>{c.manufacturer?.manufacturer ?? "—"}</td>
                             <td className="status-td">
                               <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-                                <StatusBadge status={c.status} />
+                                <StatusBadge status={c.status} next_retry_at={c.next_retry_at} retry_count={c.retry_count} max_retries={c.max_retries} />
                                 {c.status === "email_sent" && c.call_scheduled_for && (
                                   <span className="cell-muted" style={{ fontSize: "0.75rem", paddingLeft: "10px" }}>
                                     {new Date(c.call_scheduled_for) > new Date()

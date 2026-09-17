@@ -110,7 +110,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
         <div className="modal-header">
           <div>
             <div className="detail-head-meta">
-              <StatusBadge status={inquiry.status} />
+              <StatusBadge status={inquiry.status} next_retry_at={inquiry.next_retry_at} retry_count={inquiry.retry_count} max_retries={inquiry.max_retries} />
               {isTestCall && (
                 <span style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", padding: "2px 6px", borderRadius: 4, background: "var(--color-warn-bg, #fef3c7)", color: "var(--color-warn-text, #92400e)", marginLeft: 4 }}>
                   Test Call
