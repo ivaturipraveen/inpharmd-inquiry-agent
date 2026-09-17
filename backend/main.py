@@ -198,6 +198,16 @@ WHERE i.call_conversation_id IS NOT NULL
         # `mue_details`) — see models.Inquiry.mue_details.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS mue_details TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS email_body_override TEXT",
+        # Drug-name → manufacturer-suggestion crawl cache (separate from
+        # dailymed_cache above, which is NDC-keyed). See models.DailymedDrugNameCache.
+        """
+CREATE TABLE IF NOT EXISTS dailymed_drugname_cache (
+    drug_name_normalized VARCHAR(255) PRIMARY KEY,
+    labeler_names         TEXT,
+    fetched_at            TIMESTAMPTZ,
+    claimed_at            TIMESTAMPTZ
+)
+""",
     ]
     # Each statement runs in its own transaction — one engine.begin() block would
     # put all subsequent conn.execute() calls in aborted state after a failure.

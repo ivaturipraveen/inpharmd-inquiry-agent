@@ -29,6 +29,7 @@ Cache TTL: 30 days. NDC labels change rarely; a monthly refresh is sufficient.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timezone, timedelta
@@ -36,6 +37,7 @@ from typing import Optional
 from xml.etree import ElementTree as ET
 
 import httpx
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
@@ -390,3 +392,320 @@ def _apply(
             row.pi_link = pi_link
         if pi_storage and not getattr(row, "pi_storage", None):
             row.pi_storage = pi_storage
+
+
+# Drug/NDC → manufacturer suggestion (Manual Contact Mfr auto-select).
+# Independent of the NDC → PI/storage pipeline above: separate cache, inputs, outputs.
+
+_HTML_SEARCH_URL = "https://dailymed.nlm.nih.gov/dailymed/search.cfm"
+_JSON_SEARCH_PAGESIZE = 200
+_HTML_SEARCH_PAGESIZE = 200
+_DRUGNAME_CACHE_TTL_DAYS = 30
+_DRUGNAME_CACHE_LEASE_MINUTES = 2
+
+_SETID_RE = re.compile(r"drugInfo\.cfm\?setid=([0-9a-fA-F-]{36})")
+_REPACKAGED_MARK = "This is a repackaged label."
+_INACTIVATED_NDC_MARK = "Contains inactivated NDC Code(s)"
+_LABELER_RE = re.compile(r"Labeler\s*-\s*</span>\s*([^(<\r\n]+)")
+
+
+def _normalize_drug_name(name: str) -> str:
+    return re.sub(r"\s+", " ", (name or "").strip().lower())
+
+
+def _parse_labeler(html: str) -> Optional[str]:
+    m = _LABELER_RE.search(html)
+    return m.group(1).strip() if m else None
+
+
+async def _lookup_ndc_for_manufacturer(
+    ndc: str, client: httpx.AsyncClient
+) -> Optional[tuple[Optional[str], bool]]:
+    """CASE A. Returns (labeler_name, is_repackaged_label) — no exclusion applied.
+    Returns None on any failure or not-found."""
+    ndc_norm = _normalize_ndc(ndc)
+    try:
+        r = await _http_get(
+            client, f"{_DAILYMED_API}/spls.json", params={"ndc": ndc_norm, "pagesize": "1"}
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json().get("data", [])
+        if not data:
+            return None
+        setid = data[0].get("setid")
+        if not setid:
+            return None
+        detail_r = await _http_get(client, _DAILYMED_UI, params={"setid": setid})
+        detail_r.raise_for_status()
+        html = detail_r.text
+    except Exception as exc:  # noqa: BLE001
+        log.warning("dailymed.ndc_manufacturer: lookup failed for NDC %r: %s", ndc, exc)
+        return None
+    return _parse_labeler(html), _REPACKAGED_MARK in html
+
+
+def _split_html_result_blocks(html: str) -> list[tuple[str, str]]:
+    """Split into (setid, block_text) pairs keyed by setid — HTML row order
+    does not match the JSON API's order for the same query."""
+    matches = list(_SETID_RE.finditer(html))
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for i, m in enumerate(matches):
+        setid = m.group(1)
+        if setid in seen:
+            continue
+        seen.add(setid)
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(html)
+        out.append((setid, html[start:end]))
+    return out
+
+
+async def _crawl_json_setids(name: str, client: httpx.AsyncClient) -> tuple[list[str], bool]:
+    """Paginate the JSON drug-name search to completion. ok=False means a
+    core failure — not a genuine zero-result answer."""
+    setids: list[str] = []
+    page = 1
+    while True:
+        try:
+            r = await _http_get(
+                client,
+                f"{_DAILYMED_API}/spls.json",
+                params={"drug_name": name, "pagesize": str(_JSON_SEARCH_PAGESIZE), "page": str(page)},
+            )
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dailymed.drugname: JSON search failed for %r page %d: %s", name, page, exc)
+            return [], False
+        for rec in payload.get("data", []):
+            setid = rec.get("setid")
+            if setid:
+                setids.append(setid)
+        next_page_url = payload.get("metadata", {}).get("next_page_url")
+        if not next_page_url or next_page_url == "null":
+            break
+        page += 1
+    return setids, True
+
+
+async def _crawl_html_repackaged_map(
+    name: str, client: httpx.AsyncClient
+) -> tuple[dict[str, bool], bool]:
+    """Paginate the HTML search-results page to completion, building a
+    setid -> is_repackaged_label map. Returns ({}, False) on a core failure."""
+    result: dict[str, bool] = {}
+    page = 1
+    while True:
+        try:
+            r = await _http_get(
+                client,
+                _HTML_SEARCH_URL,
+                params={
+                    "query": name,
+                    "searchdb": "all",
+                    "labeltype": "all",
+                    "audience": "professional",
+                    "pagesize": str(_HTML_SEARCH_PAGESIZE),
+                    "page": str(page),
+                },
+            )
+            r.raise_for_status()
+            html = r.text
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dailymed.drugname: HTML search failed for %r page %d: %s", name, page, exc)
+            return {}, False
+
+        blocks = _split_html_result_blocks(html)
+        for setid, block in blocks:
+            result[setid] = _REPACKAGED_MARK in block
+
+        total_m = re.search(r"([\d,]+)\s+[Rr]esults", html)
+        total = int(total_m.group(1).replace(",", "")) if total_m else len(result)
+        if not blocks or len(result) >= total or len(blocks) < _HTML_SEARCH_PAGESIZE:
+            break
+        page += 1
+    return result, True
+
+
+async def _fetch_detail_flags(
+    setid: str, client: httpx.AsyncClient
+) -> Optional[tuple[Optional[str], bool]]:
+    """Returns (labeler_name, is_inactivated_ndc), or None on failure —
+    caller treats None as a failed, excluded candidate."""
+    try:
+        r = await _http_get(client, _DAILYMED_UI, params={"setid": setid})
+        r.raise_for_status()
+        html = r.text
+    except Exception as exc:  # noqa: BLE001
+        log.warning("dailymed.drugname: detail page failed for setid=%s: %s", setid, exc)
+        return None
+    return _parse_labeler(html), _INACTIVATED_NDC_MARK in html
+
+
+async def _crawl_drug_name(name: str, client: httpx.AsyncClient) -> tuple[list[str], bool]:
+    """CASE B core crawl. complete=False on any core or candidate failure —
+    caller must not cache an incomplete result."""
+    setids, json_ok = await _crawl_json_setids(name, client)
+    if not json_ok:
+        return [], False
+
+    repackaged_map, html_ok = await _crawl_html_repackaged_map(name, client)
+    if not html_ok:
+        return [], False
+
+    survivors: list[str] = []
+    complete = True
+    sem = asyncio.Semaphore(_MAX_CONCURRENT)
+
+    async def check_one(setid: str) -> Optional[str]:
+        nonlocal complete
+        is_repackaged = repackaged_map.get(setid)
+        if is_repackaged is None:
+            # Missing from the HTML map — fail closed, unverifiable.
+            complete = False
+            return None
+        if is_repackaged:
+            return None
+        async with sem:
+            detail = await _fetch_detail_flags(setid, client)
+        if detail is None:
+            complete = False
+            return None
+        labeler, is_inactivated = detail
+        if is_inactivated or not labeler:
+            return None
+        return labeler
+
+    results = await asyncio.gather(*(check_one(s) for s in setids), return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            complete = False
+            continue
+        if r:
+            survivors.append(r)
+    return survivors, complete
+
+
+def _claim_drugname(db: Session, name_norm: str) -> bool:
+    """Atomically claim the right to crawl `name_norm` via a short lease —
+    no DB connection is held during the external crawl itself."""
+    row = db.execute(
+        text(
+            """
+            INSERT INTO dailymed_drugname_cache (drug_name_normalized, claimed_at)
+            VALUES (:name, now())
+            ON CONFLICT (drug_name_normalized) DO UPDATE
+              SET claimed_at = now()
+              WHERE (
+                    dailymed_drugname_cache.fetched_at IS NULL
+                 OR dailymed_drugname_cache.fetched_at < now() - make_interval(days => :ttl_days)
+              )
+              AND (
+                    dailymed_drugname_cache.claimed_at IS NULL
+                 OR dailymed_drugname_cache.claimed_at < now() - make_interval(mins => :lease_mins)
+              )
+            RETURNING drug_name_normalized
+            """
+        ),
+        {"name": name_norm, "ttl_days": _DRUGNAME_CACHE_TTL_DAYS, "lease_mins": _DRUGNAME_CACHE_LEASE_MINUTES},
+    ).first()
+    db.commit()
+    return row is not None
+
+
+def _get_fresh_drugname_cache(db: Session, name_norm: str) -> Optional[list[str]]:
+    row = db.execute(
+        text(
+            """
+            SELECT labeler_names FROM dailymed_drugname_cache
+            WHERE drug_name_normalized = :name
+              AND fetched_at IS NOT NULL
+              AND fetched_at >= now() - make_interval(days => :ttl_days)
+            """
+        ),
+        {"name": name_norm, "ttl_days": _DRUGNAME_CACHE_TTL_DAYS},
+    ).first()
+    if not row or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def _finalize_drugname_cache(db: Session, name_norm: str, labeler_names: Optional[list[str]]) -> None:
+    """Release the lease. labeler_names=None means an incomplete crawl —
+    leaves any prior cache untouched and writes nothing new."""
+    if labeler_names is not None:
+        db.execute(
+            text(
+                """
+                UPDATE dailymed_drugname_cache
+                SET labeler_names = :names, fetched_at = now(), claimed_at = NULL
+                WHERE drug_name_normalized = :name
+                """
+            ),
+            {"name": name_norm, "names": json.dumps(labeler_names)},
+        )
+    else:
+        db.execute(
+            text("UPDATE dailymed_drugname_cache SET claimed_at = NULL WHERE drug_name_normalized = :name"),
+            {"name": name_norm},
+        )
+    db.commit()
+
+
+async def _suggest_by_drug_name(db: Session, name: str, client: httpx.AsyncClient) -> dict:
+    name_norm = _normalize_drug_name(name)
+    cached = _get_fresh_drugname_cache(db, name_norm)
+    if cached is not None:
+        return {"labeler_names": cached, "repackaged_labeler_names": []}
+
+    won_claim = _claim_drugname(db, name_norm)
+    if not won_claim:
+        # Someone else is already crawling — don't duplicate the work.
+        cached = _get_fresh_drugname_cache(db, name_norm)
+        return {"labeler_names": cached or [], "repackaged_labeler_names": []}
+
+    try:
+        labeler_names, complete = await _crawl_drug_name(name, client)
+    except Exception:  # noqa: BLE001
+        log.warning("dailymed.drugname: crawl failed unexpectedly for %r", name, exc_info=True)
+        labeler_names, complete = [], False
+
+    _finalize_drugname_cache(db, name_norm, labeler_names if complete else None)
+    return {"labeler_names": labeler_names, "repackaged_labeler_names": []}
+
+
+async def suggest_manufacturers(db: Session, *, ndc: str, drug_name: str) -> dict:
+    """Entry point for the Manual Contact Mfr DailyMed suggestion feature.
+    Never raises. Multi-NDC (semicolon-joined) is out of scope — no lookup."""
+    ndc_val = (ndc or "").strip()
+    if ";" in ndc_val:
+        return {"labeler_names": [], "repackaged_labeler_names": []}
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            headers={"User-Agent": "InpharmD-DailyMed/1.0 (contact: druginfo@inpharmd.com)"},
+        ) as client:
+            if ndc_val:
+                result = await _lookup_ndc_for_manufacturer(ndc_val, client)
+                if not result or not result[0]:
+                    return {"labeler_names": [], "repackaged_labeler_names": []}
+                labeler, is_repackaged = result
+                return {
+                    "labeler_names": [labeler],
+                    "repackaged_labeler_names": [labeler] if is_repackaged else [],
+                }
+
+            name = (drug_name or "").strip()
+            if not name:
+                return {"labeler_names": [], "repackaged_labeler_names": []}
+            return await _suggest_by_drug_name(db, name, client)
+    except Exception:  # noqa: BLE001
+        log.warning("dailymed.suggest_manufacturers: unexpected failure", exc_info=True)
+        return {"labeler_names": [], "repackaged_labeler_names": []}

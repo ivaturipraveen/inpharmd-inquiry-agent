@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 import attachment_extraction_service
 import call_log_service
 import call_service
+import dailymed_service
 import email_service
+import excel_service
 import legacy_response_service
 import slack_service
 import summary_service
@@ -28,6 +30,8 @@ from schemas import (
     EmailDraftUpdate,
     EmailResponsePayload,
     ExtractionPreviewRequest,
+    ManufacturerSuggestionsPreviewRequest,
+    ManufacturerSuggestionsPreviewResult,
     ExtractionPreviewResult,
     FollowupEmailPayload,
     INQUIRY_SUBJECT_MAX_LENGTH,
@@ -149,7 +153,51 @@ def extract_preview(
     except Exception:
         log.exception("extract_preview: extraction failed")
         return ExtractionPreviewResult(drug_name="")
-    return ExtractionPreviewResult(drug_name=fields.get("drug_name", ""))
+    # ndc is already computed above — no DailyMed lookup happens here.
+    return ExtractionPreviewResult(drug_name=fields.get("drug_name", ""), ndc=fields.get("ndc", ""))
+
+
+@router.post("/manufacturer-suggestions-preview", response_model=ManufacturerSuggestionsPreviewResult)
+async def manufacturer_suggestions_preview(
+    payload: ManufacturerSuggestionsPreviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """DailyMed manufacturer suggestion — separate from extract_preview so
+    Drug Name prefill never waits on this. Never raises."""
+    try:
+        result = await dailymed_service.suggest_manufacturers(
+            db, ndc=payload.ndc or "", drug_name=payload.drug_name or ""
+        )
+    except Exception:
+        log.exception("manufacturer_suggestions_preview: lookup failed")
+        return ManufacturerSuggestionsPreviewResult()
+
+    labeler_names = result.get("labeler_names") or []
+    if not labeler_names:
+        return ManufacturerSuggestionsPreviewResult()
+
+    repackaged_names = set(result.get("repackaged_labeler_names") or [])
+    manufacturers = db.query(ManufacturerContact).all()
+    rows = [
+        excel_service.ExtractedRow(row_index=i, raw_name=name)
+        for i, name in enumerate(labeler_names)
+    ]
+    matches = excel_service.match_manufacturers(rows, manufacturers)
+
+    suggested_ids: list[int] = []
+    repackaged_ids: list[int] = []
+    for row, match in zip(rows, matches):
+        if match.matched_id is None:
+            continue
+        suggested_ids.append(match.matched_id)
+        if row.raw_name in repackaged_names:
+            repackaged_ids.append(match.matched_id)
+
+    return ManufacturerSuggestionsPreviewResult(
+        suggested_manufacturer_ids=suggested_ids,
+        repackaged_label_manufacturer_ids=repackaged_ids,
+    )
 
 
 @router.get("", response_model=List[InquiryOut])

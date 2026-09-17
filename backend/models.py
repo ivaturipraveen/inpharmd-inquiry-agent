@@ -367,3 +367,14 @@ class DailymedCache(Base):
     pi_link = Column(Text)               # https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=<setid>
     pi_storage = Column(Text)            # Full text of section 34069-5
     fetched_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class DailymedDrugNameCache(Base):
+    """Cache for DailyMed drug-name → manufacturer-suggestion crawls (30-day
+    TTL). Separate from DailymedCache, which is NDC-keyed."""
+    __tablename__ = "dailymed_drugname_cache"
+
+    drug_name_normalized = Column(String(255), primary_key=True)
+    labeler_names = Column(Text)         # JSON-encoded list[str]; NULL until a crawl completes fully
+    fetched_at = Column(DateTime(timezone=True), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)

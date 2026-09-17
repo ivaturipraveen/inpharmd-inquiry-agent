@@ -152,6 +152,18 @@ class ExtractionPreviewRequest(BaseModel):
 
 class ExtractionPreviewResult(BaseModel):
     drug_name: str = ""
+    ndc: str = ""
+
+
+class ManufacturerSuggestionsPreviewRequest(BaseModel):
+    ndc: Optional[str] = None
+    drug_name: Optional[str] = None
+
+
+class ManufacturerSuggestionsPreviewResult(BaseModel):
+    suggested_manufacturer_ids: list[int] = []
+    # Informational subset flagged as a repackaged label — never excluded.
+    repackaged_label_manufacturer_ids: list[int] = []
 
 
 class SourceAttachment(BaseModel):

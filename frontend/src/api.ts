@@ -213,9 +213,18 @@ export const api = {
         body: JSON.stringify({ subject, body }),
       }),
     extractPreview: (question: string, mueDetails?: string | null) =>
-      request<{ drug_name: string }>(`/api/inquiries/extract-preview`, {
+      request<{ drug_name: string; ndc: string }>(`/api/inquiries/extract-preview`, {
         method: "POST",
         body: JSON.stringify({ question, mue_details: mueDetails ?? null }),
+      }),
+    // Separate, slower DailyMed lookup — never delays Drug Name prefill.
+    manufacturerSuggestionsPreview: (ndc: string, drugName: string) =>
+      request<{
+        suggested_manufacturer_ids: number[];
+        repackaged_label_manufacturer_ids: number[];
+      }>(`/api/inquiries/manufacturer-suggestions-preview`, {
+        method: "POST",
+        body: JSON.stringify({ ndc, drug_name: drugName }),
       }),
     sendEmailNow: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/send-now`, { method: "POST" }),

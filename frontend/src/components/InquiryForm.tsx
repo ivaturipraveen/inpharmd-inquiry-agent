@@ -68,10 +68,14 @@ const InquiryForm: FC<Props> = ({
   // extraction result must never overwrite these.
   const [touchedDrugName, setTouchedDrugName] = useState<Record<number, boolean>>({});
   const [lastExtractedDrugName, setLastExtractedDrugName] = useState("");
+  // DailyMed-suggested repackaged manufacturers — informational warning only.
+  const [repackagedMfrIds, setRepackagedMfrIds] = useState<Set<number>>(new Set());
   // Refs let the extraction effect read this state without depending on
   // it, so selecting/touching manufacturers never retriggers a call.
   const manufacturerIdsRef = useRef<number[]>(manufacturerIds);
   const touchedDrugNameRef = useRef<Record<number, boolean>>({});
+  // True once the user manually edits manufacturer selection — never overwritten after.
+  const touchedManufacturerSelectionRef = useRef(false);
   const extractionSeqRef = useRef(0);
   const lastExtractedQuestionRef = useRef("");
   const [submitting, setSubmitting] = useState(false);
@@ -106,30 +110,55 @@ const InquiryForm: FC<Props> = ({
   // from the post-persistence, attachment-aware extraction for email generation.
   useEffect(() => {
     const trimmed = question.trim();
-    if (trimmed.length < 15) return;
+    if (trimmed.length < 3) return;
     if (trimmed === lastExtractedQuestionRef.current) return;
 
     const timer = setTimeout(async () => {
       const seq = ++extractionSeqRef.current;
+      let drugName = "";
+      let ndc = "";
       try {
-        const { drug_name } = await api.inquiries.extractPreview(trimmed);
+        const extracted = await api.inquiries.extractPreview(trimmed);
         if (seq !== extractionSeqRef.current) return; // superseded — discard
         lastExtractedQuestionRef.current = trimmed;
-        if (!drug_name) return;
-        setLastExtractedDrugName(drug_name);
-        setTargetData(prev => {
-          const next = { ...prev };
-          for (const id of manufacturerIdsRef.current) {
-            if (touchedDrugNameRef.current[id]) continue;
-            next[id] = {
-              ...(next[id] ?? { medicationName: "", fallbackHours: DEFAULT_FALLBACK_HOURS }),
-              medicationName: drug_name,
-            };
-          }
-          return next;
-        });
+        drugName = extracted.drug_name || "";
+        ndc = extracted.ndc || "";
+        if (drugName) {
+          setLastExtractedDrugName(drugName);
+          setTargetData(prev => {
+            const next = { ...prev };
+            for (const id of manufacturerIdsRef.current) {
+              if (touchedDrugNameRef.current[id]) continue;
+              next[id] = {
+                ...(next[id] ?? { medicationName: "", fallbackHours: DEFAULT_FALLBACK_HOURS }),
+                medicationName: drugName,
+              };
+            }
+            return next;
+          });
+        }
       } catch {
         // best-effort — leave every field exactly as it is on any failure
+        return;
+      }
+
+      // Separate, slower call — fired after drug_name is already applied.
+      if (!ndc && !drugName) return;
+      try {
+        const { suggested_manufacturer_ids, repackaged_label_manufacturer_ids } =
+          await api.inquiries.manufacturerSuggestionsPreview(ndc, drugName);
+        if (seq !== extractionSeqRef.current) return; // superseded — discard
+        if (repackaged_label_manufacturer_ids.length) {
+          setRepackagedMfrIds(new Set(repackaged_label_manufacturer_ids));
+        }
+        if (!suggested_manufacturer_ids.length) return;
+        if (touchedManufacturerSelectionRef.current) return; // never overwrite a manual choice
+        setManufacturerIds(prev => {
+          const additions = suggested_manufacturer_ids.filter(id => !prev.includes(id));
+          return additions.length ? [...prev, ...additions] : prev;
+        });
+      } catch {
+        // best-effort — no suggestion, existing manual selection unaffected
       }
     }, 1500);
     return () => clearTimeout(timer);
@@ -217,6 +246,7 @@ const InquiryForm: FC<Props> = ({
   }, [error]);
 
   const toggleManufacturer = (m: ManufacturerContact) => {
+    touchedManufacturerSelectionRef.current = true;
     setManufacturerIds(prev =>
       prev.includes(m.id) ? prev.filter(id => id !== m.id) : [...prev, m.id]
     );
@@ -224,6 +254,7 @@ const InquiryForm: FC<Props> = ({
   };
 
   const removeManufacturer = (id: number) => {
+    touchedManufacturerSelectionRef.current = true;
     setManufacturerIds(prev => prev.filter(x => x !== id));
     setTimeout(() => mfrInputRef.current?.focus(), 0);
   };
@@ -413,6 +444,11 @@ const InquiryForm: FC<Props> = ({
                     )}
                   </div>
                 )}
+                {selectedMfrs.length === 1 && repackagedMfrIds.has(selectedMfrs[0].id) && (
+                  <div className="hint-row" style={{ color: "#b45309" }}>
+                    <span>⚠ Note: This DailyMed result is identified as a repackaged label.</span>
+                  </div>
+                )}
               </div>
 
               {selectedMfrs.length === 1 && (
@@ -449,7 +485,17 @@ const InquiryForm: FC<Props> = ({
                       };
                       return (
                         <div key={m.id} className="mfr-target-row">
-                          <span className="mfr-target-row-name" title={m.manufacturer}>{m.manufacturer}</span>
+                          <span className="mfr-target-row-name" title={m.manufacturer}>
+                            {m.manufacturer}
+                            {repackagedMfrIds.has(m.id) && (
+                              <span
+                                style={{ color: "#b45309", marginLeft: 4 }}
+                                title="Note: This DailyMed result is identified as a repackaged label."
+                              >
+                                ⚠
+                              </span>
+                            )}
+                          </span>
                           <input
                             type="text"
                             className="mfr-target-drug-input"
