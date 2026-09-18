@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 log = logging.getLogger("inquiry.summary")
@@ -52,6 +53,23 @@ _SYSTEM = (
 
 
 _MODEL = "gpt-4o-mini"
+
+_NDC_KEYWORD_RE = re.compile(r"\bndc\b", re.IGNORECASE)
+_NDC_NUMBER_RE = re.compile(r"\b\d{4,5}-\d{3,4}-\d{1,2}\b")
+_CLAUSE_SPLIT_RE = re.compile(r"[.;\n]+")
+
+
+def _detect_ndc_deterministic(text: str) -> str:
+    """Regex fallback for the ndc field. Fires only when the word "NDC" and
+    an NDC-shaped number appear in the SAME clause (split on . ; newline) —
+    prevents picking up an unrelated lot/batch number elsewhere in the text."""
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        if not _NDC_KEYWORD_RE.search(clause):
+            continue
+        m = _NDC_NUMBER_RE.search(clause)
+        if m:
+            return m.group(0)
+    return ""
 
 
 def extract_answer_from_transcript(
@@ -509,4 +527,6 @@ def extract_structured_excursion_fields(
     }
     if result["drug_name"]:
         result["drug_name"] = result["drug_name"][0].upper() + result["drug_name"][1:]
+    if not result["ndc"]:
+        result["ndc"] = _detect_ndc_deterministic(snippet)
     return result
