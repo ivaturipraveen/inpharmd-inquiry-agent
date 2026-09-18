@@ -15,8 +15,8 @@ interface Props {
   inquiryLabel?: string;
   onSendEmail: () => Promise<void>;
   onCallAgent: () => Promise<void>;
-  /** Called when user explicitly clicks "Save as Draft". Creates the inquiry. */
-  onSaveDraft: () => Promise<void>;
+  /** Dispatches Email-eligible and Call-eligible manufacturers together. */
+  onTriggerAll?: () => Promise<void>;
   /** Called when user dismisses via ×, Escape, or backdrop. Nothing is created. */
   onClose: () => void;
 }
@@ -28,10 +28,10 @@ const ChannelChooser: FC<Props> = ({
   inquiryLabel,
   onSendEmail,
   onCallAgent,
-  onSaveDraft,
+  onTriggerAll,
   onClose,
 }) => {
-  const [busy, setBusy] = useState<"email" | "call" | "draft" | null>(null);
+  const [busy, setBusy] = useState<"email" | "call" | "all" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const m = manufacturers[0];
@@ -126,13 +126,15 @@ const ChannelChooser: FC<Props> = ({
     webFormUrls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
   };
 
-  const handleSaveDraft = async () => {
-    setBusy("draft");
+  const showTriggerAll = !!onTriggerAll && emailEligibleCount > 0 && callEligibleCount > 0;
+
+  const handleTriggerAll = async () => {
+    setBusy("all");
     setError(null);
     try {
-      await onSaveDraft();
+      await onTriggerAll?.();
     } catch (e: any) {
-      setError(e?.message ?? "Failed to save draft.");
+      setError(e?.message ?? "Failed to trigger all channels.");
       setBusy(null);
     }
   };
@@ -363,20 +365,17 @@ const ChannelChooser: FC<Props> = ({
               </ul>
             </div>
           )}
-
-          <div className="channel-foot">
-            Not sure? You can also save it as a draft and decide later from the
-            inquiry detail page.
-          </div>
         </div>
 
         <div className="modal-footer">
           <button type="button" className="btn btn-ghost" onClick={onClose} disabled={busy !== null}>
             Cancel
           </button>
-          <button type="button" className="btn btn-ghost" onClick={handleSaveDraft} disabled={busy !== null}>
-            {busy === "draft" ? "Saving…" : "Save as Draft"}
-          </button>
+          {showTriggerAll && (
+            <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={handleTriggerAll}>
+              {busy === "all" ? "Triggering…" : "Trigger All (Email + Call)"}
+            </button>
+          )}
         </div>
       </div>
     </div>

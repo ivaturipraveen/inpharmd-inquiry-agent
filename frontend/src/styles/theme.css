@@ -2103,7 +2103,7 @@ pre.raw-json {
 }
 .mfr-target-header {
   display: grid;
-  grid-template-columns: 260px 1fr 200px;
+  grid-template-columns: 260px 1fr 120px 200px;
   gap: 12px;
   padding: 8px 12px;
   background: var(--line-soft);
@@ -2116,7 +2116,7 @@ pre.raw-json {
 }
 .mfr-target-row {
   display: grid;
-  grid-template-columns: 260px 1fr 200px;
+  grid-template-columns: 260px 1fr 120px 200px;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
@@ -2561,12 +2561,6 @@ pre.raw-json {
   margin-top: auto;
   align-self: stretch;
   text-align: center;
-}
-.channel-foot {
-  font-size: 12px;
-  color: var(--muted);
-  text-align: center;
-  margin-top: 6px;
 }
 .channel-attention {
   background: var(--amber-soft);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
 import ManufacturerForm from "../components/ManufacturerForm";
@@ -167,6 +167,9 @@ export default function ContactManufacturerPage() {
   const [pendingCreatedId, setPendingCreatedId] = useState<number | null>(null);
   // Multi-manufacturer manual flow: holds InquiryFormData with manufacturer_ids.length > 1
   const [pendingBulkManualInput, setPendingBulkManualInput] = useState<InquiryFormData | null>(null);
+  // Channels Trigger All has already dispatched successfully for the current
+  // bulk modal — a retry after a partial failure must not resend these.
+  const triggerAllCompletedRef = useRef<Set<"email" | "call">>(new Set());
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -498,6 +501,7 @@ export default function ContactManufacturerPage() {
 
   const closePendingBulk = useCallback(() => {
     setPendingBulkManualInput(null);
+    triggerAllCompletedRef.current = new Set();
   }, []);
 
   const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
@@ -1596,12 +1600,6 @@ export default function ContactManufacturerPage() {
               closePending();
               goTo("inquiries");
             }}
-            onSaveDraft={async () => {
-              await getOrCreateId();
-              setBanner("Inquiry saved as draft.");
-              closePending();
-              goTo("inquiries");
-            }}
           />
         );
       })()}
@@ -1621,18 +1619,19 @@ export default function ContactManufacturerPage() {
           .map(t => t.fallback_after_hours);
         const fallbackHoursVaries = new Set(eligibleFallbackHours).size > 1;
 
-        const bulkDispatch = async (channel: "email" | "call" | "none") => {
-          // Real dispatch (not draft) filters to targets whose preferred_channel
-          // matches and is reachable, mirroring the Excel flow; "none" keeps all targets.
-          const targets = pendingBulkManualInput.targets.filter((t) => {
-            if (channel === "none") return true;
+        // Targets whose preferred_channel matches and is reachable, mirroring the Excel flow.
+        const eligibleTargets = (channel: "email" | "call") =>
+          pendingBulkManualInput.targets.filter((t) => {
             const mfr = mfrById[t.manufacturer_id];
             if (!mfr) return true;
-            if (channel === "email") return resolvePreferredChannel(mfr) === "email" && isEmailReachable(mfr);
-            if (channel === "call") return resolvePreferredChannel(mfr) === "call" && isCallReachable(mfr);
-            return true;
+            return channel === "email"
+              ? resolvePreferredChannel(mfr) === "email" && isEmailReachable(mfr)
+              : resolvePreferredChannel(mfr) === "call" && isCallReachable(mfr);
           });
-          const result = await api.inquiries.bulkCreate({
+
+        const dispatchChannel = async (channel: "email" | "call", targets: typeof pendingBulkManualInput.targets) => {
+          if (targets.length === 0) return null;
+          return api.inquiries.bulkCreate({
             // Each target already carries its own medication_name and
             // fallback_after_hours — passed straight through, no remapping.
             targets,
@@ -1651,23 +1650,60 @@ export default function ContactManufacturerPage() {
             mue_details: null,
             dispatch_channel: channel,
           });
+        };
+
+        const describeResult = (channel: "email" | "call", result: Awaited<ReturnType<typeof api.inquiries.bulkCreate>>) => {
           const total = result.created.length;
           const failed = result.failed.length;
           if (channel === "call") {
             const scheduled = result.created.filter((c) => c.status === "call_scheduled").length;
-            setBanner(
+            return (
               `Calling ${result.dispatched ?? 0} manufacturer${(result.dispatched ?? 0) === 1 ? "" : "s"}` +
-                (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
-                (failed > 0 ? ` · ${failed} skipped` : ""),
+              (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
+              (failed > 0 ? ` · ${failed} skipped` : "")
             );
-          } else if (channel === "email") {
-            setBanner(
-              `Emailed ${total} manufacturer${total === 1 ? "" : "s"}` +
-                (failed > 0 ? ` · ${failed} failed` : ""),
-            );
-          } else {
-            setBanner(`${total} ${total === 1 ? "inquiry" : "inquiries"} saved as draft.`);
           }
+          return `Emailed ${total} manufacturer${total === 1 ? "" : "s"}` + (failed > 0 ? ` · ${failed} failed` : "");
+        };
+
+        const bulkDispatch = async (channel: "email" | "call") => {
+          const result = await dispatchChannel(channel, eligibleTargets(channel));
+          setBanner(result ? describeResult(channel, result) : `No manufacturers eligible for ${channel}.`);
+          closePendingBulk();
+          goTo("inquiries");
+        };
+
+        // Dispatches Email- and Call-eligible manufacturers sequentially — each
+        // target belongs to exactly one channel bucket, so nothing is dispatched
+        // twice. One channel failing does not stop the other from being attempted.
+        const triggerAll = async () => {
+          const outcomes: { channel: "email" | "call"; ok: boolean; message: string }[] = [];
+          for (const channel of ["email", "call"] as const) {
+            // Already dispatched successfully on an earlier click this session — skip, don't resend.
+            if (triggerAllCompletedRef.current.has(channel)) continue;
+            try {
+              const result = await dispatchChannel(channel, eligibleTargets(channel));
+              if (result) {
+                triggerAllCompletedRef.current.add(channel);
+                outcomes.push({ channel, ok: true, message: describeResult(channel, result) });
+              }
+            } catch (e: any) {
+              let msg = e?.message ?? `Failed to dispatch ${channel}.`;
+              if (channel === "call" && msg.includes("503")) {
+                msg = "ElevenLabs is not configured yet. Add ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID / ELEVENLABS_AGENT_PHONE_NUMBER_ID to backend/.env and restart.";
+              }
+              outcomes.push({ channel, ok: false, message: msg });
+            }
+          }
+          const failed = outcomes.filter((o) => !o.ok);
+          const succeeded = outcomes.filter((o) => o.ok);
+          if (failed.length > 0) {
+            throw new Error(
+              (succeeded.length > 0 ? succeeded.map((o) => o.message).join(" · ") + " · " : "") +
+                `Failed: ${failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`,
+            );
+          }
+          setBanner(succeeded.map((o) => o.message).join(" · ") || "No Email- or Call-eligible manufacturers.");
           closePendingBulk();
           goTo("inquiries");
         };
@@ -1680,7 +1716,7 @@ export default function ContactManufacturerPage() {
             onClose={closePendingBulk}
             onSendEmail={() => bulkDispatch("email")}
             onCallAgent={() => bulkDispatch("call")}
-            onSaveDraft={() => bulkDispatch("none")}
+            onTriggerAll={triggerAll}
           />
         );
       })()}

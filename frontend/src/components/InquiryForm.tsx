@@ -475,6 +475,7 @@ const InquiryForm: FC<Props> = ({
                     <div className="mfr-target-header">
                       <span>Manufacturer</span>
                       <span>Drug Name (required)</span>
+                      <span>Channel</span>
                       <span>Fallback after</span>
                     </div>
                     {selectedMfrs.map((m) => {
@@ -503,6 +504,7 @@ const InquiryForm: FC<Props> = ({
                             onChange={(e) => updateTarget(m.id, { medicationName: e.target.value })}
                             placeholder="Drug name (required)"
                           />
+                          <span className="cell-muted">{m.preferred_channel || "—"}</span>
                           {eligible ? (
                             <select
                               value={data.fallbackHours}
