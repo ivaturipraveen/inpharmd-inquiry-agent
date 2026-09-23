@@ -15,7 +15,9 @@ Endpoint (Rails on Heroku):
         mfr_call_response  str      (call responses only, full transcript
                                      verbatim; never sent alongside mfr_email_response)
         mfr_attachment[]   file     (optional, email responses only; one part
-                                     per attachment, bytes from S3)
+                                     per attachment, bytes from S3, filename is
+                                     the original attachment name — see
+                                     `_download_attachment`)
 
 The base URL is the SAME as the rest of the InpharmD APIs — we reuse
 `INPHARMD_API_BASE_URL` (resolved by inpharmd_service._base_url) so there's a
@@ -68,14 +70,26 @@ def is_configured() -> bool:
 
 
 def _filename_from_url(s3_url: str) -> str:
-    """Extract a clean filename from a presigned S3 URL."""
+    """Extract a filename from a presigned S3 URL — FALLBACK ONLY.
+
+    The URL's last path segment is our own S3 key, e.g.
+    "{uuid4().hex[:10]}-{original_name}" (see s3_service.upload_bytes), so
+    this carries our own uniqueness prefix baked in, not the original
+    attachment name. Use InquiryAttachment.filename instead wherever it's
+    available; this exists only for callers that never had that name."""
     path = s3_url.split("?", 1)[0]
     name = path.rsplit("/", 1)[-1] or "attachment"
     return name
 
 
-def _download_attachment(s3_url: str) -> Optional[tuple[str, bytes, str]]:
+def _download_attachment(
+    s3_url: str, filename: Optional[str] = None
+) -> Optional[tuple[str, bytes, str]]:
     """Download a file from a presigned S3 URL.
+
+    `filename`, when given, is the original attachment name (e.g. from
+    InquiryAttachment.filename) and is used as-is. Falls back to deriving one
+    from the URL only when no original name is known.
 
     Returns (filename, bytes, content_type) or None on failure.
     """
@@ -85,12 +99,12 @@ def _download_attachment(s3_url: str) -> Optional[tuple[str, bytes, str]]:
         if not res.is_success:
             log.warning("Failed to download attachment %s: HTTP %s", s3_url[:80], res.status_code)
             return None
-        filename = _filename_from_url(s3_url)
+        resolved_filename = filename or _filename_from_url(s3_url)
         content_type = res.headers.get("content-type", "").split(";")[0].strip()
         if not content_type or content_type == "application/octet-stream":
-            guessed, _ = mimetypes.guess_type(filename)
+            guessed, _ = mimetypes.guess_type(resolved_filename)
             content_type = guessed or "application/octet-stream"
-        return filename, res.content, content_type
+        return resolved_filename, res.content, content_type
     except Exception:
         log.exception("Exception downloading attachment %s", s3_url[:80])
         return None
@@ -111,9 +125,11 @@ def post_response(
     `mfr_call_response` — whichever is not None is sent; the other field is
     omitted from the request entirely (not sent as an empty string).
 
-    Each URL in `mfr_attachment` is downloaded and sent as a separate
-    `mfr_attachment[]` file part. Pass None or [] when there are no
-    attachments.
+    Each entry in `mfr_attachment` is downloaded and sent as a separate
+    `mfr_attachment[]` file part. An entry is either a plain S3 URL (str) —
+    filename derived from the URL, for callers with no better name — or an
+    (url, filename) pair, where `filename` is the original attachment name
+    and takes precedence. Pass None or [] when there are no attachments.
 
     Returns True on 2xx, False otherwise. Never raises — failures are
     logged and the inquiry flow continues.
@@ -139,13 +155,22 @@ def post_response(
         )
         return False
 
-    urls = [u for u in (mfr_attachment or []) if u]
+    attachment_specs: list[tuple[str, Optional[str]]] = []
+    for item in (mfr_attachment or []):
+        if not item:
+            continue
+        if isinstance(item, (tuple, list)):
+            s3_url, filename = item[0], (item[1] if len(item) > 1 else None)
+        else:
+            s3_url, filename = item, None
+        if s3_url:
+            attachment_specs.append((s3_url, filename))
 
     # Download each attachment before opening the retry loop so we don't
     # re-fetch from S3 on every retry attempt.
     attachments = []
-    for s3_url in urls:
-        result = _download_attachment(s3_url)
+    for s3_url, filename in attachment_specs:
+        result = _download_attachment(s3_url, filename)
         if result:
             attachments.append(result)
         else:
@@ -173,7 +198,7 @@ def post_response(
         "mfr_call_response" if mfr_call_response is not None else "mfr_email_response",
         len(mfr_call_response or mfr_email_response or ""),
         len(attachments),
-        len(urls),
+        len(attachment_specs),
         manufacturer_name or "(none)",
         medication_name or "(none)",
     )
@@ -325,12 +350,15 @@ def maybe_post_for_inquiry(
         return False
 
     # Attachments are scoped to the triggering event only — email replies get
-    # their own reply_id's rows; calls never carry attachments, ever.
-    s3_urls: list[str] = []
+    # their own reply_id's rows; calls never carry attachments, ever. Paired
+    # with each attachment's stored original filename (att.filename) — the
+    # S3 url's own last path segment carries our own uniqueness prefix, not
+    # the original name (see s3_service.upload_bytes / _filename_from_url).
+    s3_urls: list[tuple[str, Optional[str]]] = []
     if email_reply_id is not None:
         from models import InquiryAttachment
         s3_urls = [
-            att.url
+            (att.url, att.filename)
             for att in db.query(InquiryAttachment)
                 .filter(InquiryAttachment.reply_id == email_reply_id)
                 .order_by(InquiryAttachment.display_order)
