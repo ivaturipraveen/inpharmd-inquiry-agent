@@ -73,7 +73,7 @@ const CTX_KEY = "inpharmd:contact-manufacturer:ctx";
 
 // Backend always overwrites Inquiry.subject once the row exists — this
 // placeholder is shown pre-creation only, never a meaningful sent value.
-const PENDING_SUBJECT = "Drug information request [InpharmD #pending]";
+const PENDING_SUBJECT = "Drug information request";
 
 const readQuery = (): URLSearchParams => {
   const qs = window.location.hash.split("?")[1] ?? "";
@@ -170,6 +170,9 @@ export default function ContactManufacturerPage() {
   // Channels Trigger All has already dispatched successfully for the current
   // bulk modal — a retry after a partial failure must not resend these.
   const triggerAllCompletedRef = useRef<Set<"email" | "call">>(new Set());
+  // Same pattern as triggerAllCompletedRef, scoped to the Excel-bulk flow's
+  // own Trigger All (a separate dispatch path from the manual-picker one).
+  const bulkTriggerAllCompletedRef = useRef<Set<"email" | "call">>(new Set());
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -617,13 +620,96 @@ export default function ContactManufacturerPage() {
   }, [attachmentExtractions, contactedMfrMap]);
 
 
+  // Core per-channel dispatch, shared by the single-channel buttons and
+  // Trigger All. Throws (rather than setting error state) so a caller
+  // driving multiple channels can catch one failure without aborting the rest.
+  const dispatchBulkChannel = async (channel: BulkChannel) => {
+    // Group selected rows by source file and make one bulkCreate per file
+    // so each inquiry gets the correct source_excel_url for response writeback.
+    const byFile: Array<{
+      s: AttachmentExtractionState;
+      targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number }[];
+    }> = [];
+
+    attachmentExtractions.forEach((s, attIdx) => {
+      if (!s.result) return;
+      const targets = s.result.rows
+        .filter((r) => {
+          if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
+          const m = mfrById[r.matched_id];
+          if (m) {
+            if (channel === "email") return resolvePreferredChannel(m) === "email" && isEmailReachable(m);
+            if (channel === "call") return resolvePreferredChannel(m) === "call" && isCallReachable(m);
+          }
+          return true;
+        })
+        .map((r) => ({
+          manufacturer_id: r.matched_id as number,
+          source_excel_row: r.row_index,
+          medication_name: r.medication_name || null,
+          pi_storage_data: r.pi_storage || null,
+          pi_link: r.pi_link || null,
+          // Per-row override when picked; otherwise the batch-level fallbackHours
+          // applies (same default the backend falls back to when omitted).
+          fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
+        }));
+      if (targets.length > 0) byFile.push({ s, targets });
+    });
+
+    if (byFile.length === 0) {
+      throw new Error("None of the selected rows have a matched manufacturer in your DB.");
+    }
+
+    const allCreated: Inquiry[] = [];
+    const allFailed: { manufacturer_id: number; error: string }[] = [];
+    let totalDispatched = 0;
+
+    for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
+      const { s, targets } = byFile[fileIdx];
+      const result = await api.inquiries.bulkCreate({
+        targets,
+        subject: subject.trim(),
+        question: question.trim(),
+        fallback_after_hours: fallbackHours,
+        team_name: teamName.trim() || null,
+        source_inquiry_uuid: ctx!.uuid,
+        source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
+        source_excel_sheet: s.result!.sheet_name,
+        attachments: ctx!.attachments,
+        // Already folded into `question` above (see the ctx effect) — sending it
+        // here too would duplicate it in the outbound email.
+        mue_details: null,
+        dispatch_channel: channel,
+      });
+      allCreated.push(...result.created);
+      allFailed.push(...result.failed);
+      totalDispatched += result.dispatched ?? 0;
+    }
+    return { created: allCreated, failed: allFailed, dispatched: totalDispatched };
+  };
+
+  const describeBulkResult = (
+    channel: BulkChannel,
+    result: { created: Inquiry[]; failed: { manufacturer_id: number; error: string }[]; dispatched: number },
+  ) => {
+    if (channel === "call") {
+      const scheduled = result.created.filter((c) => c.status === "call_scheduled").length;
+      return (
+        `Calling ${result.dispatched} manufacturer${result.dispatched === 1 ? "" : "s"}` +
+        (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
+        (result.failed.length > 0 ? ` · ${result.failed.length} skipped` : "")
+      );
+    }
+    const sent = result.created.length;
+    return `Emailed ${sent} manufacturer${sent === 1 ? "" : "s"}` + (result.failed.length > 0 ? ` · ${result.failed.length} failed` : "");
+  };
+
   const handleBulkSubmit = async (channel: BulkChannel) => {
     if (attachmentExtractions.length === 0 || !ctx) return;
     if (!question.trim()) {
       setExtractError("Question is required.");
       return;
     }
-
     if (selectedKeys.size === 0) {
       setExtractError("Pick at least one manufacturer.");
       return;
@@ -631,92 +717,56 @@ export default function ContactManufacturerPage() {
 
     setSubmitting(channel);
     setExtractError(null);
-
     try {
-      // Group selected rows by source file and make one bulkCreate per file
-      // so each inquiry gets the correct source_excel_url for response writeback.
-      const byFile: Array<{
-        s: AttachmentExtractionState;
-        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number }[];
-      }> = [];
-
-      attachmentExtractions.forEach((s, attIdx) => {
-        if (!s.result) return;
-        const targets = s.result.rows
-          .filter((r) => {
-            if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
-            const m = mfrById[r.matched_id];
-            if (m) {
-              if (channel === "email") return resolvePreferredChannel(m) === "email" && isEmailReachable(m);
-              if (channel === "call") return resolvePreferredChannel(m) === "call" && isCallReachable(m);
-            }
-            return true;
-          })
-          .map((r) => ({
-            manufacturer_id: r.matched_id as number,
-            source_excel_row: r.row_index,
-            medication_name: r.medication_name || null,
-            pi_storage_data: r.pi_storage || null,
-            pi_link: r.pi_link || null,
-            // Per-row override when picked; otherwise the batch-level fallbackHours
-            // applies (same default the backend falls back to when omitted).
-            fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
-          }));
-        if (targets.length > 0) byFile.push({ s, targets });
-      });
-
-      if (byFile.length === 0) {
-        setExtractError("None of the selected rows have a matched manufacturer in your DB.");
-        return;
-      }
-
-      const allCreated: Inquiry[] = [];
-      const allFailed: { manufacturer_id: number; error: string }[] = [];
-      let totalDispatched = 0;
-
-      for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
-        const { s, targets } = byFile[fileIdx];
-        const result = await api.inquiries.bulkCreate({
-          targets,
-          subject: subject.trim(),
-          question: question.trim(),
-          fallback_after_hours: fallbackHours,
-          team_name: teamName.trim() || null,
-          source_inquiry_uuid: ctx.uuid,
-          source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
-          source_excel_sheet: s.result!.sheet_name,
-          attachments: ctx.attachments,
-          // Already folded into `question` above (see the ctx effect) — sending it
-          // here too would duplicate it in the outbound email.
-          mue_details: null,
-          dispatch_channel: channel,
-        });
-        allCreated.push(...result.created);
-        allFailed.push(...result.failed);
-        totalDispatched += result.dispatched ?? 0;
-      }
-
-      if (channel === "call") {
-        const scheduled = allCreated.filter((c) => c.status === "call_scheduled").length;
-        setBanner(
-          `Calling ${totalDispatched} manufacturer${totalDispatched === 1 ? "" : "s"}` +
-            (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
-            (allFailed.length > 0 ? ` · ${allFailed.length} skipped` : ""),
-        );
-      } else {
-        const sent = allCreated.length;
-        setBanner(
-          `Emailed ${sent} manufacturer${sent === 1 ? "" : "s"}` +
-            (allFailed.length > 0 ? ` · ${allFailed.length} failed` : ""),
-        );
-      }
-
+      const result = await dispatchBulkChannel(channel);
+      setBanner(describeBulkResult(channel, result));
       loadExistingInquiries();
     } catch (e: any) {
       setExtractError(e?.message ?? "Bulk dispatch failed.");
     } finally {
       setSubmitting(null);
     }
+  };
+
+  // Dispatches Email and Call sequentially; skips a channel already
+  // completed on an earlier attempt so a retry never resends it.
+  const handleTriggerAllBulk = async () => {
+    if (attachmentExtractions.length === 0 || !ctx) return;
+    if (!question.trim()) {
+      setExtractError("Question is required.");
+      return;
+    }
+    if (selectedKeys.size === 0) {
+      setExtractError("Pick at least one manufacturer.");
+      return;
+    }
+
+    setExtractError(null);
+    const outcomes: { channel: BulkChannel; ok: boolean; message: string }[] = [];
+    for (const channel of ["email", "call"] as const) {
+      if (bulkTriggerAllCompletedRef.current.has(channel)) continue;
+      setSubmitting(channel);
+      try {
+        const result = await dispatchBulkChannel(channel);
+        bulkTriggerAllCompletedRef.current.add(channel);
+        outcomes.push({ channel, ok: true, message: describeBulkResult(channel, result) });
+      } catch (e: any) {
+        outcomes.push({ channel, ok: false, message: e?.message ?? `Failed to dispatch ${channel}.` });
+      }
+    }
+    setSubmitting(null);
+
+    const failed = outcomes.filter((o) => !o.ok);
+    const succeeded = outcomes.filter((o) => o.ok);
+    if (failed.length > 0) {
+      setExtractError(
+        (succeeded.length > 0 ? succeeded.map((o) => o.message).join(" · ") + " · " : "") +
+          `Failed: ${failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`,
+      );
+      return;
+    }
+    setBanner(succeeded.map((o) => o.message).join(" · ") || "No Email- or Call-eligible manufacturers.");
+    loadExistingInquiries();
   };
 
 
@@ -1531,6 +1581,16 @@ export default function ContactManufacturerPage() {
                     >
                       Cancel
                     </button>
+                    {reachableByEmail > 0 && totalCallable > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={handleTriggerAllBulk}
+                        disabled={anyBusy}
+                      >
+                        {anyBusy ? "Triggering…" : "Trigger All (Email + Call)"}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
