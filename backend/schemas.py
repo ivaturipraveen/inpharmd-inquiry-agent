@@ -129,7 +129,13 @@ class InquiryBase(BaseModel):
 
 
 class InquiryCreate(InquiryBase):
-    pass
+    # Pre-creation email preview overrides (Contact Manufacturer page) — see
+    # EmailPreviewRequest/EmailPreviewResult. Not persisted columns on their
+    # own: email_subject_override feeds _with_subject_tag() when the Inquiry
+    # id is assigned; email_body_override maps straight onto the existing
+    # Inquiry.email_body_override column the scheduler/send-now already read.
+    email_subject_override: Optional[str] = None
+    email_body_override: Optional[str] = None
 
 
 # ---------- Bulk dispatch (multiple manufacturers, one query) ----------
@@ -143,6 +149,10 @@ class BulkTarget(BaseModel):
     fallback_after_hours: Optional[int] = None
     # DailyMed-enriched fields (populated by the extract-manufacturers endpoint).
     pi_link: Optional[str] = None
+    # Pre-creation email preview overrides (Contact Manufacturer page), one
+    # independent value per target/row — see InquiryCreate for field semantics.
+    email_subject_override: Optional[str] = None
+    email_body_override: Optional[str] = None
 
 
 class ExtractionPreviewRequest(BaseModel):
@@ -169,6 +179,26 @@ class ManufacturerSuggestionsPreviewResult(BaseModel):
 class SourceAttachment(BaseModel):
     file_name: str = ""
     doc_url: str = ""
+
+
+# ---------- Pre-creation email preview (Contact Manufacturer page) ----------
+class EmailPreviewRequest(BaseModel):
+    manufacturer_id: int
+    subject: str
+    question: str
+    requester_name: Optional[str] = None
+    requester_email: Optional[str] = None
+    medication_name: Optional[str] = None
+    pi_storage_data: Optional[str] = None
+    pi_link: Optional[str] = None
+    team_name: Optional[str] = None
+    mue_details: Optional[str] = None
+    attachments: Optional[list[SourceAttachment]] = None
+
+
+class EmailPreviewResult(BaseModel):
+    subject: str
+    body: str
 
 
 class BulkInquiryCreate(BaseModel):

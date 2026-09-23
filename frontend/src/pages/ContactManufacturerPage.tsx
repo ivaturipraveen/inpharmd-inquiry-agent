@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
+import EmailPreviewModal, { EmailOverride } from "../components/EmailPreviewModal";
 import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
 import InquiryDetail from "../components/InquiryDetail";
@@ -167,6 +168,12 @@ export default function ContactManufacturerPage() {
   const [pendingCreatedId, setPendingCreatedId] = useState<number | null>(null);
   // Multi-manufacturer manual flow: holds InquiryFormData with manufacturer_ids.length > 1
   const [pendingBulkManualInput, setPendingBulkManualInput] = useState<InquiryFormData | null>(null);
+  // Pre-creation "Preview / Edit Email" overrides — session-local until dispatch.
+  // Single-manufacturer manual flow: one override for the one pending target.
+  const [singleEmailOverride, setSingleEmailOverride] = useState<EmailOverride | null>(null);
+  // Manual multi-manufacturer flow: keyed by manufacturer_id so editing one
+  // manufacturer's email can never affect another's.
+  const [manualEmailOverrides, setManualEmailOverrides] = useState<Record<number, EmailOverride>>({});
   // Channels Trigger All has already dispatched successfully for the current
   // bulk modal — a retry after a partial failure must not resend these.
   const triggerAllCompletedRef = useRef<Set<"email" | "call">>(new Set());
@@ -193,6 +200,19 @@ export default function ContactManufacturerPage() {
   // Per-row fallback-hours override, keyed like selectedKeys — falls back to
   // the batch-level fallbackHours, same override-with-default semantics as the backend.
   const [rowFallbackHours, setRowFallbackHours] = useState<Record<string, number>>({});
+  // Excel/MUE bulk flow: per-row "Preview / Edit Email" override, keyed like
+  // selectedKeys/rowFallbackHours — the same manufacturer can appear on
+  // multiple rows (different drugs/MUEs), each with fully independent text.
+  const [rowEmailOverrides, setRowEmailOverrides] = useState<Record<string, EmailOverride>>({});
+  // Which Excel/MUE row's "Preview / Edit Email" modal is currently open, if any.
+  const [previewingRow, setPreviewingRow] = useState<{
+    key: string;
+    manufacturerId: number;
+    manufacturerName: string;
+    medicationName: string | null;
+    piStorage: string | null;
+    piLink: string | null;
+  } | null>(null);
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState(PENDING_SUBJECT);
   const [question, setQuestion] = useState("");
@@ -488,8 +508,23 @@ export default function ContactManufacturerPage() {
           ...(ctx?.uuid ? { source_inquiry_uuid: ctx.uuid } : {}),
         };
         setPendingInquiryInput(payload);
+        // Carry forward an override already applied on the form itself
+        // (before "Create & choose channel") so it survives into ChannelChooser.
+        setSingleEmailOverride(
+          t.email_subject_override != null
+            ? { subject: t.email_subject_override, body: t.email_body_override ?? "" }
+            : null,
+        );
       } else {
         setPendingBulkManualInput(data);
+        // Same as above, per manufacturer, for the multi-manufacturer flow.
+        const seeded: Record<number, EmailOverride> = {};
+        data.targets.forEach((tgt) => {
+          if (tgt.email_subject_override != null) {
+            seeded[tgt.manufacturer_id] = { subject: tgt.email_subject_override, body: tgt.email_body_override ?? "" };
+          }
+        });
+        setManualEmailOverrides(seeded);
       }
     },
     [ctx],
@@ -500,11 +535,13 @@ export default function ContactManufacturerPage() {
   const closePending = useCallback(() => {
     setPendingInquiryInput(null);
     setPendingCreatedId(null);
+    setSingleEmailOverride(null);
   }, []);
 
   const closePendingBulk = useCallback(() => {
     setPendingBulkManualInput(null);
     triggerAllCompletedRef.current = new Set();
+    setManualEmailOverrides({});
   }, []);
 
   const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
@@ -628,7 +665,7 @@ export default function ContactManufacturerPage() {
     // so each inquiry gets the correct source_excel_url for response writeback.
     const byFile: Array<{
       s: AttachmentExtractionState;
-      targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number }[];
+      targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number; email_subject_override: string | null; email_body_override: string | null }[];
     }> = [];
 
     attachmentExtractions.forEach((s, attIdx) => {
@@ -643,16 +680,23 @@ export default function ContactManufacturerPage() {
           }
           return true;
         })
-        .map((r) => ({
-          manufacturer_id: r.matched_id as number,
-          source_excel_row: r.row_index,
-          medication_name: r.medication_name || null,
-          pi_storage_data: r.pi_storage || null,
-          pi_link: r.pi_link || null,
-          // Per-row override when picked; otherwise the batch-level fallbackHours
-          // applies (same default the backend falls back to when omitted).
-          fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
-        }));
+        .map((r) => {
+          const rowOverride = rowEmailOverrides[selKey(attIdx, r.row_index)];
+          return {
+            manufacturer_id: r.matched_id as number,
+            source_excel_row: r.row_index,
+            medication_name: r.medication_name || null,
+            pi_storage_data: r.pi_storage || null,
+            pi_link: r.pi_link || null,
+            // Per-row override when picked; otherwise the batch-level fallbackHours
+            // applies (same default the backend falls back to when omitted).
+            fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
+            // Same manufacturer can appear on multiple rows (different
+            // drugs/MUEs) — each row's email preview override is independent.
+            email_subject_override: rowOverride?.subject ?? null,
+            email_body_override: rowOverride?.body ?? null,
+          };
+        });
       if (targets.length > 0) byFile.push({ s, targets });
     });
 
@@ -1192,6 +1236,25 @@ export default function ContactManufacturerPage() {
                                         + Add manufacturer
                                       </button>
                                     )}
+                                    {matched && mfr && resolvePreferredChannel(mfr) === "email" && isEmailReachable(mfr) && (
+                                      <button
+                                        type="button"
+                                        className="btn-link"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          setPreviewingRow({
+                                            key,
+                                            manufacturerId: mfr.id,
+                                            manufacturerName: mfr.manufacturer,
+                                            medicationName: r.medication_name ?? null,
+                                            piStorage: r.pi_storage ?? null,
+                                            piLink: r.pi_link ?? null,
+                                          });
+                                        }}
+                                      >
+                                        {rowEmailOverrides[key] ? "Edited — Preview / Edit Email" : "Preview / Edit Email"}
+                                      </button>
+                                    )}
                                   </label>
                                 );
                               })}
@@ -1631,7 +1694,11 @@ export default function ContactManufacturerPage() {
         // created the inquiry, so a sendEmail/triggerCall retry can't duplicate it.
         const getOrCreateId = async (): Promise<number> => {
           if (pendingCreatedId != null) return pendingCreatedId;
-          const created = await api.inquiries.create(pendingInquiryInput);
+          const created = await api.inquiries.create({
+            ...pendingInquiryInput,
+            email_subject_override: singleEmailOverride?.subject ?? null,
+            email_body_override: singleEmailOverride?.body ?? null,
+          });
           setPendingCreatedId(created.id);
           return created.id;
         };
@@ -1694,7 +1761,13 @@ export default function ContactManufacturerPage() {
           return api.inquiries.bulkCreate({
             // Each target already carries its own medication_name and
             // fallback_after_hours — passed straight through, no remapping.
-            targets,
+            // Per-manufacturer email preview override (if any) is merged in
+            // here so editing one manufacturer's email can never leak onto another.
+            targets: targets.map((t) => ({
+              ...t,
+              email_subject_override: manualEmailOverrides[t.manufacturer_id]?.subject ?? null,
+              email_body_override: manualEmailOverrides[t.manufacturer_id]?.body ?? null,
+            })),
             subject: pendingBulkManualInput.subject,
             question: pendingBulkManualInput.question,
             // Batch-level default only; every target above supplies its own
@@ -1793,6 +1866,29 @@ export default function ContactManufacturerPage() {
           prefillManufacturer={addingMfrName}
           onClose={() => setAddingMfrName(null)}
           onSubmit={handleAddManufacturer}
+        />
+      )}
+
+      {previewingRow && (
+        <EmailPreviewModal
+          manufacturerName={previewingRow.manufacturerName}
+          initialOverride={rowEmailOverrides[previewingRow.key] ?? null}
+          fetchPreview={() =>
+            api.inquiries.composeEmailPreview({
+              manufacturer_id: previewingRow.manufacturerId,
+              subject,
+              question,
+              team_name: teamName || null,
+              medication_name: previewingRow.medicationName,
+              pi_storage_data: previewingRow.piStorage,
+              pi_link: previewingRow.piLink,
+              attachments: ctx?.attachments,
+            })
+          }
+          onApply={(override) =>
+            setRowEmailOverrides((prev) => ({ ...prev, [previewingRow.key]: override }))
+          }
+          onClose={() => setPreviewingRow(null)}
         />
       )}
 

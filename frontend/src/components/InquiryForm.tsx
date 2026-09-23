@@ -10,7 +10,9 @@ import {
 import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 import { DEFAULT_FALLBACK_HOURS, FALLBACK_PRESETS } from "../utils/fallback";
+import { resolvePreferredChannel, isEmailReachable } from "../utils/channelResolution";
 import { api } from "../api";
+import EmailPreviewModal, { EmailOverride } from "./EmailPreviewModal";
 
 interface Props {
   manufacturers: ManufacturerContact[];
@@ -70,6 +72,10 @@ const InquiryForm: FC<Props> = ({
   const [lastExtractedDrugName, setLastExtractedDrugName] = useState("");
   // DailyMed-suggested repackaged manufacturers — informational warning only.
   const [repackagedMfrIds, setRepackagedMfrIds] = useState<Set<number>>(new Set());
+  // Pre-creation "Preview / Edit Email" overrides, keyed by manufacturer id —
+  // session-local until submit; editing one manufacturer never affects another.
+  const [emailOverrides, setEmailOverrides] = useState<Record<number, EmailOverride>>({});
+  const [previewingMfrId, setPreviewingMfrId] = useState<number | null>(null);
   // Refs let the extraction effect read this state without depending on
   // it, so selecting/touching manufacturers never retriggers a call.
   const manufacturerIdsRef = useRef<number[]>(manufacturerIds);
@@ -101,6 +107,18 @@ const InquiryForm: FC<Props> = ({
       for (const id of manufacturerIds) {
         const seedName = prev[id]?.medicationName ?? (touchedDrugName[id] ? "" : lastExtractedDrugName);
         next[id] = prev[id] ?? { medicationName: seedName, fallbackHours: DEFAULT_FALLBACK_HOURS };
+      }
+      return next;
+    });
+  }, [manufacturerIds]);
+
+  // Drop email overrides for manufacturers no longer selected — an override
+  // must never silently apply to a different manufacturer added later.
+  useEffect(() => {
+    setEmailOverrides(prev => {
+      const next: typeof prev = {};
+      for (const id of manufacturerIds) {
+        if (prev[id]) next[id] = prev[id];
       }
       return next;
     });
@@ -303,6 +321,8 @@ const InquiryForm: FC<Props> = ({
           manufacturer_id: id,
           medication_name: (targetData[id]?.medicationName ?? "").trim() || null,
           fallback_after_hours: targetData[id]?.fallbackHours ?? DEFAULT_FALLBACK_HOURS,
+          email_subject_override: emailOverrides[id]?.subject ?? null,
+          email_body_override: emailOverrides[id]?.body ?? null,
         })),
         subject: subject.trim(),
         question: question.trim(),
@@ -453,9 +473,20 @@ const InquiryForm: FC<Props> = ({
 
               {selectedMfrs.length === 1 && (
                 <div className="field full">
-                  <label>
-                    Drug Name<span className="req">*</span>
-                  </label>
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+                    <label>
+                      Drug Name<span className="req">*</span>
+                    </label>
+                    {resolvePreferredChannel(selectedMfrs[0]) === "email" && isEmailReachable(selectedMfrs[0]) && (
+                      <button
+                        type="button"
+                        className="btn-link"
+                        onClick={() => setPreviewingMfrId(selectedMfrs[0].id)}
+                      >
+                        {emailOverrides[selectedMfrs[0].id] ? "Edited — Preview / Edit Email" : "Preview / Edit Email"}
+                      </button>
+                    )}
+                  </div>
                   <input
                     type="text"
                     value={targetData[selectedMfrs[0].id]?.medicationName ?? ""}
@@ -504,7 +535,22 @@ const InquiryForm: FC<Props> = ({
                             onChange={(e) => updateTarget(m.id, { medicationName: e.target.value })}
                             placeholder="Drug name (required)"
                           />
-                          <span className="cell-muted">{m.preferred_channel || "—"}</span>
+                          <span className="cell-muted">
+                            {m.preferred_channel || "—"}
+                            {resolvePreferredChannel(m) === "email" && isEmailReachable(m) && (
+                              <>
+                                <br />
+                                <button
+                                  type="button"
+                                  className="btn-link"
+                                  style={{ fontSize: 11 }}
+                                  onClick={() => setPreviewingMfrId(m.id)}
+                                >
+                                  {emailOverrides[m.id] ? "Edited — Preview/Edit" : "Preview/Edit Email"}
+                                </button>
+                              </>
+                            )}
+                          </span>
                           {eligible ? (
                             <select
                               value={data.fallbackHours}
@@ -660,8 +706,36 @@ const InquiryForm: FC<Props> = ({
     </form>
   );
 
+  const previewingMfr = previewingMfrId != null ? manufacturers.find(m => m.id === previewingMfrId) : undefined;
+  const emailPreviewModal = previewingMfr && (
+    <EmailPreviewModal
+      manufacturerName={previewingMfr.manufacturer}
+      initialOverride={emailOverrides[previewingMfr.id] ?? null}
+      fetchPreview={() =>
+        api.inquiries.composeEmailPreview({
+          manufacturer_id: previewingMfr.id,
+          subject: subject.trim(),
+          question: question.trim(),
+          requester_name: requesterName.trim() || null,
+          requester_email: requesterEmail.trim() || null,
+          medication_name: targetData[previewingMfr.id]?.medicationName || null,
+          team_name: teamName.trim() || null,
+        })
+      }
+      onApply={(override) =>
+        setEmailOverrides(prev => ({ ...prev, [previewingMfr.id]: override }))
+      }
+      onClose={() => setPreviewingMfrId(null)}
+    />
+  );
+
   if (variant === "page") {
-    return <div className="page-form">{inner}</div>;
+    return (
+      <div className="page-form">
+        {inner}
+        {emailPreviewModal}
+      </div>
+    );
   }
   return (
     <div
@@ -673,6 +747,7 @@ const InquiryForm: FC<Props> = ({
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         {inner}
       </div>
+      {emailPreviewModal}
     </div>
   );
 };

@@ -226,6 +226,25 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ ndc, drug_name: drugName }),
       }),
+    // Pre-creation "Preview / Edit Email" (Contact Manufacturer page) — no
+    // Inquiry is created or persisted by this call.
+    composeEmailPreview: (data: {
+      manufacturer_id: number;
+      subject: string;
+      question: string;
+      requester_name?: string | null;
+      requester_email?: string | null;
+      medication_name?: string | null;
+      pi_storage_data?: string | null;
+      pi_link?: string | null;
+      team_name?: string | null;
+      mue_details?: string | null;
+      attachments?: { file_name: string; doc_url: string }[];
+    }) =>
+      request<{ subject: string; body: string }>(`/api/inquiries/compose-email-preview`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
     sendEmailNow: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/send-now`, { method: "POST" }),
     extractAnswer: (id: number) =>
@@ -250,6 +269,10 @@ export const api = {
         pi_storage_data?: string | null;
         pi_link?: string | null;
         fallback_after_hours?: number;
+        /** Pre-creation "Preview / Edit Email" overrides, one independent
+         * value per target/row — omitted means use the standard subject/body. */
+        email_subject_override?: string | null;
+        email_body_override?: string | null;
       }[];
       subject: string;
       question: string;

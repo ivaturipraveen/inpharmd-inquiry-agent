@@ -146,6 +146,11 @@ export interface InquiryInput {
   // Original platform UUID when forwarded from InpharmD — used to POST the
   // response back to the legacy endpoint once a manufacturer answers.
   source_inquiry_uuid?: string | null;
+  // Pre-creation "Preview / Edit Email" overrides (Contact Manufacturer page).
+  // Omitted/null means "use the standard auto-generated subject/body" —
+  // existing dispatch behavior is unchanged unless these are explicitly set.
+  email_subject_override?: string | null;
+  email_body_override?: string | null;
 }
 
 // Mirrors the backend BulkTarget shape directly so it can be passed straight
@@ -154,6 +159,10 @@ export interface InquiryFormTarget {
   manufacturer_id: number;
   medication_name: string | null;
   fallback_after_hours: number;
+  // Pre-creation "Preview / Edit Email" override, set directly on the form
+  // before Create & choose channel — see InquiryInput for field semantics.
+  email_subject_override?: string | null;
+  email_body_override?: string | null;
 }
 
 // Shape emitted by InquiryForm — `targets` is always populated (length 1 or

@@ -28,6 +28,8 @@ from schemas import (
     CallResultPayload,
     EmailDraftOut,
     EmailDraftUpdate,
+    EmailPreviewRequest,
+    EmailPreviewResult,
     EmailResponsePayload,
     ExtractionPreviewRequest,
     ManufacturerSuggestionsPreviewRequest,
@@ -200,6 +202,44 @@ async def manufacturer_suggestions_preview(
     )
 
 
+@router.post("/compose-email-preview", response_model=EmailPreviewResult)
+def compose_email_preview(
+    payload: EmailPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Pre-creation "what will this email look like" preview for the Contact
+    Manufacturer page (manual, drug-name-suggested, and Excel/MUE bulk flows)
+    — called once per manufacturer/row, before any Inquiry exists. Reuses
+    _compose_email_preview() (the same composer the post-creation
+    email-draft endpoint uses) against a transient, never-persisted Inquiry
+    so the preview can never drift from what an actual send would produce.
+    Never added to the session; never committed on its own."""
+    mfr = db.get(ManufacturerContact, payload.manufacturer_id)
+    if not mfr:
+        raise HTTPException(status_code=400, detail="Unknown manufacturer_id")
+    transient = Inquiry(
+        id=0,
+        user_id=current_user.id,
+        question=payload.question,
+        requester_name=payload.requester_name,
+        requester_email=payload.requester_email,
+        medication_name=payload.medication_name,
+        pi_storage_data=payload.pi_storage_data,
+        pi_link=payload.pi_link,
+        team_name=payload.team_name,
+        mue_details=payload.mue_details,
+        subject=payload.subject,
+        source_attachments_json=(
+            json.dumps([a.model_dump() for a in payload.attachments])
+            if payload.attachments
+            else None
+        ),
+    )
+    subject, plain = _compose_email_preview(db, transient, mfr)
+    return EmailPreviewResult(subject=subject, body=plain)
+
+
 @router.get("", response_model=List[InquiryOut])
 def list_inquiries(
     status: Optional[str] = Query(None),
@@ -265,6 +305,8 @@ def create_inquiry(
     if not mfr:
         raise HTTPException(status_code=400, detail="Unknown manufacturer_id")
     data = payload.model_dump()
+    # Not a persisted column — only influences obj.subject below once the id exists.
+    subject_override = data.pop("email_subject_override", None)
     # Inquiries always come from the InpharmD Drug Info inbox — backfill
     # defaults so older clients / API consumers don't have to send them.
     if not (data.get("requester_name") or "").strip():
@@ -276,8 +318,12 @@ def create_inquiry(
     db.add(obj)
     db.flush()
     # Backend is the single source of truth for the subject tag — discard the
-    # client's free-text subject once the real id exists.
-    obj.subject = _default_subject(obj.id)
+    # client's free-text subject once the real id exists. A pre-creation
+    # email-preview subject edit (Contact Manufacturer page) is preserved via
+    # the same tag-guarantee used by the post-creation email-draft edit path.
+    obj.subject = (
+        _with_subject_tag(subject_override, obj.id) if subject_override else _default_subject(obj.id)
+    )
     db.commit()
     return _get_or_404(db, obj.id, current_user)
 
@@ -355,14 +401,21 @@ async def bulk_create_inquiries(
             medication_name=tgt.medication_name or None,
             pi_storage_data=tgt.pi_storage_data or None,
             pi_link=tgt.pi_link or None,
+            email_body_override=tgt.email_body_override or None,
             status="draft",
             user_id=current_user.id,
         )
         db.add(obj)
         db.flush()
         # Same backend-authoritative subject override as create_inquiry —
-        # each inquiry in the batch gets its own id-specific subject.
-        obj.subject = _default_subject(obj.id)
+        # each inquiry in the batch gets its own id-specific subject, unless
+        # this target carries its own pre-creation email-preview subject edit
+        # (Contact Manufacturer page), preserved via the same tag guarantee.
+        obj.subject = (
+            _with_subject_tag(tgt.email_subject_override, obj.id)
+            if tgt.email_subject_override
+            else _default_subject(obj.id)
+        )
         created_objs.append(obj)
 
     db.commit()
