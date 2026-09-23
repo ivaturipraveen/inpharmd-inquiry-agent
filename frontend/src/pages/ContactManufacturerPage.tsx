@@ -8,6 +8,7 @@ import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable } from "../utils/channelResolution";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
+import { submitterDisplay, typeLabel } from "./ExternalInquiriesPage";
 import type {
   Inquiry,
   InquiryInput,
@@ -112,12 +113,16 @@ const readContext = (): ForwardContext | null => {
     const attName = params.get("att_name");
     if (attUrl && attName) attachments.push({ id: 0, file_name: attName, doc_url: attUrl });
   }
+  const submitter = params.get("submitter") ?? undefined;
+  const type = params.get("type") ?? undefined;
   const team_name = params.get("team_name") ?? undefined;
   const mue_details = params.get("mue_details") ?? undefined;
   return {
     uuid,
     title,
     attachments,
+    ...(submitter ? { submitter } : {}),
+    ...(type ? { type } : {}),
     ...(team_name ? { team_name } : {}),
     ...(mue_details ? { mue_details } : {}),
   };
@@ -125,6 +130,34 @@ const readContext = (): ForwardContext | null => {
 
 const goTo = (hash: string) => {
   window.location.hash = hash;
+};
+
+// Maps a hydrated list row to ForwardContext, reusing ExternalInquiriesPage's
+// own submitterDisplay/typeLabel so values match that flow exactly.
+const mapHydratedContext = (uuid: string, raw: any): ForwardContext => {
+  const row = raw && typeof raw === "object" ? raw : {};
+  if (row.inquiry_uuid || row.title) {
+    const det = row.inquiry_submitter_details ?? {};
+    return {
+      uuid,
+      title: String(row.title ?? "").trim(),
+      submitter: submitterDisplay(row),
+      type: typeLabel(row),
+      attachments: row.attachments ?? undefined,
+      team_name: det.team_name ?? undefined,
+      mue_details: row.mue_details ?? undefined,
+    };
+  }
+  const a = row.attributes ?? {};
+  const det = a["submitter-details"] ?? {};
+  return {
+    uuid,
+    title: String(a.title ?? a.question ?? "").trim(),
+    submitter: a.submitter ?? a["submitter-email"] ?? det.email ?? undefined,
+    attachments: a.attachments ?? a["all-documents"] ?? undefined,
+    team_name: det.team_name ?? undefined,
+    mue_details: a.mue_details ?? undefined,
+  };
 };
 
 // Accept both .xlsx and .csv — backend extract handles both formats.
@@ -157,7 +190,11 @@ type BulkChannel = "email" | "call";
 const selKey = (attIdx: number, rowIndex: number) => `${attIdx}:${rowIndex}`;
 
 export default function ContactManufacturerPage() {
-  const [ctx] = useState<ForwardContext | null>(readContext);
+  const [ctx, setCtx] = useState<ForwardContext | null>(readContext);
+  // Set while resolving a uuid-only deep link (no title yet).
+  const [hydrating, setHydrating] = useState(false);
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
+  const hydrationAttemptedForRef = useRef<string | null>(null);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loadingMfrs, setLoadingMfrs] = useState(true);
   const [existingInquiries, setExistingInquiries] = useState<Inquiry[]>([]);
@@ -231,6 +268,39 @@ export default function ContactManufacturerPage() {
     }
     if (ctx?.team_name) setTeamName(ctx.team_name);
   }, [ctx]);
+
+  // Hydrates a uuid-only deep link via list+search (not the per-uuid
+  // detail endpoint, which lacks these fields). Runs once per uuid.
+  useEffect(() => {
+    if (!ctx?.uuid || ctx.title) return;
+    if (hydrationAttemptedForRef.current === ctx.uuid) return;
+    hydrationAttemptedForRef.current = ctx.uuid;
+    setHydrating(true);
+    setHydrateError(null);
+    api.externalInquiries
+      .list({ search: ctx.uuid })
+      .then(({ data }) => {
+        const rows: any[] = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
+        const row = rows.find((r: any) => r?.inquiry_uuid === ctx.uuid);
+        if (!row) {
+          setHydrateError(
+            `Inquiry ${ctx.uuid} was not found in InpharmD (it may no longer be open).`,
+          );
+          return;
+        }
+        const mapped = mapHydratedContext(ctx.uuid, row);
+        setCtx((prev) => (prev ? { ...prev, ...mapped } : prev));
+        // Converge onto the exact canonical URL ExternalInquiriesPage's own
+        // flow produces — reuses its sessionStorage + goTo() logic as-is.
+        startContactManufacturerFlow(mapped);
+      })
+      .catch((e: any) => {
+        setHydrateError(
+          e?.message ?? "Failed to load this inquiry's details from InpharmD.",
+        );
+      })
+      .finally(() => setHydrating(false));
+  }, [ctx?.uuid, ctx?.title]);
 
   useEffect(() => {
     if (!banner) return;
@@ -862,6 +932,8 @@ export default function ContactManufacturerPage() {
         ))
       }
 
+      {hydrating && <p>Loading inquiry details from InpharmD…</p>}
+      {hydrateError && <div className="error-banner">{hydrateError}</div>}
       {extractError && <div className="error-banner">{extractError}</div>}
       {error && <div className="error-banner">{error}</div>}
 
@@ -1759,6 +1831,8 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   const qs = new URLSearchParams();
   if (ctx.uuid) qs.set("uuid", ctx.uuid);
   if (ctx.title) qs.set("title", ctx.title);
+  if (ctx.submitter) qs.set("submitter", ctx.submitter);
+  if (ctx.type) qs.set("type", ctx.type);
   if (ctx.team_name) qs.set("team_name", ctx.team_name);
   if (ctx.mue_details) qs.set("mue_details", ctx.mue_details);
   // Encode ALL extractable attachments in the URL (indexed: att_url_0, att_url_1, …)
