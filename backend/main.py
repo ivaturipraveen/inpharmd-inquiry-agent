@@ -15,6 +15,7 @@ from routers import (
     external_inquiries,
     inquiries,
     manufacturers,
+    redirects,
     webhooks,
 )
 
@@ -266,3 +267,4 @@ app.include_router(agent_tools.router)
 app.include_router(email_inbound.router)
 app.include_router(auth.router)
 app.include_router(external_inquiries.router)
+app.include_router(redirects.router)

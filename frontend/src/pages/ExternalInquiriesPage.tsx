@@ -55,7 +55,7 @@ const TYPE_DESCRIPTIVE_LABELS: Record<"TE" | "DI", string> = {
   TE: "Temperature Excursion",
   DI: "Drug Information",
 };
-const typeLabel = (i: MueInquiry): string => {
+export const typeLabel = (i: MueInquiry): string => {
   const code = typeCode(i);
   return code === "PT" ? (i.project_types as string) : TYPE_DESCRIPTIVE_LABELS[code];
 };
@@ -74,7 +74,7 @@ const fmtTurnaround = (t?: string | null): string =>
 const submitterEmail = (i: MueInquiry): string =>
   i.inquiry_submitter_details?.email ?? "";
 
-const submitterDisplay = (i: MueInquiry): string => {
+export const submitterDisplay = (i: MueInquiry): string => {
   const det = i.inquiry_submitter_details;
   if (det?.first_name || det?.last_name) {
     return `${det.first_name ?? ""} ${det.last_name ?? ""}`.trim();
