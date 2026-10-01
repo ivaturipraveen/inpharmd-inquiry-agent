@@ -3,6 +3,7 @@ import type {
   InquiryInput,
   ManufacturerContact,
   ManufacturerContactInput,
+  WebFormAutomationResult,
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_URL || "";
@@ -247,6 +248,9 @@ export const api = {
       }),
     sendEmailNow: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/send-now`, { method: "POST" }),
+    // Fills and attempts to submit the real manufacturer form; never the mock fixture.
+    submitWebForm: (id: number) =>
+      request<WebFormAutomationResult>(`/api/inquiries/${id}/web-form/submit`, { method: "POST" }),
     extractAnswer: (id: number) =>
       request<Inquiry>(`/api/inquiries/${id}/extract-answer`, { method: "POST" }),
     resetRetries: (id: number) =>

@@ -2307,6 +2307,36 @@ pre.raw-json {
 .retry-banner-warn strong {
   color: #7f1d1d;
 }
+/* Web Form automation escalation — deliberately distinct from
+   .error-banner (red) so it reads as an intentional handoff, not a bug. */
+.webform-human-action-banner {
+  background: #f5f3ff;
+  border: 1px solid #ddd6fe;
+  color: #5b21b6;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-top: 8px;
+}
+.webform-human-action-banner strong {
+  color: #4c1d95;
+}
+.webform-human-action-banner p {
+  margin: 4px 0 0;
+}
+.webform-automation-row {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+.webform-automation-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 .action-panel {
   background: var(--line-soft);
   border: 1px solid var(--line);

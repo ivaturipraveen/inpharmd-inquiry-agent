@@ -53,6 +53,7 @@ InquiryStatus = Literal[
     "call_pending",
     "call_completed",
     "call_scheduled",
+    "web_form_submitted",
     "needs_attention",
     "closed",
     "failed",
@@ -201,6 +202,24 @@ class EmailPreviewResult(BaseModel):
     body: str
 
 
+# ---------- Web Form automation POC ----------
+class WebFormPrepareRequest(BaseModel):
+    # True = target the local mock/test fixture; False (default) = resolve
+    # the real manufacturer's adapter.
+    use_mock: bool = False
+
+
+class WebFormAutomationResultOut(BaseModel):
+    outcome: str  # "automation_success" | "automation_failed" | "human_action_required" | "submitted_but_unverified"
+    reason: str
+    mechanism: Optional[str] = None
+    target: str  # "manufacturer" | "mock_test"
+    stage: str  # "prepare" | "submit"
+    filled_fields: list[str] = []
+    missing_fields: list[str] = []
+    inquiry: "InquiryOut"
+
+
 class BulkInquiryCreate(BaseModel):
     targets: list[BulkTarget]
     subject: str = Field(..., max_length=INQUIRY_SUBJECT_MAX_LENGTH)
@@ -316,6 +335,14 @@ class InquiryOut(InquiryBase):
     pi_link: Optional[str] = None
     mue_details: Optional[str] = None
     email_body_override: Optional[str] = None
+    web_form_automation_status: Optional[str] = None
+    web_form_automation_reason: Optional[str] = None
+    web_form_automation_mechanism: Optional[str] = None
+    web_form_automation_target: Optional[str] = None
+    web_form_automation_stage: Optional[str] = None
+    web_form_automation_attempted_at: Optional[datetime] = None
+    web_form_confirmation_url: Optional[str] = None
+    web_form_confirmation_screenshot_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
@@ -327,3 +354,4 @@ class InquiryOut(InquiryBase):
 # Resolve the forward reference (BulkInquiryResult → InquiryOut) now that
 # InquiryOut is defined.
 BulkInquiryResult.model_rebuild()
+WebFormAutomationResultOut.model_rebuild()

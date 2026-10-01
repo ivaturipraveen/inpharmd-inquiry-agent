@@ -14,6 +14,7 @@ const STATUS_FILTERS = [
   { value: "call_pending", label: "Call Pending" },
   { value: "call_completed", label: "Call Completed" },
   { value: "call_scheduled", label: "Call Scheduled" },
+  { value: "web_form_submitted", label: "Web Form Submitted" },
   { value: "needs_attention", label: "Needs Attention" },
   { value: "closed", label: "Closed" },
 ];
@@ -21,7 +22,7 @@ const STATUS_FILTERS = [
 // Single source of truth for stat tiles AND per-MUE-group pills — without
 // it they drifted (tiles vs. group counted `closed` differently by one).
 const RESPONDED_STATUSES = ["email_responded", "call_completed", "closed"];
-const AWAITING_STATUSES = ["email_pending", "email_sent", "call_pending", "call_scheduled"];
+const AWAITING_STATUSES = ["email_pending", "email_sent", "call_pending", "call_scheduled", "web_form_submitted"];
 const DRAFT_STATUSES = ["draft"];
 
 // Bucket filter values used by the stat-tile click handlers — the dropdown
@@ -443,8 +444,8 @@ export default function InquiriesPage() {
               <colgroup>
                 <col style={{ width: 90 }} />
                 <col />
-                <col style={{ width: "22%" }} />
-                <col style={{ width: 160 }} />
+                <col style={{ width: "18%" }} />
+                <col style={{ width: 190 }} />
                 <col style={{ width: 110 }} />
                 <col style={{ width: 110 }} />
               </colgroup>
@@ -638,6 +639,8 @@ export default function InquiriesPage() {
                                   ? `Scheduled — sends at ${c.email_scheduled_for ? new Date(c.email_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "..."}`
                                   : c.status === "call_scheduled"
                                   ? `Call scheduled — calling at ${c.call_scheduled_for ? new Date(c.call_scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "..."}`
+                                  : c.status === "web_form_submitted"
+                                  ? "Submitted via Web Form — waiting for reply"
                                   : "Waiting for reply"}
                               </div>
                             </td>

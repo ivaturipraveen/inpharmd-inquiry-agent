@@ -530,3 +530,60 @@ def extract_structured_excursion_fields(
     if not result["ndc"]:
         result["ndc"] = _detect_ndc_deterministic(snippet)
     return result
+
+
+_DRUG_NAME_SYSTEM = (
+    "You are identifying the specific medication/drug name a pharmacist's "
+    "inquiry is about. The inquiry can be about anything — a dosing "
+    "question, an adverse event, a temperature excursion or storage/"
+    "stability issue, a general medical-information request, or any other "
+    "topic. Do not require or assume any particular inquiry type; a "
+    "medication name may appear in text that has nothing to do with "
+    "excursions or storage. "
+    "If the text gives both a generic and a brand name for the same "
+    "product (e.g. 'furosemide (Lasix)'), return a single useful name that "
+    "identifies the product — prefer the brand name when both are given, "
+    "since that is what a manufacturer's intake form expects, but never "
+    "join both together or invent a name that isn't in the text. "
+    "If exactly one product is clearly identified, return its name. If no "
+    "medication is mentioned, or more than one distinct, unrelated product "
+    "is mentioned with no clear way to tell which one this inquiry "
+    "concerns, return an empty string — never guess, infer, or fabricate. "
+    "Also extract an NDC number if one is explicitly stated. "
+    "Return ONLY a JSON object with exactly these string keys: "
+    "drug_name, ndc. Use an empty string \"\" for any field not explicitly "
+    "stated."
+)
+
+
+def extract_drug_name(text: str) -> dict:
+    """Inquiry-type-independent medication-name extraction (unlike
+    extract_structured_excursion_fields). Raises on failure, same contract."""
+    snippet = (text or "").strip()
+    if len(snippet) > 24_000:
+        snippet = snippet[:24_000] + "\n…[truncated]"
+    if not snippet:
+        return {"drug_name": "", "ndc": ""}
+    if not is_configured():
+        raise SummaryConfigError("OPENAI_API_KEY not set")
+    client = _get_client()
+
+    resp = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        temperature=0.0,
+        timeout=15,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": _DRUG_NAME_SYSTEM},
+            {"role": "user", "content": snippet},
+        ],
+    )
+    import json as _json
+    raw = (resp.choices[0].message.content or "{}").strip()
+    parsed = _json.loads(raw)  # raises json.JSONDecodeError on malformed output — caller treats as failure
+    result = {key: str(parsed.get(key) or "").strip() for key in ("drug_name", "ndc")}
+    if result["drug_name"]:
+        result["drug_name"] = result["drug_name"][0].upper() + result["drug_name"][1:]
+    if not result["ndc"]:
+        result["ndc"] = _detect_ndc_deterministic(snippet)
+    return result

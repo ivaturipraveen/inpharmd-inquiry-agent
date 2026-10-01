@@ -37,6 +37,7 @@ export type InquiryStatus =
   | "call_pending"
   | "call_completed"
   | "call_scheduled"
+  | "web_form_submitted"
   | "needs_attention"
   | "closed"
   | "failed";
@@ -123,6 +124,16 @@ export interface Inquiry {
   // `question` — see backend models.Inquiry.mue_details.
   mue_details?: string | null;
   email_body_override?: string | null;
+  // Web Form automation POC — see backend web_form_automation_service.
+  web_form_automation_status?: string | null; // "automation_success" | "automation_failed" | "human_action_required"
+  web_form_automation_reason?: string | null;
+  web_form_automation_mechanism?: string | null;
+  web_form_automation_target?: string | null; // "manufacturer" | "mock_test"
+  web_form_automation_attempted_at?: string | null;
+  // Submission evidence — at most one of these is set (never both). See
+  // WebFormAutomationResult.confirmation_url/_screenshot_bytes on the backend.
+  web_form_confirmation_url?: string | null;
+  web_form_confirmation_screenshot_url?: string | null;
   // Set when forwarded from an InpharmD platform inquiry (MUE Excel grouping).
   source_inquiry_uuid?: string | null;
   inbound_attachments?: InquiryAttachment[] | null;
@@ -175,4 +186,17 @@ export interface InquiryFormData {
   requester_email?: string | null;
   // Same requesting team for every manufacturer in the batch — not per-target.
   team_name?: string | null;
+}
+
+// Web Form automation POC — result of one /web-form/prepare or
+// /web-form/submit-test call. See backend web_form_automation_service.
+export interface WebFormAutomationResult {
+  outcome: string; // "automation_success" | "automation_failed" | "human_action_required" | "submitted_but_unverified"
+  reason: string;
+  mechanism?: string | null;
+  target: string; // "manufacturer" | "mock_test"
+  stage: string; // "prepare" | "submit"
+  filled_fields: string[];
+  missing_fields: string[];
+  inquiry: Inquiry;
 }

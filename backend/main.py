@@ -198,6 +198,16 @@ WHERE i.call_conversation_id IS NOT NULL
         # `mue_details`) — see models.Inquiry.mue_details.
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS mue_details TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS email_body_override TEXT",
+        # Web Form automation POC — see models.Inquiry web_form_automation_* fields.
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_automation_status VARCHAR(32)",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_automation_reason TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_automation_mechanism VARCHAR(64)",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_automation_target VARCHAR(32)",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_automation_stage VARCHAR(16)",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_automation_attempted_at TIMESTAMPTZ",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_human_action_notified_at TIMESTAMPTZ",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_confirmation_url TEXT",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS web_form_confirmation_screenshot_url TEXT",
         # Drug-name → manufacturer-suggestion crawl cache (separate from
         # dailymed_cache above, which is NDC-keyed). See models.DailymedDrugNameCache.
         """

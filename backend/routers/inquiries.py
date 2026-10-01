@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -18,6 +19,7 @@ import excel_service
 import legacy_response_service
 import slack_service
 import summary_service
+import web_form_automation_service
 from database import get_db
 from models import BulkEmailBatch, EmailReply, Inquiry, InquiryAttachment, ManufacturerContact, User
 from routers.auth import get_current_user
@@ -41,6 +43,8 @@ from schemas import (
     InquiryOut,
     InquiryUpdate,
     TestCallPreviewPayload,
+    WebFormAutomationResultOut,
+    WebFormPrepareRequest,
 )
 
 
@@ -139,10 +143,12 @@ def extract_preview(
 ):
     """Best-effort drug-name extraction from raw, not-yet-persisted text —
     prefills the manual multi-manufacturer form's Drug Name field(s) before
-    an Inquiry exists. Reuses the same core function get_or_extract() uses;
-    never persists/caches anything. Question-only by design — the
-    post-persistence, attachment-aware flow (get_or_extract) is separate
-    and unaffected."""
+    an Inquiry exists. Inquiry-type-independent by design (dosing, adverse
+    event, excursion, general MI, anything) — see
+    summary_service.extract_drug_name, which is intentionally separate from
+    the excursion-specific extract_structured_excursion_fields used by the
+    post-persistence, attachment-aware flow (get_or_extract). Never
+    persists/caches anything."""
     if not summary_service.is_configured():
         return ExtractionPreviewResult(drug_name="")
     combined = "\n\n".join(
@@ -151,11 +157,10 @@ def extract_preview(
     if not combined.strip():
         return ExtractionPreviewResult(drug_name="")
     try:
-        fields = summary_service.extract_structured_excursion_fields(combined)
+        fields = summary_service.extract_drug_name(combined)
     except Exception:
         log.exception("extract_preview: extraction failed")
         return ExtractionPreviewResult(drug_name="")
-    # ndc is already computed above — no DailyMed lookup happens here.
     return ExtractionPreviewResult(drug_name=fields.get("drug_name", ""), ndc=fields.get("ndc", ""))
 
 
@@ -192,7 +197,10 @@ async def manufacturer_suggestions_preview(
     for row, match in zip(rows, matches):
         if match.matched_id is None:
             continue
-        suggested_ids.append(match.matched_id)
+        # Multiple labeler rows can resolve to the same manufacturer —
+        # de-dup within this response only (fresh list per request).
+        if match.matched_id not in suggested_ids:
+            suggested_ids.append(match.matched_id)
         if row.raw_name in repackaged_names:
             repackaged_ids.append(match.matched_id)
 
@@ -1558,3 +1566,269 @@ async def reprocess_pdf(
 
     db.commit()
     return _get_or_404(db, obj.id, current_user)
+
+
+# Standing pharmacist-of-record identity, same as every other channel —
+# not per-inquiry; the Inquiry's own requester_name is often just "Leah".
+WEB_FORM_CONTACT_FIRST_NAME = "Leah"
+WEB_FORM_CONTACT_LAST_NAME = "Mueller"
+WEB_FORM_CONTACT_EMAIL = "Leah@inpharmd.com"
+WEB_FORM_CONTACT_CREDENTIALS = "PharmD"
+WEB_FORM_CONTACT_PHONE = os.getenv("TRANSFER_PHARMACIST_PHONE", "+15134906650")
+WEB_FORM_CONTACT_ADDRESS = "3423 Piedmont Rd NE"
+WEB_FORM_CONTACT_CITY = "Atlanta"
+WEB_FORM_CONTACT_STATE = "GA"
+WEB_FORM_CONTACT_ZIP = "30305"
+
+
+def _web_form_inquiry_data(obj: Inquiry) -> dict:
+    medication_name = (obj.medication_name or "").strip()
+    question = obj.question or ""
+    # Restate the drug name in the question text so it's not lost when a
+    # form's product picklist has no exact match (falls back to "Other").
+    if medication_name:
+        question = f"Regarding {medication_name}: {question}"
+    return {
+        "medication_name": obj.medication_name,
+        "question": question,
+        "requester_name": f"{WEB_FORM_CONTACT_FIRST_NAME} {WEB_FORM_CONTACT_LAST_NAME}",
+        "requester_first_name": WEB_FORM_CONTACT_FIRST_NAME,
+        "requester_last_name": WEB_FORM_CONTACT_LAST_NAME,
+        "requester_email": WEB_FORM_CONTACT_EMAIL,
+        "requester_credentials": WEB_FORM_CONTACT_CREDENTIALS,
+        "requester_phone": WEB_FORM_CONTACT_PHONE,
+        "requester_address": WEB_FORM_CONTACT_ADDRESS,
+        "requester_city": WEB_FORM_CONTACT_CITY,
+        "requester_state": WEB_FORM_CONTACT_STATE,
+        "requester_zip": WEB_FORM_CONTACT_ZIP,
+        "team_name": obj.team_name,
+        "subject": obj.subject,
+    }
+
+
+async def _run_web_form_attempt(
+    db: Session, obj: Inquiry, mfr: ManufacturerContact, *, use_mock: bool, mode: str
+) -> "web_form_automation_service.WebFormAutomationResult":
+    """Resolves the adapter, runs/short-circuits automation, persists the
+    result, and sends the Slack escalation for an unresolved event."""
+    target_url, adapter, target_label = web_form_automation_service.resolve_target(
+        mi_web_form_url=mfr.mi_web_form_url if mfr else None, use_mock=use_mock
+    )
+    # DB-derived authorization — mi_web_form_url on file is what makes a
+    # manufacturer eligible; every other safety gate still applies.
+    target_authorized = bool((mfr.mi_web_form_url or "").strip()) if mfr else False
+
+    if adapter is None and web_form_automation_service.GENERIC_ENGINE_ENABLED:
+        # Only reached for a hostname with no REAL_ADAPTERS entry.
+        result = await web_form_automation_service.run_generic_web_form_automation(
+            target_url=target_url,
+            inquiry_data=_web_form_inquiry_data(obj),
+            mode=mode,
+            target_label=target_label,
+            target_authorized=target_authorized,
+        )
+    elif adapter is None:
+        result = web_form_automation_service.WebFormAutomationResult(
+            outcome="automation_failed",
+            reason="No automation adapter configured for this manufacturer's Web Form platform.",
+            target=target_label,
+            stage=mode,
+        )
+    elif not adapter.automation_enabled:
+        mechanism = adapter.disabled_mechanism
+        result = web_form_automation_service.WebFormAutomationResult(
+            outcome="human_action_required" if mechanism else "automation_failed",
+            reason=adapter.disabled_reason or "Automation is disabled for this manufacturer's Web Form.",
+            mechanism=mechanism,
+            target=target_label,
+            stage=mode,
+        )
+    else:
+        result = await web_form_automation_service.run_web_form_automation(
+            target_url=target_url,
+            adapter=adapter,
+            inquiry_data=_web_form_inquiry_data(obj),
+            mode=mode,
+            target_label=target_label,
+            target_authorized=target_authorized,
+        )
+
+    obj.web_form_automation_status = result.outcome
+    obj.web_form_automation_reason = result.reason
+    obj.web_form_automation_mechanism = result.mechanism
+    obj.web_form_automation_target = result.target
+    obj.web_form_automation_stage = result.stage
+    obj.web_form_automation_attempted_at = _now()
+
+    # Submission evidence — exactly one of these, never both.
+    obj.web_form_confirmation_url = result.confirmation_url
+    obj.web_form_confirmation_screenshot_url = None
+    if result.confirmation_screenshot_bytes:
+        import s3_service
+        obj.web_form_confirmation_screenshot_url = s3_service.upload_bytes(
+            result.confirmation_screenshot_bytes,
+            original_name=f"web-form-confirmation-{obj.id}.png",
+            inquiry_id=obj.id,
+            content_type="image/png",
+            prefix="web-form-confirmations",
+        )
+
+    is_escalation = result.outcome in web_form_automation_service.ESCALATION_OUTCOMES
+    if not is_escalation:
+        # Clears the guard so a future escalation can notify again.
+        obj.web_form_human_action_notified_at = None
+    if is_escalation and obj.status != "closed":
+        # Reuses the existing Needs Attention status; never reopens a closed inquiry.
+        obj.status = "needs_attention"
+    elif (
+        mode == "submit"
+        and result.outcome == "automation_success"
+        and result.target == "manufacturer"
+        and obj.status != "closed"
+    ):
+        # A real submission happened — status must reflect that (excludes
+        # submit-test's mock fixture, which is never real).
+        obj.status = "web_form_submitted"
+    db.commit()
+
+    if is_escalation:
+        _notify_web_form_human_action_required(
+            db,
+            obj.id,
+            manufacturer=mfr.manufacturer if mfr else "Unknown manufacturer",
+            medication_name=obj.medication_name,
+            requester_name=obj.requester_name,
+            requester_email=obj.requester_email,
+            team_name=obj.team_name,
+            web_form_url=mfr.mi_web_form_url if mfr else None,
+            reason=result.reason,
+            mechanism=result.mechanism,
+            outcome=result.outcome,
+        )
+
+    return result
+
+
+def _notify_web_form_human_action_required(
+    db: Session,
+    inquiry_id: int,
+    *,
+    manufacturer: str,
+    medication_name: Optional[str],
+    requester_name: Optional[str],
+    requester_email: Optional[str],
+    team_name: Optional[str],
+    web_form_url: Optional[str],
+    reason: str,
+    mechanism: Optional[str],
+    outcome: str = "human_action_required",
+) -> None:
+    """Send-first-then-mark, guarded by SELECT ... FOR UPDATE SKIP LOCKED —
+    safe against concurrent calls for the same inquiry."""
+    locked = (
+        db.query(Inquiry)
+        .filter(Inquiry.id == inquiry_id, Inquiry.web_form_human_action_notified_at.is_(None))
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+    if locked is None:
+        return
+    sent = slack_service.notify_web_form_human_action_required(
+        inquiry_id,
+        manufacturer=manufacturer,
+        medication_name=medication_name,
+        requester_name=requester_name,
+        requester_email=requester_email,
+        team_name=team_name,
+        web_form_url=web_form_url,
+        reason=reason,
+        mechanism=mechanism,
+        outcome=outcome,
+    )
+    if sent:
+        locked.web_form_human_action_notified_at = _now()
+        db.commit()
+    else:
+        db.rollback()
+
+
+@router.post("/{inquiry_id}/web-form/prepare", response_model=WebFormAutomationResultOut)
+async def prepare_web_form(
+    inquiry_id: int,
+    payload: WebFormPrepareRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Fills fields only, never submits. use_mock=True targets the local test fixture."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id) if obj.manufacturer_id else None
+    result = await _run_web_form_attempt(db, obj, mfr, use_mock=payload.use_mock, mode="prepare")
+    return WebFormAutomationResultOut(
+        outcome=result.outcome,
+        reason=result.reason,
+        mechanism=result.mechanism,
+        target=result.target,
+        stage=result.stage,
+        filled_fields=result.filled_fields,
+        missing_fields=result.missing_fields,
+        inquiry=InquiryOut.model_validate(obj),
+    )
+
+
+@router.post("/{inquiry_id}/web-form/submit-test", response_model=WebFormAutomationResultOut)
+async def submit_test_web_form(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Submits the LOCAL MOCK form only; blocked unless prepare already
+    succeeded against the mock fixture — never reaches a real manufacturer."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    if (
+        obj.web_form_automation_target != "mock_test"
+        or obj.web_form_automation_status != "automation_success"
+        or obj.web_form_automation_stage != "prepare"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Run 'Prepare Form' against the mock test form successfully before submitting."
+                if obj.web_form_automation_stage != "submit"
+                else "This inquiry's test form was already submitted — re-run Prepare Form first to submit again."
+            ),
+        )
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id) if obj.manufacturer_id else None
+    result = await _run_web_form_attempt(db, obj, mfr, use_mock=True, mode="submit")
+    return WebFormAutomationResultOut(
+        outcome=result.outcome,
+        reason=result.reason,
+        mechanism=result.mechanism,
+        target=result.target,
+        stage=result.stage,
+        filled_fields=result.filled_fields,
+        missing_fields=result.missing_fields,
+        inquiry=InquiryOut.model_validate(obj),
+    )
+
+
+@router.post("/{inquiry_id}/web-form/submit", response_model=WebFormAutomationResultOut)
+async def submit_web_form(
+    inquiry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Production real-manufacturer submit; never targets the mock fixture.
+    Safe by construction: disabled adapters and unallowlisted generic targets refuse."""
+    obj = _get_or_404(db, inquiry_id, current_user)
+    mfr = db.get(ManufacturerContact, obj.manufacturer_id) if obj.manufacturer_id else None
+    result = await _run_web_form_attempt(db, obj, mfr, use_mock=False, mode="submit")
+    return WebFormAutomationResultOut(
+        outcome=result.outcome,
+        reason=result.reason,
+        mechanism=result.mechanism,
+        target=result.target,
+        stage=result.stage,
+        filled_fields=result.filled_fields,
+        missing_fields=result.missing_fields,
+        inquiry=InquiryOut.model_validate(obj),
+    )

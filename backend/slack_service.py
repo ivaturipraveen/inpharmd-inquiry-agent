@@ -250,6 +250,96 @@ def notify_no_response(
     return _post(payload, log_context=f"no-response card for inquiry {inquiry_id}")
 
 
+def notify_web_form_human_action_required(
+    inquiry_id: int,
+    *,
+    manufacturer: str,
+    medication_name: Optional[str],
+    requester_name: Optional[str] = None,
+    requester_email: Optional[str] = None,
+    team_name: Optional[str] = None,
+    web_form_url: Optional[str],
+    reason: str,
+    mechanism: Optional[str] = None,
+    outcome: str = "human_action_required",
+) -> bool:
+    """Two outcomes share this path with different wording: nothing was
+    submitted yet, vs. it may already have gone through — don't resubmit blindly."""
+    inquiry_url = _inquiry_url(inquiry_id)
+    label = f"Inquiry #{inquiry_id} — {manufacturer}"
+    title = f"<{inquiry_url}|{label}>" if inquiry_url else f"*{label}*"
+
+    fields = [
+        {"type": "mrkdwn", "text": f"*Manufacturer:*\n{manufacturer}"},
+        {"type": "mrkdwn", "text": f"*Drug:*\n{medication_name or '—'}"},
+        {"type": "mrkdwn", "text": f"*Requester:*\n{_requester_line(requester_name, requester_email)}"},
+    ]
+    if team_name:
+        fields.append({"type": "mrkdwn", "text": f"*Team:*\n{team_name}"})
+
+    is_unverified_submit = outcome == "submitted_but_unverified"
+    header_text = (
+        "⚠️ Web Form submission outcome could not be verified"
+        if is_unverified_submit
+        else "🖐 Web Form automation needs human action"
+    )
+    action_text = (
+        "*Action:*\nDo NOT resubmit yet — check the manufacturer's Web Form/email/portal "
+        "first to confirm whether the original submission already went through, then only "
+        "resubmit if it did not."
+        if is_unverified_submit
+        else "*Action:*\nComplete the manufacturer's Web Form manually."
+    )
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": header_text, "emoji": True},
+        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": title}},
+        {"type": "section", "fields": fields},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Reason:*\n{_truncate(reason)}"
+                + (f" (`{mechanism}`)" if mechanism else ""),
+            },
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": action_text},
+        },
+    ]
+    action_elements = []
+    if inquiry_url:
+        action_elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Open inquiry", "emoji": True},
+            "url": inquiry_url,
+            "style": "primary",
+        })
+    if web_form_url:
+        action_elements.append({
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Open Web Form", "emoji": True},
+            "url": web_form_url,
+        })
+    if action_elements:
+        blocks.append({"type": "actions", "elements": action_elements})
+
+    fallback_text = (
+        f"Web Form submission outcome could not be verified — Inquiry #{inquiry_id} ({manufacturer})"
+        if is_unverified_submit
+        else f"Web Form automation needs human action — Inquiry #{inquiry_id} ({manufacturer})"
+    )
+    payload = {
+        "text": fallback_text,
+        "blocks": blocks,
+    }
+    return _post(payload, log_context=f"web-form {outcome} card for inquiry {inquiry_id}")
+
+
 def _requester_line(name: Optional[str], email: Optional[str]) -> str:
     name = (name or "").strip()
     email = (email or "").strip()
