@@ -34,6 +34,76 @@ _GENERIC_HUMAN_VERIFICATION_SIGNATURES = (
     "security challenge",
 )
 _LOGIN_SIGNATURES = ("sign in", "log in", "login", "register", "create an account")
+# A manufacturer's own site/service being down — never a CAPTCHA/login gate,
+# never something we can fix; capture evidence and alert instead of guessing.
+_SITE_ERROR_SIGNATURES = (
+    "unexpected error",
+    "looks like we are having some issues",
+    "we are working hard to bring it online",
+    "something went wrong",
+    "service unavailable",
+    "internal server error",
+    "temporarily unavailable",
+    "502 bad gateway",
+    "503 service unavailable",
+    "site is currently down",
+    "this site can't be reached",
+    "application error",
+)
+
+# The Eugia incident: finding A form is not the same as finding the RIGHT
+# form. These phrases are explicit statements of a form's stated purpose —
+# checked against page title/headings/instructions/disclaimers, never
+# against field names alone (a Street Address field looks the same on
+# every form regardless of what the form is actually for).
+_REJECT_PURPOSE_SIGNATURES = (
+    "adverse event", "adverse drug", "adverse reaction", "drug safety",
+    "report a side effect", "report any kind of adverse", "pharmacovigilance",
+    "product quality complaint", "product complaint", "quality complaint",
+    "patient assistance program", "patient assistance",
+    "media inquir", "press inquir", "investor relations",
+    "careers", "job application", "job opening",
+    "sales inquir", "become a distributor", "vendor inquir",
+)
+_ACCEPT_PURPOSE_SIGNATURES = (
+    "medical information", "medical inquir", "medical question",
+    "healthcare professional", "health care professional", "hcp portal",
+    "drug information", "product information request", "scientific information",
+    "medinfo", "med info", "ask a medical question", "contact a medical expert",
+)
+
+
+async def _assess_form_purpose(context, *, extra_text: str = "") -> tuple:
+    """Determines whether a form's STATED purpose (title/headings/intro
+    text/disclaimers — not field names) is appropriate for a Medical
+    Information inquiry. Returns (compatible: bool|None, evidence: str).
+    None means ambiguous — caller must treat that as Needs Investigation,
+    never assume compatibility."""
+    text = extra_text or ""
+    try:
+        text += " " + (await context.title())
+    except Exception:
+        pass
+    try:
+        text += " " + await context.inner_text("body")
+    except Exception:
+        pass
+    text = text.lower()
+
+    rejected = [sig for sig in _REJECT_PURPOSE_SIGNATURES if sig in text]
+    accepted = [sig for sig in _ACCEPT_PURPOSE_SIGNATURES if sig in text]
+
+    if rejected and not accepted:
+        return False, f"Rejected — page explicitly references: {', '.join(rejected)!r}."
+    if rejected and accepted:
+        return None, (
+            f"Ambiguous — page mixes MI-compatible language ({', '.join(accepted)!r}) "
+            f"with incompatible-purpose language ({', '.join(rejected)!r}); needs human review."
+        )
+    if accepted:
+        return True, f"Confirmed — page explicitly states: {', '.join(accepted)!r}."
+    return None, "Ambiguous — no explicit purpose statement found in title/headings/body text; needs human review."
+
 
 # Both mean "a human needs to look at this"; kept distinct since one means
 # nothing was submitted yet and the other means it may already have been.
@@ -146,6 +216,15 @@ class WebFormAdapter:
     # Only set True once an author verifies this URL is actually unique per
     # submission — most "Thank You" pages are generic/static.
     confirmation_url_is_unique: bool = False
+    # Explicit human verification that this form's stated purpose (title,
+    # headings, intro text, disclaimers) matches a Medical Information
+    # inquiry — never adverse-event/drug-safety, product quality, media,
+    # careers, patient assistance, sales, etc. Gates field mapping AND
+    # submission for every adapter; see run_web_form_automation. Must be
+    # paired with purpose_evidence (the actual quoted source text) whenever
+    # True — enforced by TestPurposeValidationArchitecture.
+    purpose_validated: bool = False
+    purpose_evidence: Optional[str] = None
 
 
 @dataclass
@@ -179,6 +258,8 @@ MOCK_ADAPTER = WebFormAdapter(
     url_match=None,
     automation_enabled=True,
     allow_real_submission=True,
+    purpose_validated=True,
+    purpose_evidence="Local test fixture — not a real manufacturer form; purpose validation not applicable.",
     field_mappings={
         "drug_name": FieldMapping(selector="#drug_name", source_key="medication_name"),
         "question": FieldMapping(selector="#question", source_key="question", required=True),
@@ -368,6 +449,13 @@ REAL_ADAPTERS: list = [
         url_match="roche-ssp.my.salesforce-sites.com",
         automation_enabled=True,
         allow_real_submission=True,
+        purpose_validated=True,
+        purpose_evidence=(
+            "Page is titled 'Submit Medical Inquiry'; form fields are a "
+            "product picklist, 'Type your question', and 'Are You a "
+            "Healthcare Professional?' — no adverse-event/drug-safety framing "
+            "anywhere on the page (re-verified live 2026-10-01)."
+        ),
         # Verified live (2026-09-29): no CAPTCHA/login, stable ids. HCP radio
         # is a pre-form click (AJAX reveals more fields); always "Yes" for us.
         pre_form_selector="#SYN_Portal_Form_USMA_Page\\:SYN_Portal_Form_USMA\\:pageContainer\\:j_id62\\:0",
@@ -453,6 +541,13 @@ REAL_ADAPTERS: list = [
         url_match="focushealthgroup.com",
         automation_enabled=True,
         allow_real_submission=True,
+        purpose_validated=True,
+        purpose_evidence=(
+            "Plain 'CONTACT US' page (Name/Phone/Email/How did you hear about "
+            "us?/Message) with no scoping text restricting it to adverse "
+            "events, product quality, media, careers, or sales — a generic "
+            "repackager contact form (re-verified live 2026-10-01)."
+        ),
         # Verified live: plain Gravity Forms, no CAPTCHA. Phone now resolved
         # via WEB_FORM_CONTACT_PHONE.
         field_mappings={
@@ -482,6 +577,13 @@ REAL_ADAPTERS: list = [
         url_match="merckmedicalportal.com",
         automation_enabled=True,
         allow_real_submission=True,
+        purpose_validated=True,
+        purpose_evidence=(
+            "Page is the 'Merck Medical Portal' — 'provided as a scientific "
+            "resource for informational, non-promotional purposes'; the form "
+            "itself is headed 'Contact a Merck Medical Expert' (re-verified "
+            "live 2026-10-01). No adverse-event/drug-safety framing."
+        ),
         # Verified live: no CAPTCHA/login; ids drift so selectors use `name`.
         # HCP radio is a pre-form click, always "Yes" for our own intake.
         pre_form_selector="button:has-text('I am a U.S. Health Care Professional')",
@@ -544,6 +646,182 @@ REAL_ADAPTERS: list = [
         },
         submit_selector="button:text-is('Submit')",
         confirmation_selector="text='Your request was submitted successfully.'",
+        confirmation_timeout_ms=5000,
+    ),
+    WebFormAdapter(
+        key="eugia",
+        label="Eugia Pharma (eugiaus.com — Gravity Forms)",
+        url_match="eugiaus.com",
+        automation_enabled=False,
+        allow_real_submission=False,
+        disabled_reason=(
+            "This is Eugia's ONLY web form, and it is explicitly scoped to "
+            "adverse-event/Drug Safety reports ('To report any kind of adverse "
+            "drug effect, please fill out the contact form below to submit to "
+            "our Drug Safety team'), not general medical information. There is "
+            "no general-MI web form on this site — general inquiries route to "
+            "phone/email (888-238-7880 / customerservice@EugiaUS.com) only. "
+            "Wrong-channel submission confirmed live (inquiry #2146, a routine "
+            "dosing question, was sent here by mistake). Do not re-enable for "
+            "general MI use."
+        ),
+        disabled_mechanism=None,
+        purpose_validated=False,
+        purpose_evidence=(
+            "REJECTED — page heading: 'Adverse drug effect or reaction to "
+            "Eugia medication'; intro text: 'To report any kind of adverse "
+            "drug effect, please fill out the contact form below to submit "
+            "to our Drug Safety team.' Only one <form> exists on the page; "
+            "'General Inquiry' section has no form, phone/email only."
+        ),
+        # Verified live: plain Gravity Forms (form id 6), no CAPTCHA/login —
+        # left mapped for reference only; automation_enabled=False above.
+        field_mappings={
+            "first_name": FieldMapping(
+                selector="#input_6_1_3", source_key="requester_first_name", required=True, label="First",
+            ),
+            "last_name": FieldMapping(
+                selector="#input_6_1_6", source_key="requester_last_name", required=True, label="Last",
+            ),
+            "address": FieldMapping(
+                selector="#input_6_2_1", source_key="requester_address", required=True, label="Street Address",
+            ),
+            "city": FieldMapping(
+                selector="#input_6_2_3", source_key="requester_city", required=True, label="City",
+            ),
+            # Picklist uses full state names, not abbreviations — same GA
+            # address as elsewhere, different format (see Merck's "state").
+            "state": FieldMapping(
+                selector="#input_6_2_4", constant_value="Georgia", required=True,
+                field_type="select", label="State",
+            ),
+            "zip": FieldMapping(
+                selector="#input_6_2_5", source_key="requester_zip", required=True, label="ZIP Code",
+            ),
+            "phone": FieldMapping(
+                selector="#input_6_3", source_key="requester_phone", required=True, label="Phone",
+            ),
+            "email": FieldMapping(
+                selector="#input_6_4", source_key="requester_email", required=True, label="Email",
+            ),
+            # Label explicitly asks for medication/strength/NDC/adverse effects —
+            # `question` already carries the "Regarding {medication_name}:" prefix.
+            "message": FieldMapping(
+                selector="#input_6_6", source_key="question", required=True, label="Message",
+            ),
+        },
+        # confirmation_selector intentionally left unset until an authorized,
+        # human-supervised real submission test verifies it (see
+        # TestVerificationArchitectureNoRealSuccessSelectors).
+        submit_selector="#gform_submit_button_6",
+        confirmation_timeout_ms=5000,
+    ),
+    WebFormAdapter(
+        key="fresenius_kabi",
+        label="Fresenius Kabi (fresenius-kabi.com — AEM form)",
+        url_match="fresenius-kabi.com",
+        automation_enabled=True,
+        allow_real_submission=True,
+        purpose_validated=True,
+        purpose_evidence=(
+            "Page text: 'If you would like information about a product "
+            "group, product or service please fill in the form below. ... "
+            "Your request will be forwarded to your local country contact.' "
+            "(re-verified live 2026-10-01). General product/service MI "
+            "request, no adverse-event/drug-safety framing."
+        ),
+        # Verified live: plain AEM contact form, no CAPTCHA/login. A decoy
+        # "password" field exists in the DOM (anti-bot honeypot) — never
+        # mapped/filled. Country has no data source in our model; our whole
+        # standing identity is US-based, so "United States" is a documented
+        # default, not a guess (user-approved).
+        pre_form_selector=None,
+        field_mappings={
+            # Site's own option label is "United States of America", not
+            # "United States" — same country, exact text the picklist uses.
+            "country": FieldMapping(
+                selector="select[name='Country']", constant_value="United States of America",
+                required=True, field_type="select", label="Select Country/Region",
+            ),
+            "email": FieldMapping(
+                selector="input[name='E-mail']", source_key="requester_email", required=True, label="E-mail",
+            ),
+            "message": FieldMapping(
+                selector="textarea[name='Message']", source_key="question", required=True, label="Message",
+            ),
+            "first_name": FieldMapping(
+                selector="input[name='First name']", source_key="requester_first_name", label="First Name",
+            ),
+            "last_name": FieldMapping(
+                selector="input[name='Last name']", source_key="requester_last_name", label="Last Name",
+            ),
+            "profession": FieldMapping(
+                selector="input[name='Profession']", source_key="requester_credentials", label="Profession",
+            ),
+        },
+        submit_selector="#form-button-300254276",
+        confirmation_timeout_ms=5000,
+    ),
+    WebFormAdapter(
+        key="lupin",
+        label="Lupin Pharmaceuticals (lupin.com/US/contact-us)",
+        url_match="lupin.com",
+        automation_enabled=False,
+        allow_real_submission=False,
+        disabled_reason=(
+            "RESOLVED — decided not to enable, not merely ambiguous. "
+            "Re-checked the full contact page and the entire US homepage: "
+            "no 'Medical Information'/'Medical Inquiry'/'MedInfo' term or "
+            "link exists anywhere on the site. The page explicitly names "
+            "two specific channels instead — phone/email for 'Customer "
+            "Service or Patient Assistance', and a dedicated email "
+            "(dsrm@lupin.com) for 'Product Quality and Adverse Events'. "
+            "The web form's own 'subject' dropdown separates 'Product | "
+            "Customer service' from 'Product | Quality', 'Product | "
+            "Adverse events', and 'Product | Patient assistance' as "
+            "distinct categories, and also includes 'Media Contact' and "
+            "'Partner... Business development' — this is a general "
+            "corporate contact form, not a dedicated MI intake. Decision: "
+            "do not automate; same wrong-channel risk as Eugia with no "
+            "offsetting evidence this form is meant for clinical questions."
+        ),
+        disabled_mechanism=None,
+        purpose_validated=False,
+        purpose_evidence=(
+            "REJECTED (resolved, not ambiguous) — no 'Medical Information' "
+            "framing found anywhere on the contact page or full US "
+            "homepage. Page explicitly directs 'Customer Service or "
+            "Patient Assistance' to phone/email and 'Product Quality and "
+            "Adverse Events' to a dedicated email, not this web form. The "
+            "form's own subject options treat 'Customer service' as "
+            "distinct from clinical/safety topics, consistent with a "
+            "general corporate contact form rather than an MI channel."
+        ),
+        # Verified live: plain contact form, no CAPTCHA/login. "subject"
+        # dropdown and "agree" checkbox are not required by the site itself —
+        # agree is still checked true since it's honestly accurate.
+        field_mappings={
+            "name": FieldMapping(
+                selector="input[name='name']", source_key="requester_name", required=True, label="Name",
+            ),
+            "organization": FieldMapping(
+                selector="input[name='organization']", source_key="team_name", label="Organization",
+            ),
+            "email": FieldMapping(
+                selector="input[name='email']", source_key="requester_email", required=True, label="Email",
+            ),
+            "phone": FieldMapping(
+                selector="input[name='number']", source_key="requester_phone", label="Contact",
+            ),
+            "query": FieldMapping(
+                selector="textarea[name='query']", source_key="question", required=True, label="Query",
+            ),
+            "agree": FieldMapping(
+                selector="input[name='agree']", constant_value="true",
+                field_type="checkbox", label="Agree to Privacy Statement",
+            ),
+        },
+        submit_selector="button.green_cta",
         confirmation_timeout_ms=5000,
     ),
 ]
@@ -609,6 +887,26 @@ async def _detect_login_wall(page) -> bool:
     except Exception:
         return False
     return any(sig in text for sig in _LOGIN_SIGNATURES)
+
+
+async def _detect_manufacturer_site_error(page, response) -> Optional[str]:
+    """A 5xx status or a known error-page phrase means the manufacturer's own
+    site/service is down — never a CAPTCHA/login gate, never fixable by us.
+    Returns the matched evidence string, or None."""
+    if response is not None:
+        try:
+            if response.status >= 500:
+                return f"HTTP {response.status} from the manufacturer's server"
+        except Exception:
+            pass
+    try:
+        text = (await page.inner_text("body")).lower()
+    except Exception:
+        return None
+    for sig in _SITE_ERROR_SIGNATURES:
+        if sig in text:
+            return sig
+    return None
 
 
 # Never "a business field a human filled in" — excluded from unmapped-field detection.
@@ -878,6 +1176,24 @@ async def run_web_form_automation(
     target_authorized: bool = True,
 ) -> WebFormAutomationResult:
     """Runs one automation attempt. Never called for a disabled adapter."""
+    # Purpose validation gates everything else — field mapping and
+    # submit-readiness are only evaluated once a human has confirmed this
+    # form's stated purpose matches a Medical Information inquiry (never
+    # adverse-event/drug-safety, product quality, media, careers, patient
+    # assistance, sales, etc.). Exempt only the local mock/test fixture.
+    if target_label != "mock_test" and not adapter.purpose_validated:
+        return WebFormAutomationResult(
+            outcome="automation_failed",
+            reason=(
+                "Refused: this form's stated purpose has not been verified to "
+                "match a Medical Information inquiry (adapter.purpose_validated "
+                "is False). Field mapping and submission are never attempted "
+                "until purpose validation passes."
+            ),
+            target=target_label,
+            stage=mode,
+        )
+
     if mode == "submit" and not adapter.allow_real_submission:
         # Defense in depth on top of the endpoint-level guard.
         return WebFormAutomationResult(
@@ -915,8 +1231,49 @@ async def run_web_form_automation(
         browser = await pw.chromium.launch(headless=True)
         try:
             page = await browser.new_page()
-            await page.goto(target_url, wait_until="load", timeout=15000)
+            response = await page.goto(target_url, wait_until="load", timeout=15000)
             await _dismiss_cookie_banner(page)
+
+            # Manufacturer's own site/service down — capture evidence and
+            # alert; never a CAPTCHA/login gate, never fixable by retrying
+            # with different field values.
+            site_error_evidence = await _detect_manufacturer_site_error(page, response)
+            if site_error_evidence:
+                screenshot_bytes = None
+                try:
+                    screenshot_bytes = await page.screenshot(full_page=True)
+                except Exception:
+                    pass
+                return WebFormAutomationResult(
+                    outcome="human_action_required",
+                    reason=(
+                        f"The manufacturer's website returned an error instead of the "
+                        f"form (\"{site_error_evidence}\"). This looks like an outage "
+                        f"on their end, not a CAPTCHA/login gate — retry later."
+                    ),
+                    mechanism="manufacturer_site_error",
+                    target=target_label,
+                    stage=mode,
+                    confirmation_screenshot_bytes=screenshot_bytes,
+                )
+
+            # Trust-but-verify, even for a human-validated adapter: a live
+            # REJECT signal (the site changed since purpose_validated was
+            # set) always overrides a stale prior validation. An ambiguous
+            # live read never downgrades an adapter a human already vouched
+            # for with quoted evidence.
+            live_compatible, live_evidence = await _assess_form_purpose(page)
+            if live_compatible is False:
+                return WebFormAutomationResult(
+                    outcome="automation_failed",
+                    reason=(
+                        f"Refused: live purpose re-check failed despite this "
+                        f"adapter's prior purpose_validated=True ({live_evidence}). "
+                        f"The site may have changed — needs re-investigation."
+                    ),
+                    target=target_label,
+                    stage=mode,
+                )
 
             # One explicitly adapter-declared pre-form click, never generic.
             if adapter.pre_form_selector:
@@ -1637,6 +1994,126 @@ class DiscoveryReport:
     submit_candidate_count: int = 0
     prepare_capable: bool = False
     submit_capable_evidence: bool = False
+    # Set when the landing page had no plausible form and link-following
+    # found the real one elsewhere — see _locate_real_form_context.
+    navigated: bool = False
+    navigation_evidence: Optional[str] = None
+    # Only set when the real form ended up on a different TOP-LEVEL page
+    # (not an iframe) — lets a caller re-navigate straight there.
+    navigated_url: Optional[str] = None
+    found_in_iframe: bool = False
+    # Mandatory purpose gate — see _assess_form_purpose. None means
+    # ambiguous (Needs Investigation), never "assumed compatible."
+    purpose_compatible: Optional[bool] = None
+    purpose_evidence: Optional[str] = None
+
+
+# Read-only: a page whose own nav links to the real contact/MI form is
+# common (home page -> "Contact Us" -> actual form, or a form embedded in
+# an iframe) — don't report "no usable form" just because the landing URL
+# on file isn't the form itself.
+_FORM_NAV_LINK_KEYWORDS = (
+    "contact us", "contact", "medical information", "medinfo", "med info",
+    "submit a question", "submit a medical inquiry", "submit medical inquiry",
+    "ask a medical question", "medical inquiry", "drug information",
+    "product information", "healthcare professional", "submit", "inquiry",
+    "question", "support", "get in touch",
+)
+_MIN_PLAUSIBLE_FORM_FIELDS = 2
+
+
+async def _frame_or_page_has_plausible_form(frame_or_page) -> tuple:
+    """Heuristic: a real contact/MI form has at least 2 visible fillable
+    inputs — not just a header search box or cookie-preference checkboxes."""
+    try:
+        fields = await discover_fields(frame_or_page)
+    except Exception:
+        return False, 0
+    plausible = [
+        f for f in fields
+        if f.visible and f.element_type in ("input", "textarea")
+        and f.input_type not in ("search", "hidden", "submit", "button", "checkbox", "radio")
+    ]
+    return len(plausible) >= _MIN_PLAUSIBLE_FORM_FIELDS, len(plausible)
+
+
+@dataclass
+class _FormLocateResult:
+    context: object  # Page or Frame to run field discovery against
+    navigated: bool = False
+    found_in_iframe: bool = False
+    evidence: str = ""
+    human_gate_mechanism: Optional[str] = None
+    login_gate: bool = False
+
+
+async def _locate_real_form_context(page, *, max_link_hops: int = 2) -> _FormLocateResult:
+    """Read-only: if the current page has no plausible form, checks its
+    iframes, then follows at most `max_link_hops` on-page links matching
+    common MI/contact keywords and rechecks. Never fills/checks/selects/
+    submits anything. A gate (CAPTCHA/login) found anywhere along the way
+    stops the search immediately — reported, never routed around."""
+    mechanism = await _detect_human_verification(page)
+    if mechanism:
+        return _FormLocateResult(context=page, evidence="human gate detected", human_gate_mechanism=mechanism)
+    if await _detect_login_wall(page):
+        return _FormLocateResult(context=page, evidence="login wall detected", login_gate=True)
+
+    ok, n = await _frame_or_page_has_plausible_form(page)
+    if ok:
+        return _FormLocateResult(context=page, evidence=f"form found on page ({n} fields)")
+
+    for el in await page.query_selector_all("iframe"):
+        try:
+            frame = await el.content_frame()
+        except Exception:
+            frame = None
+        if not frame:
+            continue
+        ok, n = await _frame_or_page_has_plausible_form(frame)
+        if ok:
+            return _FormLocateResult(context=frame, found_in_iframe=True, evidence=f"form found in iframe ({n} fields)")
+
+    if max_link_hops <= 0:
+        return _FormLocateResult(context=page, evidence="no plausible form found; link-following exhausted")
+
+    try:
+        links = await page.eval_on_selector_all(
+            "a[href]",
+            "els => els.map(e => ({href: e.href, text: (e.textContent||'').trim().toLowerCase()}))",
+        )
+    except Exception:
+        links = []
+
+    current_url = page.url
+    candidate = None
+    for kw in _FORM_NAV_LINK_KEYWORDS:
+        for link in links:
+            href = link["href"]
+            if (
+                kw in link["text"] and href and href != current_url
+                and not href.startswith(("javascript:", "mailto:", "tel:", "#"))
+            ):
+                candidate = link
+                break
+        if candidate:
+            break
+
+    if not candidate:
+        return _FormLocateResult(context=page, evidence="no plausible form found; no matching nav link")
+
+    try:
+        await page.goto(candidate["href"], wait_until="load", timeout=20000)
+        await _dismiss_cookie_banner(page)
+        await _wait_for_gate_settle(page)
+        await page.wait_for_timeout(1500)  # extra settle for client-rendered forms
+    except Exception as e:
+        return _FormLocateResult(context=page, navigated=True, evidence=f"navigation to '{candidate['text']}' failed: {e}")
+
+    nested = await _locate_real_form_context(page, max_link_hops=max_link_hops - 1)
+    nested.navigated = True
+    nested.evidence = f"followed '{candidate['text']}' -> {candidate['href']} => {nested.evidence}"
+    return nested
 
 
 async def discover_only(target_url: str, *, pre_form_selector: Optional[str] = None) -> DiscoveryReport:
@@ -1665,16 +2142,42 @@ async def discover_only(target_url: str, *, pre_form_selector: Optional[str] = N
 
                 await _wait_for_gate_settle(page)
 
-                mechanism = await _detect_human_verification(page)
-                if mechanism:
-                    report.human_gate_mechanism = mechanism
+                located = await _locate_real_form_context(page, max_link_hops=2)
+                report.navigated = located.navigated
+                report.navigation_evidence = located.evidence
+                report.found_in_iframe = located.found_in_iframe
+                if located.navigated and not located.found_in_iframe:
+                    report.navigated_url = page.url
+
+                if located.human_gate_mechanism:
+                    report.human_gate_mechanism = located.human_gate_mechanism
                     return report
 
-                if await _detect_login_wall(page):
+                if located.login_gate:
                     report.login_gate = True
                     return report
 
-                fields = await discover_fields(page)
+                context = located.context
+
+                # Mandatory purpose gate — finding A form is not enough.
+                # For an iframe-embedded form, also include the parent
+                # page's surrounding text (purpose framing often lives
+                # there, not inside the embedded widget itself).
+                parent_text = ""
+                if located.found_in_iframe:
+                    try:
+                        parent_text = (await page.title()) + " " + await page.inner_text("body")
+                    except Exception:
+                        pass
+                purpose_compatible, purpose_evidence = await _assess_form_purpose(context, extra_text=parent_text)
+                report.purpose_compatible = purpose_compatible
+                report.purpose_evidence = purpose_evidence
+                if purpose_compatible is not True:
+                    # Rejected or ambiguous — field mapping/submit-readiness
+                    # are never evaluated until purpose validation passes.
+                    return report
+
+                fields = await discover_fields(context)
                 report.discovered_field_count = len(fields)
                 mapping_results = map_fields(fields)
 
@@ -1703,9 +2206,9 @@ async def discover_only(target_url: str, *, pre_form_selector: Optional[str] = N
                 report.ambiguous_sources = sorted(ambiguous)
 
                 missing_required = _generic_missing_required(mapping_results)
-                submit_candidates = await _discover_submit_candidates(page)
+                submit_candidates = await _discover_submit_candidates(context)
                 report.submit_candidate_count = len(submit_candidates)
-                report.submit_capable_evidence = await _structural_verification_evidence(page)
+                report.submit_capable_evidence = await _structural_verification_evidence(context)
                 report.prepare_capable = not missing_required
 
                 return report
@@ -1751,6 +2254,36 @@ async def run_generic_web_form_automation(
             reason="Login/registration wall detected — cannot proceed without credentials.",
             target=target_label, stage=mode,
         )
+    if discovery.found_in_iframe:
+        # The generic engine fills/submits against the top-level page, not a
+        # sub-frame — an iframe-embedded form needs a dedicated adapter
+        # (see Genentech), not the generic engine.
+        return WebFormAutomationResult(
+            outcome="automation_failed",
+            reason=(
+                "The real form was found embedded in an iframe "
+                f"({discovery.navigation_evidence}). The generic engine can't "
+                "fill/submit into an iframe — this manufacturer needs a "
+                "dedicated adapter."
+            ),
+            target=target_label, stage=mode,
+        )
+    if discovery.purpose_compatible is not True:
+        # Hard safety gate — finding A form is not enough (the Eugia
+        # incident). Rejected or ambiguous purpose never proceeds to field
+        # mapping or submission, regardless of mode.
+        return WebFormAutomationResult(
+            outcome="automation_failed",
+            reason=(
+                f"Refused: form-purpose validation did not pass "
+                f"({discovery.purpose_evidence})."
+            ),
+            target=target_label, stage=mode,
+        )
+
+    # A plausible form wasn't where the DB's on-file URL points, but
+    # link-following found the real one — use it for everything below.
+    effective_url = discovery.navigated_url or target_url
 
     # Re-run the field pass live (discover_only doesn't return FormFields, to
     # keep the report JSON-serializable) to build the synthetic adapter.
@@ -1760,7 +2293,7 @@ async def run_generic_web_form_automation(
         browser = await pw.chromium.launch(headless=True)
         try:
             page = await browser.new_page()
-            await page.goto(target_url, wait_until="load", timeout=20000)
+            await page.goto(effective_url, wait_until="load", timeout=20000)
             await _dismiss_cookie_banner(page)
             if pre_form_selector:
                 try:
@@ -1830,12 +2363,12 @@ async def run_generic_web_form_automation(
     if override_adapter and override_adapter.submit_selector:
         submit_selector = override_adapter.submit_selector
     else:
-        submit_candidates = await _discover_submit_candidates_for_selector(target_url, pre_form_selector)
+        submit_candidates = await _discover_submit_candidates_for_selector(effective_url, pre_form_selector)
         if len(submit_candidates) == 1:
             submit_selector = submit_candidates[0]
 
     synthetic_adapter = WebFormAdapter(
-        key=f"generic:{urlparse(target_url).hostname or target_url}",
+        key=f"generic:{urlparse(effective_url).hostname or effective_url}",
         label="Generic discovery engine",
         url_match=None,
         automation_enabled=True,
@@ -1849,10 +2382,15 @@ async def run_generic_web_form_automation(
         success_url_contains=override_adapter.success_url_contains if override_adapter else None,
         confirmation_timeout_ms=override_adapter.confirmation_timeout_ms if override_adapter else 3000,
         pre_form_selector=pre_form_selector,
+        # Generic-engine discovery never establishes purpose on its own —
+        # only an override_adapter that explicitly vouches for it can pass
+        # the purpose gate in run_web_form_automation.
+        purpose_validated=override_adapter.purpose_validated if override_adapter else False,
+        purpose_evidence=override_adapter.purpose_evidence if override_adapter else None,
     )
 
     return await run_web_form_automation(
-        target_url=target_url,
+        target_url=effective_url,
         adapter=synthetic_adapter,
         inquiry_data=inquiry_data,
         mode=mode,
