@@ -53,6 +53,7 @@ InquiryStatus = Literal[
     "call_pending",
     "call_completed",
     "call_scheduled",
+    "web_form_submitted",
     "needs_attention",
     "closed",
     "failed",
@@ -129,7 +130,13 @@ class InquiryBase(BaseModel):
 
 
 class InquiryCreate(InquiryBase):
-    pass
+    # Pre-creation email preview overrides (Contact Manufacturer page) — see
+    # EmailPreviewRequest/EmailPreviewResult. Not persisted columns on their
+    # own: email_subject_override feeds _with_subject_tag() when the Inquiry
+    # id is assigned; email_body_override maps straight onto the existing
+    # Inquiry.email_body_override column the scheduler/send-now already read.
+    email_subject_override: Optional[str] = None
+    email_body_override: Optional[str] = None
 
 
 # ---------- Bulk dispatch (multiple manufacturers, one query) ----------
@@ -143,6 +150,10 @@ class BulkTarget(BaseModel):
     fallback_after_hours: Optional[int] = None
     # DailyMed-enriched fields (populated by the extract-manufacturers endpoint).
     pi_link: Optional[str] = None
+    # Pre-creation email preview overrides (Contact Manufacturer page), one
+    # independent value per target/row — see InquiryCreate for field semantics.
+    email_subject_override: Optional[str] = None
+    email_body_override: Optional[str] = None
 
 
 class ExtractionPreviewRequest(BaseModel):
@@ -169,6 +180,44 @@ class ManufacturerSuggestionsPreviewResult(BaseModel):
 class SourceAttachment(BaseModel):
     file_name: str = ""
     doc_url: str = ""
+
+
+# ---------- Pre-creation email preview (Contact Manufacturer page) ----------
+class EmailPreviewRequest(BaseModel):
+    manufacturer_id: int
+    subject: str
+    question: str
+    requester_name: Optional[str] = None
+    requester_email: Optional[str] = None
+    medication_name: Optional[str] = None
+    pi_storage_data: Optional[str] = None
+    pi_link: Optional[str] = None
+    team_name: Optional[str] = None
+    mue_details: Optional[str] = None
+    attachments: Optional[list[SourceAttachment]] = None
+
+
+class EmailPreviewResult(BaseModel):
+    subject: str
+    body: str
+
+
+# ---------- Web Form automation POC ----------
+class WebFormPrepareRequest(BaseModel):
+    # True = target the local mock/test fixture; False (default) = resolve
+    # the real manufacturer's adapter.
+    use_mock: bool = False
+
+
+class WebFormAutomationResultOut(BaseModel):
+    outcome: str  # "automation_success" | "automation_failed" | "human_action_required" | "submitted_but_unverified"
+    reason: str
+    mechanism: Optional[str] = None
+    target: str  # "manufacturer" | "mock_test"
+    stage: str  # "prepare" | "submit"
+    filled_fields: list[str] = []
+    missing_fields: list[str] = []
+    inquiry: "InquiryOut"
 
 
 class BulkInquiryCreate(BaseModel):
@@ -286,6 +335,14 @@ class InquiryOut(InquiryBase):
     pi_link: Optional[str] = None
     mue_details: Optional[str] = None
     email_body_override: Optional[str] = None
+    web_form_automation_status: Optional[str] = None
+    web_form_automation_reason: Optional[str] = None
+    web_form_automation_mechanism: Optional[str] = None
+    web_form_automation_target: Optional[str] = None
+    web_form_automation_stage: Optional[str] = None
+    web_form_automation_attempted_at: Optional[datetime] = None
+    web_form_confirmation_url: Optional[str] = None
+    web_form_confirmation_screenshot_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
@@ -297,3 +354,4 @@ class InquiryOut(InquiryBase):
 # Resolve the forward reference (BulkInquiryResult → InquiryOut) now that
 # InquiryOut is defined.
 BulkInquiryResult.model_rebuild()
+WebFormAutomationResultOut.model_rebuild()

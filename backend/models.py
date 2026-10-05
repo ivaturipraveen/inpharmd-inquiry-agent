@@ -180,6 +180,28 @@ class Inquiry(Base):
     # written only on success (incl. "nothing found"), never on transient failure.
     attachment_extraction_cache = Column(Text, nullable=True)
 
+    # Web Form automation — side-channel result, independent of lifecycle
+    # `status`. One attempt's result at a time, not a history table.
+    web_form_automation_status = Column(String(32), nullable=True)
+    web_form_automation_reason = Column(Text, nullable=True)
+    # Only set when status == "human_action_required":
+    # "recaptcha" | "hcaptcha" | "turnstile" | "cloudflare_challenge" | "unknown_human_verification"
+    web_form_automation_mechanism = Column(String(64), nullable=True)
+    # "manufacturer" (real mi_web_form_url) | "mock_test" (local fixture) —
+    # gates the test-only submit endpoint so it can never fire against a real URL.
+    web_form_automation_target = Column(String(32), nullable=True)
+    # "prepare" | "submit" — automation_success is reused by both stages
+    # and is otherwise ambiguous on its own.
+    web_form_automation_stage = Column(String(16), nullable=True)
+    web_form_automation_attempted_at = Column(DateTime(timezone=True), nullable=True)
+    # Send-first-then-mark idempotency guard, same pattern as no_response_notified_at —
+    # cleared whenever a new prepare attempt starts, so a fresh escalation can renotify.
+    web_form_human_action_notified_at = Column(DateTime(timezone=True), nullable=True)
+    # Submission evidence — exactly one of these is set on a real success,
+    # never both. See WebFormAutomationResult.confirmation_url/_screenshot_bytes.
+    web_form_confirmation_url = Column(Text, nullable=True)
+    web_form_confirmation_screenshot_url = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

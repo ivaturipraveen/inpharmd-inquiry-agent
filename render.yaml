@@ -9,7 +9,8 @@ services:
     runtime: python
     rootDir: backend
     plan: starter            # change to "free" for a no-cost first deploy (sleeps after 15 min idle)
-    buildCommand: pip install -r requirements.txt
+    # Playwright needs Chromium installed — not in the buildpack by default.
+    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeploy: true
@@ -17,6 +18,9 @@ services:
       # Postgres connection — paste your Render External URL after first deploy
       - key: DATABASE_URL
         sync: false
+      # Enables fill-only PREPARE for unregistered manufacturers; never submits.
+      - key: WEBFORM_GENERIC_ENGINE_ENABLED
+        value: "true"
       # CORS origins for the deployed frontend (update with the real URL after first frontend deploy)
       - key: CORS_ORIGINS
         value: https://mfr-stg.inpharmd.com,http://localhost:5173

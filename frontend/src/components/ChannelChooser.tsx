@@ -1,7 +1,8 @@
 import { FC, useEffect, useState } from "react";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel } from "../utils/channelResolution";
-import type { ManufacturerContact } from "../types";
+import { shouldShowTriggerAll } from "../utils/triggerAllVisibility";
+import type { ManufacturerContact, WebFormAutomationResult } from "../types";
 
 interface Props {
   manufacturers: ManufacturerContact[];
@@ -19,6 +20,8 @@ interface Props {
   onTriggerAll?: () => Promise<void>;
   /** Called when user dismisses via ×, Escape, or backdrop. Nothing is created. */
   onClose: () => void;
+  /** Fills and submits the real manufacturer form; omit to hide this section. */
+  onSubmitWebForm?: (manufacturerId: number) => Promise<WebFormAutomationResult>;
 }
 
 const ChannelChooser: FC<Props> = ({
@@ -30,9 +33,14 @@ const ChannelChooser: FC<Props> = ({
   onCallAgent,
   onTriggerAll,
   onClose,
+  onSubmitWebForm,
 }) => {
   const [busy, setBusy] = useState<"email" | "call" | "all" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Keyed by manufacturer id so state never crosses between manufacturers.
+  const [webFormBusy, setWebFormBusy] = useState<Record<number, "prepare" | "submit">>({});
+  const [webFormResults, setWebFormResults] = useState<Record<number, WebFormAutomationResult>>({});
+  const [webFormErrors, setWebFormErrors] = useState<Record<number, string>>({});
 
   const m = manufacturers[0];
   const isMulti = manufacturers.length > 1;
@@ -46,12 +54,8 @@ const ChannelChooser: FC<Props> = ({
   const inHours = isWithinBusinessHoursNow(m?.mi_phone_hours);
   const outOfHours = inHours === false;
 
-  // Kept per-manufacturer (not deduped) so each can be opened individually —
-  // browsers block window.open() calls after the first per click.
   const webFormManufacturers = buckets.webform as (ManufacturerContact & { mi_web_form_url: string })[];
   const webFormCapableCount = webFormManufacturers.length;
-  const webFormUrls = Array.from(new Set(webFormManufacturers.map(x => x.mi_web_form_url)));
-  const webFormLabel = webFormCapableCount === 1 ? "Open Web Form" : "Open Web Forms";
 
   // Manufacturers with a missing required field, or no supported outreach
   // mechanism at all — surfaced explicitly, never silently reassigned.
@@ -122,15 +126,42 @@ const ChannelChooser: FC<Props> = ({
     }
   };
 
-  const handleOpenWebForm = () => {
-    webFormUrls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
+  const submitWebFormForOne = async (manufacturerId: number) => {
+    if (!onSubmitWebForm) return;
+    setWebFormBusy((prev) => ({ ...prev, [manufacturerId]: "submit" }));
+    setWebFormErrors((prev) => { const next = { ...prev }; delete next[manufacturerId]; return next; });
+    try {
+      const result = await onSubmitWebForm(manufacturerId);
+      setWebFormResults((prev) => ({ ...prev, [manufacturerId]: result }));
+    } catch (e: any) {
+      setWebFormErrors((prev) => ({ ...prev, [manufacturerId]: e?.message ?? "Failed to submit the Web Form." }));
+    } finally {
+      setWebFormBusy((prev) => { const next = { ...prev }; delete next[manufacturerId]; return next; });
+    }
   };
 
-  const showTriggerAll = !!onTriggerAll && emailEligibleCount > 0 && callEligibleCount > 0;
+  // Sequential per manufacturer so each result/error state updates as it goes.
+  const handleSubmitWebForm = async () => {
+    for (const wm of webFormManufacturers) {
+      await submitWebFormForOne(wm.id);
+    }
+  };
+
+  const showTriggerAll = shouldShowTriggerAll({
+    hasTriggerAllHandler: !!onTriggerAll,
+    emailEligibleCount,
+    callEligibleCount,
+    webFormCapableCount,
+    hasWebFormHandler: !!onSubmitWebForm,
+  });
 
   const handleTriggerAll = async () => {
     setBusy("all");
     setError(null);
+    // Web Form first, while the modal is still open, so results are visible.
+    if (onSubmitWebForm && webFormManufacturers.length > 0) {
+      await handleSubmitWebForm();
+    }
     try {
       await onTriggerAll?.();
     } catch (e: any) {
@@ -295,7 +326,7 @@ const ChannelChooser: FC<Props> = ({
               </button>
             </div>
 
-            {/* Web Form card — always shown, disabled when not eligible (mirrors Email/Call above) */}
+            {/* Web Form card — single action, fills and submits directly. */}
             <div className={`channel-card ${webFormCapableCount === 0 ? "channel-disabled" : ""}`}>
               <div className="channel-icon channel-icon-test">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -305,20 +336,26 @@ const ChannelChooser: FC<Props> = ({
                   <path d="M9 11h6" />
                 </svg>
               </div>
-              <div className="channel-title">{webFormLabel}</div>
+              <div className="channel-title">{isMulti ? "Submit Web Forms" : "Submit Web Form"}</div>
               <div className="channel-sub">
                 {isMulti ? (
                   webFormCapableCount > 0 ? (
                     <>
                       <strong>{webFormCapableCount}</strong>{" "}
-                      {webFormCapableCount === 1 ? "manufacturer has" : "manufacturers have"} a
-                      web form available.
+                      {webFormCapableCount === 1 ? "manufacturer prefers" : "manufacturers prefer"} Web
+                      Form and will have their form filled and submitted. If human verification
+                      (CAPTCHA, Cloudflare, etc.) is detected for one, it's marked Needs Attention
+                      instead — nothing is auto-submitted for a manufacturer that requires a human.
                     </>
                   ) : (
                     "None of the selected manufacturers prefer Web Form."
                   )
                 ) : webFormCapableCount > 0 ? (
-                  "Open this manufacturer's medical information request form to submit this inquiry."
+                  <>
+                    Fills and submits this manufacturer's medical information request form using
+                    this inquiry's data. If human verification is detected, it's marked Needs
+                    Attention instead of being auto-submitted.
+                  </>
                 ) : (
                   "This manufacturer's preferred channel is not Web Form."
                 )}
@@ -326,32 +363,79 @@ const ChannelChooser: FC<Props> = ({
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={webFormCapableCount === 0 || busy !== null}
-                onClick={handleOpenWebForm}
+                disabled={!onSubmitWebForm || webFormCapableCount === 0 || busy !== null || Object.keys(webFormBusy).length > 0}
+                onClick={handleSubmitWebForm}
               >
-                {webFormLabel}
+                {Object.keys(webFormBusy).length > 0
+                  ? "Submitting…"
+                  : isMulti
+                  ? "Submit Web Forms"
+                  : "Submit Web Form"}
               </button>
-              {isMulti && webFormCapableCount > 1 && (
-                <ul className="channel-meta channel-webform-list">
-                  <li className="cell-muted">
-                    Your browser may block opening more than one tab at
-                    once — open any that didn't open individually:
-                  </li>
-                  {webFormManufacturers.map((wm) => (
-                    <li key={wm.id}>
-                      <a
-                        href={wm.mi_web_form_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {wm.manufacturer}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           </div>
+
+          {webFormManufacturers.some((wm) => webFormResults[wm.id] || webFormErrors[wm.id]) && (
+            <div className="channel-attention webform-automation-poc">
+              <div className="detail-label">Web Form results</div>
+              {webFormManufacturers.map((wm) => {
+                const result = webFormResults[wm.id];
+                const err = webFormErrors[wm.id];
+                if (!result && !err) return null;
+                return (
+                  <div key={wm.id} className="webform-automation-row">
+                    {isMulti && (
+                      <div className="webform-automation-row-header">
+                        <strong>{wm.manufacturer}</strong>
+                      </div>
+                    )}
+                    {err && <div className="error-banner">{err}</div>}
+                    {result && (
+                      result.outcome === "human_action_required" ? (
+                        <div className="webform-human-action-banner">
+                          <strong>🖐 Manual action required — Open Web Form</strong>
+                          <p>
+                            {result.reason}
+                            {result.mechanism ? ` (${result.mechanism})` : ""} This was marked
+                            Needs Attention — automation was stopped before anything was
+                            submitted
+                            {wm.mi_web_form_url ? ". " : "."}
+                            {wm.mi_web_form_url && (
+                              <a href={wm.mi_web_form_url} target="_blank" rel="noopener noreferrer">
+                                Open the Web Form
+                              </a>
+                            )}
+                            {wm.mi_web_form_url && " to complete it manually."}
+                          </p>
+                        </div>
+                      ) : result.outcome === "submitted_but_unverified" ? (
+                        <div className="webform-human-action-banner">
+                          <strong>⚠️ Submission outcome could not be verified</strong>
+                          <p>
+                            {result.reason} This was marked Needs Attention —
+                            <strong> do not resubmit</strong> without checking whether the
+                            original submission already went through
+                            {wm.mi_web_form_url ? ". " : "."}
+                            {wm.mi_web_form_url && (
+                              <a href={wm.mi_web_form_url} target="_blank" rel="noopener noreferrer">
+                                Open the Web Form
+                              </a>
+                            )}
+                            {wm.mi_web_form_url && " to check."}
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="cell-muted" style={{ marginTop: 4 }}>
+                          <strong>{result.outcome === "automation_success" ? "✓ Submitted — " : "✗ Not submitted — "}</strong>
+                          {result.reason}
+                        </div>
+                      )
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {attentionItems.length > 0 && (
             <div className="channel-attention">
@@ -373,7 +457,7 @@ const ChannelChooser: FC<Props> = ({
           </button>
           {showTriggerAll && (
             <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={handleTriggerAll}>
-              {busy === "all" ? "Triggering…" : "Trigger All (Email + Call)"}
+              {busy === "all" ? "Triggering…" : "Trigger All"}
             </button>
           )}
         </div>

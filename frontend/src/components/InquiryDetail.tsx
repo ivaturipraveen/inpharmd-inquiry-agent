@@ -81,9 +81,13 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   // Statuses where the inquiry is already resolved — calling from here is a
   // follow-up, not the original dispatch/retry flow, so labeled accordingly.
   const isResolvedStatus = ["closed", "email_responded", "call_completed"].includes(inquiry.status);
+  // A Web-Form-caused needs_attention never involved a call.
+  const isWebFormNeedsAttention =
+    inquiry.web_form_automation_status === "human_action_required" ||
+    inquiry.web_form_automation_status === "submitted_but_unverified";
   // callInFlight is included so the recovery form still appears for a closed
   // inquiry's stuck follow-up call — status alone stays "closed" there.
-  const canRecordCall = inquiry.status === "call_pending" || inquiry.status === "needs_attention" || callInFlight;
+  const canRecordCall = inquiry.status === "call_pending" || (inquiry.status === "needs_attention" && !isWebFormNeedsAttention) || callInFlight;
   const canClose = !["closed"].includes(inquiry.status);
 
   const retryCount = inquiry.retry_count ?? 0;
@@ -154,6 +158,37 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
         </div>
 
         <div className="modal-body">
+          {inquiry.web_form_automation_status === "human_action_required" && (
+            <div className="webform-human-action-banner">
+              <strong>🖐 Manual action required — Open Web Form</strong>
+              <p>
+                {inquiry.web_form_automation_reason ?? "Human verification was detected on the manufacturer's Web Form."}
+                {inquiry.web_form_automation_mechanism && ` (${inquiry.web_form_automation_mechanism})`}
+                {" "}Automation was stopped before anything was submitted.
+              </p>
+              <p>Please complete this manufacturer's Web Form manually{m?.mi_web_form_url ? " — " : "."}
+                {m?.mi_web_form_url && (
+                  <a href={m.mi_web_form_url} target="_blank" rel="noopener noreferrer">open the Web Form</a>
+                )}
+              </p>
+            </div>
+          )}
+          {inquiry.web_form_automation_status === "submitted_but_unverified" && (
+            <div className="webform-human-action-banner">
+              <strong>⚠️ Web Form submission outcome could not be verified</strong>
+              <p>
+                {inquiry.web_form_automation_reason ?? "The form was submitted but the result could not be confirmed automatically."}
+              </p>
+              <p>
+                <strong>Do not resubmit yet</strong> — check the manufacturer's Web Form/portal manually to confirm
+                whether the original submission already went through before resubmitting
+                {m?.mi_web_form_url ? " — " : "."}
+                {m?.mi_web_form_url && (
+                  <a href={m.mi_web_form_url} target="_blank" rel="noopener noreferrer">open the Web Form</a>
+                )}
+              </p>
+            </div>
+          )}
           <div className="detail-section">
             <div className="detail-label">Question</div>
             <div className="detail-prose">{inquiry.question}</div>
@@ -368,6 +403,13 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               });
             }
 
+            // A Web-Form-only inquiry never touches email — a permanently-
+            // pending "Email sent" entry would just be noise.
+            const usedWebFormOnly =
+              !!inquiry.web_form_automation_attempted_at &&
+              !inquiry.email_sent_at &&
+              !inquiry.email_scheduled_for;
+
             if (isCallScheduled) {
               entries.push({
                 key: "call-scheduled",
@@ -376,7 +418,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 title: "Call scheduled",
                 meta: <>Calls at {fmtDate(inquiry.call_scheduled_for)}</>,
               });
-            } else {
+            } else if (!usedWebFormOnly) {
               entries.push({
                 key: "email-sent",
                 sortAt:
@@ -391,6 +433,53 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     {fmtDate(inquiry.email_sent_at) ?? "—"}
                     {inquiry.call_scheduled_for && !inquiry.email_response_at && (
                       <> · fallback call at {fmtDate(inquiry.call_scheduled_for)}</>
+                    )}
+                  </>
+                ),
+              });
+            }
+
+            if (inquiry.web_form_automation_attempted_at) {
+              const webFormUrl = inquiry.manufacturer?.mi_web_form_url;
+              const submitted = inquiry.web_form_automation_status === "automation_success";
+              // At most one of these is ever set (never both) — see
+              // WebFormAutomationResult.confirmation_url/_screenshot_bytes.
+              const confirmationUrl = inquiry.web_form_confirmation_url;
+              const confirmationScreenshotUrl = inquiry.web_form_confirmation_screenshot_url;
+              entries.push({
+                key: "web-form",
+                sortAt: toMs(inquiry.web_form_automation_attempted_at) ?? SORT_LAST,
+                status: submitted ? "done" : "pending",
+                title: submitted ? "Submitted via Web Form" : "Web Form needs attention",
+                meta: fmtDate(inquiry.web_form_automation_attempted_at),
+                body: (
+                  <>
+                    {!submitted && inquiry.web_form_automation_reason}
+                    {submitted && confirmationUrl && (
+                      <div>
+                        <a href={confirmationUrl} target="_blank" rel="noopener noreferrer">
+                          View Submission
+                        </a>
+                      </div>
+                    )}
+                    {submitted && !confirmationUrl && confirmationScreenshotUrl && (
+                      <div>
+                        <a href={confirmationScreenshotUrl} target="_blank" rel="noopener noreferrer">
+                          View Submission Confirmation
+                        </a>
+                      </div>
+                    )}
+                    {submitted && !confirmationUrl && !confirmationScreenshotUrl && (
+                      <div className="timeline-meta">
+                        No confirmation evidence was captured for this submission.
+                      </div>
+                    )}
+                    {!submitted && webFormUrl && (
+                      <div style={{ marginTop: 4 }}>
+                        <a href={webFormUrl} target="_blank" rel="noopener noreferrer">
+                          Open the Web Form to check or fill manually
+                        </a>
+                      </div>
                     )}
                   </>
                 ),
@@ -534,7 +623,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             </div>
           )}
 
-          {inquiry.status === "needs_attention" && (
+          {inquiry.status === "needs_attention" && !isWebFormNeedsAttention && (
             <div className="detail-section retry-banner retry-banner-warn">
               <strong>Not responded after {retryCount} attempt
               {retryCount === 1 ? "" : "s"}.</strong> Decide what to do next —
@@ -906,7 +995,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                 Extract Answer
               </button>
             )}
-            {inquiry.status === "needs_attention" && (
+            {inquiry.status === "needs_attention" && !isWebFormNeedsAttention && (
               <button
                 className="btn btn-ghost"
                 type="button"

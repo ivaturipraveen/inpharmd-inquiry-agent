@@ -1,42 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import InquiryForm from "../components/InquiryForm";
 import ChannelChooser from "../components/ChannelChooser";
+import EmailPreviewModal, { EmailOverride } from "../components/EmailPreviewModal";
 import ManufacturerForm from "../components/ManufacturerForm";
 import StatusBadge from "../components/StatusBadge";
 import InquiryDetail from "../components/InquiryDetail";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
-import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable } from "../utils/channelResolution";
+import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable, isWebFormReachable } from "../utils/channelResolution";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
-import { submitterDisplay, typeLabel } from "./ExternalInquiriesPage";
+import { fetchHydratedContext, type Attachment, type ForwardContext } from "../utils/contactManufacturerHydration";
 import type {
   Inquiry,
   InquiryInput,
   InquiryFormData,
   ManufacturerContact,
   ManufacturerContactInput,
+  WebFormAutomationResult,
 } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
-
-interface Attachment {
-  id: number;
-  file_name: string;
-  doc_url: string;
-}
-
-interface ForwardContext {
-  uuid: string;
-  title: string;
-  submitter?: string;
-  type?: string;
-  attachments?: Attachment[];
-  // From InpharmD's inquiry_submitter_details.team_name, if the platform
-  // returned one for this MUE inquiry's submitter.
-  team_name?: string;
-  // Raw "Temperature Excursion Request" text from InpharmD (API field
-  // `mue_details`), distinct from `title`. TE-only in practice.
-  mue_details?: string;
-}
 
 interface DetectedRow {
   row_index: number;
@@ -74,7 +56,7 @@ const CTX_KEY = "inpharmd:contact-manufacturer:ctx";
 
 // Backend always overwrites Inquiry.subject once the row exists — this
 // placeholder is shown pre-creation only, never a meaningful sent value.
-const PENDING_SUBJECT = "Drug information request [InpharmD #pending]";
+const PENDING_SUBJECT = "Drug information request";
 
 const readQuery = (): URLSearchParams => {
   const qs = window.location.hash.split("?")[1] ?? "";
@@ -132,34 +114,6 @@ const goTo = (hash: string) => {
   window.location.hash = hash;
 };
 
-// Maps a hydrated list row to ForwardContext, reusing ExternalInquiriesPage's
-// own submitterDisplay/typeLabel so values match that flow exactly.
-const mapHydratedContext = (uuid: string, raw: any): ForwardContext => {
-  const row = raw && typeof raw === "object" ? raw : {};
-  if (row.inquiry_uuid || row.title) {
-    const det = row.inquiry_submitter_details ?? {};
-    return {
-      uuid,
-      title: String(row.title ?? "").trim(),
-      submitter: submitterDisplay(row),
-      type: typeLabel(row),
-      attachments: row.attachments ?? undefined,
-      team_name: det.team_name ?? undefined,
-      mue_details: row.mue_details ?? undefined,
-    };
-  }
-  const a = row.attributes ?? {};
-  const det = a["submitter-details"] ?? {};
-  return {
-    uuid,
-    title: String(a.title ?? a.question ?? "").trim(),
-    submitter: a.submitter ?? a["submitter-email"] ?? det.email ?? undefined,
-    attachments: a.attachments ?? a["all-documents"] ?? undefined,
-    team_name: det.team_name ?? undefined,
-    mue_details: a.mue_details ?? undefined,
-  };
-};
-
 // Accept both .xlsx and .csv — backend extract handles both formats.
 const isExtractable = (a: Attachment): boolean =>
   /\.(xlsx|csv)(\?|$)/i.test(a.file_name) ||
@@ -204,9 +158,22 @@ export default function ContactManufacturerPage() {
   const [pendingCreatedId, setPendingCreatedId] = useState<number | null>(null);
   // Multi-manufacturer manual flow: holds InquiryFormData with manufacturer_ids.length > 1
   const [pendingBulkManualInput, setPendingBulkManualInput] = useState<InquiryFormData | null>(null);
+  // Pre-creation "Preview / Edit Email" overrides — session-local until dispatch.
+  // Single-manufacturer manual flow: one override for the one pending target.
+  const [singleEmailOverride, setSingleEmailOverride] = useState<EmailOverride | null>(null);
+  // Manual multi-manufacturer flow: keyed by manufacturer_id so editing one
+  // manufacturer's email can never affect another's.
+  const [manualEmailOverrides, setManualEmailOverrides] = useState<Record<number, EmailOverride>>({});
   // Channels Trigger All has already dispatched successfully for the current
   // bulk modal — a retry after a partial failure must not resend these.
   const triggerAllCompletedRef = useRef<Set<"email" | "call">>(new Set());
+  // Same pattern as triggerAllCompletedRef, scoped to the Excel-bulk flow's
+  // own Trigger All (a separate dispatch path from the manual-picker one).
+  const bulkTriggerAllCompletedRef = useRef<Set<"email" | "call" | "webform">>(new Set());
+  // manufacturer_id -> Inquiry id, created lazily (dispatch_channel="none").
+  const manualWebFormInquiryIdsRef = useRef<Record<number, number>>({});
+  // selKey(attIdx, row_index) -> Inquiry id — per ROW, not deduped by manufacturer.
+  const rowWebFormInquiryIdsRef = useRef<Record<string, number>>({});
   const [banner, setBanner] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -227,6 +194,23 @@ export default function ContactManufacturerPage() {
   // Per-row fallback-hours override, keyed like selectedKeys — falls back to
   // the batch-level fallbackHours, same override-with-default semantics as the backend.
   const [rowFallbackHours, setRowFallbackHours] = useState<Record<string, number>>({});
+  // Excel/MUE bulk flow: per-row "Preview / Edit Email" override, keyed like
+  // selectedKeys/rowFallbackHours — the same manufacturer can appear on
+  // multiple rows (different drugs/MUEs), each with fully independent text.
+  const [rowEmailOverrides, setRowEmailOverrides] = useState<Record<string, EmailOverride>>({});
+  // Which Excel/MUE row's "Preview / Edit Email" modal is currently open, if any.
+  const [previewingRow, setPreviewingRow] = useState<{
+    key: string;
+    manufacturerId: number;
+    manufacturerName: string;
+    medicationName: string | null;
+    piStorage: string | null;
+    piLink: string | null;
+  } | null>(null);
+  // Keyed like rowEmailOverrides — independent per row, not per manufacturer.
+  const [rowWebFormResults, setRowWebFormResults] = useState<Record<string, WebFormAutomationResult>>({});
+  const [rowWebFormBusy, setRowWebFormBusy] = useState<Record<string, "prepare" | "submit">>({});
+  const [rowWebFormErrors, setRowWebFormErrors] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState(PENDING_SUBJECT);
   const [question, setQuestion] = useState("");
@@ -277,18 +261,8 @@ export default function ContactManufacturerPage() {
     hydrationAttemptedForRef.current = ctx.uuid;
     setHydrating(true);
     setHydrateError(null);
-    api.externalInquiries
-      .list({ search: ctx.uuid })
-      .then(({ data }) => {
-        const rows: any[] = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : [];
-        const row = rows.find((r: any) => r?.inquiry_uuid === ctx.uuid);
-        if (!row) {
-          setHydrateError(
-            `Inquiry ${ctx.uuid} was not found in InpharmD (it may no longer be open).`,
-          );
-          return;
-        }
-        const mapped = mapHydratedContext(ctx.uuid, row);
+    fetchHydratedContext(ctx.uuid)
+      .then((mapped) => {
         setCtx((prev) => (prev ? { ...prev, ...mapped } : prev));
         // Converge onto the exact canonical URL ExternalInquiriesPage's own
         // flow produces — reuses its sessionStorage + goTo() logic as-is.
@@ -555,8 +529,23 @@ export default function ContactManufacturerPage() {
           ...(ctx?.uuid ? { source_inquiry_uuid: ctx.uuid } : {}),
         };
         setPendingInquiryInput(payload);
+        // Carry forward an override already applied on the form itself
+        // (before "Create & choose channel") so it survives into ChannelChooser.
+        setSingleEmailOverride(
+          t.email_subject_override != null
+            ? { subject: t.email_subject_override, body: t.email_body_override ?? "" }
+            : null,
+        );
       } else {
         setPendingBulkManualInput(data);
+        // Same as above, per manufacturer, for the multi-manufacturer flow.
+        const seeded: Record<number, EmailOverride> = {};
+        data.targets.forEach((tgt) => {
+          if (tgt.email_subject_override != null) {
+            seeded[tgt.manufacturer_id] = { subject: tgt.email_subject_override, body: tgt.email_body_override ?? "" };
+          }
+        });
+        setManualEmailOverrides(seeded);
       }
     },
     [ctx],
@@ -567,11 +556,14 @@ export default function ContactManufacturerPage() {
   const closePending = useCallback(() => {
     setPendingInquiryInput(null);
     setPendingCreatedId(null);
+    setSingleEmailOverride(null);
   }, []);
 
   const closePendingBulk = useCallback(() => {
     setPendingBulkManualInput(null);
     triggerAllCompletedRef.current = new Set();
+    setManualEmailOverrides({});
+    manualWebFormInquiryIdsRef.current = {};
   }, []);
 
   const handleAddManufacturer = useCallback(async (data: ManufacturerContactInput) => {
@@ -687,42 +679,32 @@ export default function ContactManufacturerPage() {
   }, [attachmentExtractions, contactedMfrMap]);
 
 
-  const handleBulkSubmit = async (channel: BulkChannel) => {
-    if (attachmentExtractions.length === 0 || !ctx) return;
-    if (!question.trim()) {
-      setExtractError("Question is required.");
-      return;
-    }
+  // Core per-channel dispatch, shared by the single-channel buttons and
+  // Trigger All. Throws (rather than setting error state) so a caller
+  // driving multiple channels can catch one failure without aborting the rest.
+  const dispatchBulkChannel = async (channel: BulkChannel) => {
+    // Group selected rows by source file and make one bulkCreate per file
+    // so each inquiry gets the correct source_excel_url for response writeback.
+    const byFile: Array<{
+      s: AttachmentExtractionState;
+      targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number; email_subject_override: string | null; email_body_override: string | null }[];
+    }> = [];
 
-    if (selectedKeys.size === 0) {
-      setExtractError("Pick at least one manufacturer.");
-      return;
-    }
-
-    setSubmitting(channel);
-    setExtractError(null);
-
-    try {
-      // Group selected rows by source file and make one bulkCreate per file
-      // so each inquiry gets the correct source_excel_url for response writeback.
-      const byFile: Array<{
-        s: AttachmentExtractionState;
-        targets: { manufacturer_id: number; source_excel_row: number; medication_name: string | null; pi_storage_data: string | null; pi_link: string | null; fallback_after_hours: number }[];
-      }> = [];
-
-      attachmentExtractions.forEach((s, attIdx) => {
-        if (!s.result) return;
-        const targets = s.result.rows
-          .filter((r) => {
-            if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
-            const m = mfrById[r.matched_id];
-            if (m) {
-              if (channel === "email") return resolvePreferredChannel(m) === "email" && isEmailReachable(m);
-              if (channel === "call") return resolvePreferredChannel(m) === "call" && isCallReachable(m);
-            }
-            return true;
-          })
-          .map((r) => ({
+    attachmentExtractions.forEach((s, attIdx) => {
+      if (!s.result) return;
+      const targets = s.result.rows
+        .filter((r) => {
+          if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return false;
+          const m = mfrById[r.matched_id];
+          if (m) {
+            if (channel === "email") return resolvePreferredChannel(m) === "email" && isEmailReachable(m);
+            if (channel === "call") return resolvePreferredChannel(m) === "call" && isCallReachable(m);
+          }
+          return true;
+        })
+        .map((r) => {
+          const rowOverride = rowEmailOverrides[selKey(attIdx, r.row_index)];
+          return {
             manufacturer_id: r.matched_id as number,
             source_excel_row: r.row_index,
             medication_name: r.medication_name || null,
@@ -731,62 +713,206 @@ export default function ContactManufacturerPage() {
             // Per-row override when picked; otherwise the batch-level fallbackHours
             // applies (same default the backend falls back to when omitted).
             fallback_after_hours: rowFallbackHours[selKey(attIdx, r.row_index)] ?? fallbackHours,
-          }));
-        if (targets.length > 0) byFile.push({ s, targets });
-      });
-
-      if (byFile.length === 0) {
-        setExtractError("None of the selected rows have a matched manufacturer in your DB.");
-        return;
-      }
-
-      const allCreated: Inquiry[] = [];
-      const allFailed: { manufacturer_id: number; error: string }[] = [];
-      let totalDispatched = 0;
-
-      for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
-        const { s, targets } = byFile[fileIdx];
-        const result = await api.inquiries.bulkCreate({
-          targets,
-          subject: subject.trim(),
-          question: question.trim(),
-          fallback_after_hours: fallbackHours,
-          team_name: teamName.trim() || null,
-          source_inquiry_uuid: ctx.uuid,
-          source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
-          source_excel_sheet: s.result!.sheet_name,
-          attachments: ctx.attachments,
-          // Already folded into `question` above (see the ctx effect) — sending it
-          // here too would duplicate it in the outbound email.
-          mue_details: null,
-          dispatch_channel: channel,
+            // Same manufacturer can appear on multiple rows (different
+            // drugs/MUEs) — each row's email preview override is independent.
+            email_subject_override: rowOverride?.subject ?? null,
+            email_body_override: rowOverride?.body ?? null,
+          };
         });
-        allCreated.push(...result.created);
-        allFailed.push(...result.failed);
-        totalDispatched += result.dispatched ?? 0;
-      }
+      if (targets.length > 0) byFile.push({ s, targets });
+    });
 
-      if (channel === "call") {
-        const scheduled = allCreated.filter((c) => c.status === "call_scheduled").length;
-        setBanner(
-          `Calling ${totalDispatched} manufacturer${totalDispatched === 1 ? "" : "s"}` +
-            (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
-            (allFailed.length > 0 ? ` · ${allFailed.length} skipped` : ""),
-        );
-      } else {
-        const sent = allCreated.length;
-        setBanner(
-          `Emailed ${sent} manufacturer${sent === 1 ? "" : "s"}` +
-            (allFailed.length > 0 ? ` · ${allFailed.length} failed` : ""),
-        );
-      }
+    if (byFile.length === 0) {
+      throw new Error("None of the selected rows have a matched manufacturer in your DB.");
+    }
 
+    const allCreated: Inquiry[] = [];
+    const allFailed: { manufacturer_id: number; error: string }[] = [];
+    let totalDispatched = 0;
+
+    for (let fileIdx = 0; fileIdx < byFile.length; fileIdx++) {
+      const { s, targets } = byFile[fileIdx];
+      const result = await api.inquiries.bulkCreate({
+        targets,
+        subject: subject.trim(),
+        question: question.trim(),
+        fallback_after_hours: fallbackHours,
+        team_name: teamName.trim() || null,
+        source_inquiry_uuid: ctx!.uuid,
+        source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
+        source_excel_sheet: s.result!.sheet_name,
+        attachments: ctx!.attachments,
+        // Already folded into `question` above (see the ctx effect) — sending it
+        // here too would duplicate it in the outbound email.
+        mue_details: null,
+        dispatch_channel: channel,
+      });
+      allCreated.push(...result.created);
+      allFailed.push(...result.failed);
+      totalDispatched += result.dispatched ?? 0;
+    }
+    return { created: allCreated, failed: allFailed, dispatched: totalDispatched };
+  };
+
+  // Creates one draft Inquiry (dispatch_channel: "none") per ROW, cached by selKey.
+  const getOrCreateRowWebFormInquiryId = async (
+    attIdx: number,
+    s: AttachmentExtractionState,
+    r: { row_index: number; matched_id: number | null; medication_name: string | null; pi_storage: string | null; pi_link: string | null },
+  ): Promise<number> => {
+    const key = selKey(attIdx, r.row_index);
+    const cached = rowWebFormInquiryIdsRef.current[key];
+    if (cached != null) return cached;
+    const rowOverride = rowEmailOverrides[key];
+    const result = await api.inquiries.bulkCreate({
+      targets: [{
+        manufacturer_id: r.matched_id as number,
+        source_excel_row: r.row_index,
+        medication_name: r.medication_name || null,
+        pi_storage_data: r.pi_storage || null,
+        pi_link: r.pi_link || null,
+        fallback_after_hours: rowFallbackHours[key] ?? fallbackHours,
+        email_subject_override: rowOverride?.subject ?? null,
+        email_body_override: rowOverride?.body ?? null,
+      }],
+      subject: subject.trim(),
+      question: question.trim(),
+      fallback_after_hours: fallbackHours,
+      team_name: teamName.trim() || null,
+      source_inquiry_uuid: ctx!.uuid,
+      source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
+      source_excel_sheet: s.result!.sheet_name,
+      attachments: ctx!.attachments,
+      mue_details: null,
+      dispatch_channel: "none",
+    });
+    const created = result.created[0];
+    if (!created) {
+      throw new Error(result.failed[0]?.error ?? "Could not create an inquiry for this row's Web Form.");
+    }
+    rowWebFormInquiryIdsRef.current[key] = created.id;
+    return created.id;
+  };
+
+  // Selected rows whose matched manufacturer prefers Web Form and is reachable.
+  const collectWebFormEligibleRows = () => {
+    const rows: { attIdx: number; s: AttachmentExtractionState; r: DetectedRow; key: string; mfrName: string }[] = [];
+    attachmentExtractions.forEach((s, attIdx) => {
+      if (!s.result) return;
+      s.result.rows.forEach((r) => {
+        if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return;
+        const mfr = mfrById[r.matched_id];
+        if (!mfr || resolvePreferredChannel(mfr) !== "webform" || !isWebFormReachable(mfr)) return;
+        rows.push({ attIdx, s, r, key: selKey(attIdx, r.row_index), mfrName: mfr.manufacturer });
+      });
+    });
+    return rows;
+  };
+
+  // Shared by the Web Form card button and Trigger All's webform portion.
+  const submitAllEligibleWebForms = async () => {
+    const rows = collectWebFormEligibleRows();
+    for (const { attIdx, s, r, key } of rows) {
+      setRowWebFormBusy((prev) => ({ ...prev, [key]: "submit" }));
+      setRowWebFormErrors((prev) => { const next = { ...prev }; delete next[key]; return next; });
+      try {
+        const id = await getOrCreateRowWebFormInquiryId(attIdx, s, r);
+        const result = await api.inquiries.submitWebForm(id);
+        setRowWebFormResults((prev) => ({ ...prev, [key]: result }));
+      } catch (e: any) {
+        setRowWebFormErrors((prev) => ({ ...prev, [key]: e?.message ?? "Failed to submit the Web Form." }));
+      } finally {
+        setRowWebFormBusy((prev) => { const next = { ...prev }; delete next[key]; return next; });
+      }
+    }
+  };
+
+  const describeBulkResult = (
+    channel: BulkChannel,
+    result: { created: Inquiry[]; failed: { manufacturer_id: number; error: string }[]; dispatched: number },
+  ) => {
+    if (channel === "call") {
+      const scheduled = result.created.filter((c) => c.status === "call_scheduled").length;
+      return (
+        `Calling ${result.dispatched} manufacturer${result.dispatched === 1 ? "" : "s"}` +
+        (scheduled > 0 ? ` · ${scheduled} scheduled for business hours` : "") +
+        (result.failed.length > 0 ? ` · ${result.failed.length} skipped` : "")
+      );
+    }
+    const sent = result.created.length;
+    return `Emailed ${sent} manufacturer${sent === 1 ? "" : "s"}` + (result.failed.length > 0 ? ` · ${result.failed.length} failed` : "");
+  };
+
+  const handleBulkSubmit = async (channel: BulkChannel) => {
+    if (attachmentExtractions.length === 0 || !ctx) return;
+    if (!question.trim()) {
+      setExtractError("Question is required.");
+      return;
+    }
+    if (selectedKeys.size === 0) {
+      setExtractError("Pick at least one manufacturer.");
+      return;
+    }
+
+    setSubmitting(channel);
+    setExtractError(null);
+    try {
+      const result = await dispatchBulkChannel(channel);
+      setBanner(describeBulkResult(channel, result));
       loadExistingInquiries();
     } catch (e: any) {
       setExtractError(e?.message ?? "Bulk dispatch failed.");
     } finally {
       setSubmitting(null);
     }
+  };
+
+  // Dispatches Email and Call sequentially; skips a channel already
+  // completed on an earlier attempt so a retry never resends it.
+  const handleTriggerAllBulk = async () => {
+    if (attachmentExtractions.length === 0 || !ctx) return;
+    if (!question.trim()) {
+      setExtractError("Question is required.");
+      return;
+    }
+    if (selectedKeys.size === 0) {
+      setExtractError("Pick at least one manufacturer.");
+      return;
+    }
+
+    setExtractError(null);
+
+    // Web Form first, while the modal is still open, so results are visible.
+    if (!bulkTriggerAllCompletedRef.current.has("webform")) {
+      await submitAllEligibleWebForms();
+      bulkTriggerAllCompletedRef.current.add("webform");
+    }
+
+    const outcomes: { channel: BulkChannel; ok: boolean; message: string }[] = [];
+    for (const channel of ["email", "call"] as const) {
+      if (bulkTriggerAllCompletedRef.current.has(channel)) continue;
+      setSubmitting(channel);
+      try {
+        const result = await dispatchBulkChannel(channel);
+        bulkTriggerAllCompletedRef.current.add(channel);
+        outcomes.push({ channel, ok: true, message: describeBulkResult(channel, result) });
+      } catch (e: any) {
+        outcomes.push({ channel, ok: false, message: e?.message ?? `Failed to dispatch ${channel}.` });
+      }
+    }
+    setSubmitting(null);
+
+    const failed = outcomes.filter((o) => !o.ok);
+    const succeeded = outcomes.filter((o) => o.ok);
+    if (failed.length > 0) {
+      setExtractError(
+        (succeeded.length > 0 ? succeeded.map((o) => o.message).join(" · ") + " · " : "") +
+          `Failed: ${failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`,
+      );
+      return;
+    }
+    setBanner(succeeded.map((o) => o.message).join(" · ") || "No Email- or Call-eligible manufacturers.");
+    loadExistingInquiries();
   };
 
 
@@ -1214,6 +1340,96 @@ export default function ContactManufacturerPage() {
                                         + Add manufacturer
                                       </button>
                                     )}
+                                    {matched && mfr && resolvePreferredChannel(mfr) === "email" && isEmailReachable(mfr) && (
+                                      <button
+                                        type="button"
+                                        className="btn-link"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          setPreviewingRow({
+                                            key,
+                                            manufacturerId: mfr.id,
+                                            manufacturerName: mfr.manufacturer,
+                                            medicationName: r.medication_name ?? null,
+                                            piStorage: r.pi_storage ?? null,
+                                            piLink: r.pi_link ?? null,
+                                          });
+                                        }}
+                                      >
+                                        {rowEmailOverrides[key] ? "Edited — Preview / Edit Email" : "Preview / Edit Email"}
+                                      </button>
+                                    )}
+                                    {matched && mfr && resolvePreferredChannel(mfr) === "webform" && isWebFormReachable(mfr) && (() => {
+                                      const rowResult = rowWebFormResults[key];
+                                      const rowBusy = rowWebFormBusy[key];
+                                      const rowErr = rowWebFormErrors[key];
+                                      const runWebForm = async () => {
+                                        setRowWebFormBusy((prev) => ({ ...prev, [key]: "submit" }));
+                                        setRowWebFormErrors((prev) => { const next = { ...prev }; delete next[key]; return next; });
+                                        try {
+                                          const id = await getOrCreateRowWebFormInquiryId(attIdx, s, r);
+                                          const result = await api.inquiries.submitWebForm(id);
+                                          setRowWebFormResults((prev) => ({ ...prev, [key]: result }));
+                                        } catch (e: any) {
+                                          setRowWebFormErrors((prev) => ({ ...prev, [key]: e?.message ?? "Failed to submit the Web Form." }));
+                                        } finally {
+                                          setRowWebFormBusy((prev) => { const next = { ...prev }; delete next[key]; return next; });
+                                        }
+                                      };
+                                      return (
+                                        <div className="webform-automation-row">
+                                          <button
+                                            type="button"
+                                            className="btn btn-ghost"
+                                            disabled={rowBusy !== undefined}
+                                            onClick={(e) => { e.preventDefault(); runWebForm(); }}
+                                          >
+                                            {rowBusy ? "Submitting…" : "Submit Web Form"}
+                                          </button>
+                                          {rowErr && <div className="error-banner">{rowErr}</div>}
+                                          {rowResult && (
+                                            rowResult.outcome === "human_action_required" ? (
+                                              <div className="webform-human-action-banner">
+                                                <strong>🖐 Manual action required — Open Web Form</strong>
+                                                <p>
+                                                  {rowResult.reason}
+                                                  {rowResult.mechanism ? ` (${rowResult.mechanism})` : ""} Marked Needs
+                                                  Attention — automation was stopped before anything was submitted
+                                                  {mfr.mi_web_form_url ? ". " : "."}
+                                                  {mfr.mi_web_form_url && (
+                                                    <a href={mfr.mi_web_form_url} target="_blank" rel="noopener noreferrer">
+                                                      Open the Web Form
+                                                    </a>
+                                                  )}
+                                                  {mfr.mi_web_form_url && " to complete it manually."}
+                                                </p>
+                                              </div>
+                                            ) : rowResult.outcome === "submitted_but_unverified" ? (
+                                              <div className="webform-human-action-banner">
+                                                <strong>⚠️ Submission outcome could not be verified</strong>
+                                                <p>
+                                                  {rowResult.reason} Marked Needs Attention —{" "}
+                                                  <strong>do not resubmit</strong> without checking whether the
+                                                  original submission already went through
+                                                  {mfr.mi_web_form_url ? ". " : "."}
+                                                  {mfr.mi_web_form_url && (
+                                                    <a href={mfr.mi_web_form_url} target="_blank" rel="noopener noreferrer">
+                                                      Open the Web Form
+                                                    </a>
+                                                  )}
+                                                  {mfr.mi_web_form_url && " to check."}
+                                                </p>
+                                              </div>
+                                            ) : (
+                                              <div className="cell-muted" style={{ marginTop: 4 }}>
+                                                <strong>{rowResult.outcome === "automation_success" ? "✓ Submitted — " : "✗ Not submitted — "}</strong>
+                                                {rowResult.reason}
+                                              </div>
+                                            )
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
                                   </label>
                                 );
                               })}
@@ -1385,13 +1601,7 @@ export default function ContactManufacturerPage() {
                 new Map(buckets.webform.map((m) => [m.id, m] as const)).values(),
               ) as (ManufacturerContact & { mi_web_form_url: string })[];
               const reachableByWebForm = webFormManufacturers.length;
-              const webFormUrls = Array.from(
-                new Set(webFormManufacturers.map((m) => m.mi_web_form_url)),
-              );
-              const webFormLabel = reachableByWebForm === 1 ? "Open Web Form" : "Open Web Forms";
-              const handleOpenWebForms = () => {
-                webFormUrls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
-              };
+              const webFormLabel = reachableByWebForm === 1 ? "Submit Web Form" : "Submit Web Forms";
 
               // Manufacturers with an unreachable or unsupported preferred channel —
               // deduped by manufacturer so the same one doesn't repeat per selected row.
@@ -1541,11 +1751,10 @@ export default function ContactManufacturerPage() {
                         </div>
                         <div className="channel-title">{webFormLabel}</div>
                         <div className="channel-sub">
-                          Open the medical information request form for each
-                          selected manufacturer whose preferred channel is Web
-                          Form — you'll complete and submit it manually.{" "}
-                          <strong>No inquiry is created</strong> and nothing is
-                          submitted automatically.
+                          Fills and submits the real medical information request form for each
+                          selected manufacturer whose preferred channel is Web Form. If human
+                          verification is detected for one, it's marked Needs Attention instead of
+                          being auto-submitted.
                         </div>
                         <ul className="channel-meta">
                           <li>
@@ -1555,30 +1764,11 @@ export default function ContactManufacturerPage() {
                         <button
                           className="btn btn-primary"
                           type="button"
-                          disabled={noneSelected || reachableByWebForm === 0 || anyBusy}
-                          onClick={handleOpenWebForms}
+                          disabled={noneSelected || reachableByWebForm === 0 || anyBusy || Object.keys(rowWebFormBusy).length > 0}
+                          onClick={submitAllEligibleWebForms}
                         >
-                          {webFormLabel}
+                          {Object.keys(rowWebFormBusy).length > 0 ? "Submitting…" : webFormLabel}
                         </button>
-                        {reachableByWebForm > 1 && (
-                          <ul className="channel-meta channel-webform-list">
-                            <li className="cell-muted">
-                              Your browser may block opening more than one tab
-                              at once — open any that didn't open individually:
-                            </li>
-                            {webFormManufacturers.map((wm) => (
-                              <li key={wm.id}>
-                                <a
-                                  href={wm.mi_web_form_url as string}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                >
-                                  {wm.manufacturer}
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
                       </div>
                     </div>
                     {attentionItems.length > 0 && (
@@ -1603,6 +1793,16 @@ export default function ContactManufacturerPage() {
                     >
                       Cancel
                     </button>
+                    {reachableByEmail > 0 && totalCallable > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={handleTriggerAllBulk}
+                        disabled={anyBusy}
+                      >
+                        {anyBusy ? "Triggering…" : "Trigger All"}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -1643,7 +1843,11 @@ export default function ContactManufacturerPage() {
         // created the inquiry, so a sendEmail/triggerCall retry can't duplicate it.
         const getOrCreateId = async (): Promise<number> => {
           if (pendingCreatedId != null) return pendingCreatedId;
-          const created = await api.inquiries.create(pendingInquiryInput);
+          const created = await api.inquiries.create({
+            ...pendingInquiryInput,
+            email_subject_override: singleEmailOverride?.subject ?? null,
+            email_body_override: singleEmailOverride?.body ?? null,
+          });
           setPendingCreatedId(created.id);
           return created.id;
         };
@@ -1671,6 +1875,10 @@ export default function ContactManufacturerPage() {
               }
               closePending();
               goTo("inquiries");
+            }}
+            onSubmitWebForm={async () => {
+              const id = await getOrCreateId();
+              return api.inquiries.submitWebForm(id);
             }}
           />
         );
@@ -1706,7 +1914,13 @@ export default function ContactManufacturerPage() {
           return api.inquiries.bulkCreate({
             // Each target already carries its own medication_name and
             // fallback_after_hours — passed straight through, no remapping.
-            targets,
+            // Per-manufacturer email preview override (if any) is merged in
+            // here so editing one manufacturer's email can never leak onto another.
+            targets: targets.map((t) => ({
+              ...t,
+              email_subject_override: manualEmailOverrides[t.manufacturer_id]?.subject ?? null,
+              email_body_override: manualEmailOverrides[t.manufacturer_id]?.body ?? null,
+            })),
             subject: pendingBulkManualInput.subject,
             question: pendingBulkManualInput.question,
             // Batch-level default only; every target above supplies its own
@@ -1780,6 +1994,37 @@ export default function ContactManufacturerPage() {
           goTo("inquiries");
         };
 
+        // Creates draft Inquiry rows (dispatch_channel: "none"), cached by manufacturer_id.
+        const getOrCreateManualWebFormInquiryId = async (manufacturerId: number): Promise<number> => {
+          const cached = manualWebFormInquiryIdsRef.current[manufacturerId];
+          if (cached != null) return cached;
+          const webFormTargets = pendingBulkManualInput.targets.filter((t) => {
+            const mfr = mfrById[t.manufacturer_id];
+            return !!mfr && resolvePreferredChannel(mfr) === "webform";
+          });
+          const result = await api.inquiries.bulkCreate({
+            targets: webFormTargets,
+            subject: pendingBulkManualInput.subject,
+            question: pendingBulkManualInput.question,
+            fallback_after_hours: pendingBulkManualInput.targets[0]?.fallback_after_hours ?? 24,
+            team_name: pendingBulkManualInput.team_name ?? null,
+            source_inquiry_uuid: ctx.uuid ?? null,
+            source_excel_url: null,
+            source_excel_sheet: null,
+            attachments: ctx.attachments,
+            mue_details: null,
+            dispatch_channel: "none",
+          });
+          result.created.forEach((inq) => {
+            if (inq.manufacturer_id != null) manualWebFormInquiryIdsRef.current[inq.manufacturer_id] = inq.id;
+          });
+          const id = manualWebFormInquiryIdsRef.current[manufacturerId];
+          if (id == null) {
+            throw new Error("Could not create an inquiry for this manufacturer's Web Form.");
+          }
+          return id;
+        };
+
         return (
           <ChannelChooser
             manufacturers={mfrs}
@@ -1789,6 +2034,10 @@ export default function ContactManufacturerPage() {
             onSendEmail={() => bulkDispatch("email")}
             onCallAgent={() => bulkDispatch("call")}
             onTriggerAll={triggerAll}
+            onSubmitWebForm={async (manufacturerId) => {
+              const id = await getOrCreateManualWebFormInquiryId(manufacturerId);
+              return api.inquiries.submitWebForm(id);
+            }}
           />
         );
       })()}
@@ -1805,6 +2054,29 @@ export default function ContactManufacturerPage() {
           prefillManufacturer={addingMfrName}
           onClose={() => setAddingMfrName(null)}
           onSubmit={handleAddManufacturer}
+        />
+      )}
+
+      {previewingRow && (
+        <EmailPreviewModal
+          manufacturerName={previewingRow.manufacturerName}
+          initialOverride={rowEmailOverrides[previewingRow.key] ?? null}
+          fetchPreview={() =>
+            api.inquiries.composeEmailPreview({
+              manufacturer_id: previewingRow.manufacturerId,
+              subject,
+              question,
+              team_name: teamName || null,
+              medication_name: previewingRow.medicationName,
+              pi_storage_data: previewingRow.piStorage,
+              pi_link: previewingRow.piLink,
+              attachments: ctx?.attachments,
+            })
+          }
+          onApply={(override) =>
+            setRowEmailOverrides((prev) => ({ ...prev, [previewingRow.key]: override }))
+          }
+          onClose={() => setPreviewingRow(null)}
         />
       )}
 
