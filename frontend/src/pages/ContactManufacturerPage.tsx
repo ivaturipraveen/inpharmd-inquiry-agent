@@ -9,6 +9,7 @@ import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable, isWebFormReachable } from "../utils/channelResolution";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
+import { fetchHydratedContext, type Attachment, type ForwardContext } from "../utils/contactManufacturerHydration";
 import type {
   Inquiry,
   InquiryInput,
@@ -18,26 +19,6 @@ import type {
   WebFormAutomationResult,
 } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
-
-interface Attachment {
-  id: number;
-  file_name: string;
-  doc_url: string;
-}
-
-interface ForwardContext {
-  uuid: string;
-  title: string;
-  submitter?: string;
-  type?: string;
-  attachments?: Attachment[];
-  // From InpharmD's inquiry_submitter_details.team_name, if the platform
-  // returned one for this MUE inquiry's submitter.
-  team_name?: string;
-  // Raw "Temperature Excursion Request" text from InpharmD (API field
-  // `mue_details`), distinct from `title`. TE-only in practice.
-  mue_details?: string;
-}
 
 interface DetectedRow {
   row_index: number;
@@ -114,12 +95,16 @@ const readContext = (): ForwardContext | null => {
     const attName = params.get("att_name");
     if (attUrl && attName) attachments.push({ id: 0, file_name: attName, doc_url: attUrl });
   }
+  const submitter = params.get("submitter") ?? undefined;
+  const type = params.get("type") ?? undefined;
   const team_name = params.get("team_name") ?? undefined;
   const mue_details = params.get("mue_details") ?? undefined;
   return {
     uuid,
     title,
     attachments,
+    ...(submitter ? { submitter } : {}),
+    ...(type ? { type } : {}),
     ...(team_name ? { team_name } : {}),
     ...(mue_details ? { mue_details } : {}),
   };
@@ -159,7 +144,11 @@ type BulkChannel = "email" | "call";
 const selKey = (attIdx: number, rowIndex: number) => `${attIdx}:${rowIndex}`;
 
 export default function ContactManufacturerPage() {
-  const [ctx] = useState<ForwardContext | null>(readContext);
+  const [ctx, setCtx] = useState<ForwardContext | null>(readContext);
+  // Set while resolving a uuid-only deep link (no title yet).
+  const [hydrating, setHydrating] = useState(false);
+  const [hydrateError, setHydrateError] = useState<string | null>(null);
+  const hydrationAttemptedForRef = useRef<string | null>(null);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loadingMfrs, setLoadingMfrs] = useState(true);
   const [existingInquiries, setExistingInquiries] = useState<Inquiry[]>([]);
@@ -263,6 +252,29 @@ export default function ContactManufacturerPage() {
     }
     if (ctx?.team_name) setTeamName(ctx.team_name);
   }, [ctx]);
+
+  // Hydrates a uuid-only deep link via list+search (not the per-uuid
+  // detail endpoint, which lacks these fields). Runs once per uuid.
+  useEffect(() => {
+    if (!ctx?.uuid || ctx.title) return;
+    if (hydrationAttemptedForRef.current === ctx.uuid) return;
+    hydrationAttemptedForRef.current = ctx.uuid;
+    setHydrating(true);
+    setHydrateError(null);
+    fetchHydratedContext(ctx.uuid)
+      .then((mapped) => {
+        setCtx((prev) => (prev ? { ...prev, ...mapped } : prev));
+        // Converge onto the exact canonical URL ExternalInquiriesPage's own
+        // flow produces — reuses its sessionStorage + goTo() logic as-is.
+        startContactManufacturerFlow(mapped);
+      })
+      .catch((e: any) => {
+        setHydrateError(
+          e?.message ?? "Failed to load this inquiry's details from InpharmD.",
+        );
+      })
+      .finally(() => setHydrating(false));
+  }, [ctx?.uuid, ctx?.title]);
 
   useEffect(() => {
     if (!banner) return;
@@ -1046,6 +1058,8 @@ export default function ContactManufacturerPage() {
         ))
       }
 
+      {hydrating && <p>Loading inquiry details from InpharmD…</p>}
+      {hydrateError && <div className="error-banner">{hydrateError}</div>}
       {extractError && <div className="error-banner">{extractError}</div>}
       {error && <div className="error-banner">{error}</div>}
 
@@ -2089,6 +2103,8 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   const qs = new URLSearchParams();
   if (ctx.uuid) qs.set("uuid", ctx.uuid);
   if (ctx.title) qs.set("title", ctx.title);
+  if (ctx.submitter) qs.set("submitter", ctx.submitter);
+  if (ctx.type) qs.set("type", ctx.type);
   if (ctx.team_name) qs.set("team_name", ctx.team_name);
   if (ctx.mue_details) qs.set("mue_details", ctx.mue_details);
   // Encode ALL extractable attachments in the URL (indexed: att_url_0, att_url_1, …)
