@@ -1579,6 +1579,7 @@ WEB_FORM_CONTACT_ADDRESS = "3423 Piedmont Rd NE"
 WEB_FORM_CONTACT_CITY = "Atlanta"
 WEB_FORM_CONTACT_STATE = "GA"
 WEB_FORM_CONTACT_ZIP = "30305"
+WEB_FORM_CONTACT_COUNTRY = "United States"
 
 
 def _web_form_inquiry_data(obj: Inquiry) -> dict:
@@ -1601,6 +1602,7 @@ def _web_form_inquiry_data(obj: Inquiry) -> dict:
         "requester_city": WEB_FORM_CONTACT_CITY,
         "requester_state": WEB_FORM_CONTACT_STATE,
         "requester_zip": WEB_FORM_CONTACT_ZIP,
+        "requester_country": WEB_FORM_CONTACT_COUNTRY,
         "team_name": obj.team_name,
         "subject": obj.subject,
     }
