@@ -1691,6 +1691,14 @@ async def _run_web_form_attempt(
         # A real submission happened — status must reflect that (excludes
         # submit-test's mock fixture, which is never real).
         obj.status = "web_form_submitted"
+    elif (
+        mode == "submit"
+        and result.outcome == "automation_failed"
+        and result.target == "manufacturer"
+        and obj.status != "closed"
+    ):
+        # A real submit attempt failed — must not look like an untouched draft.
+        obj.status = "needs_attention"
     db.commit()
 
     if is_escalation:

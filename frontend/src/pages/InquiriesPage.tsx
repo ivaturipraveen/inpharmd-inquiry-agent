@@ -297,6 +297,10 @@ export default function InquiriesPage() {
           await api.inquiries.resetRetries(current.id);
           setSuccess("Retries reset. Inquiry returned to draft.");
           break;
+        case "submitWebForm":
+          await api.inquiries.submitWebForm(current.id);
+          setSuccess("Web Form resubmitted.");
+          break;
         default:
           return;
       }

@@ -141,8 +141,10 @@ const ChannelChooser: FC<Props> = ({
   };
 
   // Sequential per manufacturer so each result/error state updates as it goes.
+  // Already-succeeded manufacturers are skipped — a retry only redoes failures.
   const handleSubmitWebForm = async () => {
     for (const wm of webFormManufacturers) {
+      if (webFormResults[wm.id]?.outcome === "automation_success") continue;
       await submitWebFormForOne(wm.id);
     }
   };
@@ -158,8 +160,11 @@ const ChannelChooser: FC<Props> = ({
   const handleTriggerAll = async () => {
     setBusy("all");
     setError(null);
+    const hasUnfinishedWebForm = webFormManufacturers.some(
+      (wm) => webFormResults[wm.id]?.outcome !== "automation_success",
+    );
     // Web Form first, while the modal is still open, so results are visible.
-    if (onSubmitWebForm && webFormManufacturers.length > 0) {
+    if (onSubmitWebForm && hasUnfinishedWebForm) {
       await handleSubmitWebForm();
     }
     try {
