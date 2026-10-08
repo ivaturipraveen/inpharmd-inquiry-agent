@@ -8,6 +8,8 @@ import InquiryDetail from "../components/InquiryDetail";
 import { api } from "../api";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, isCallReachable, isWebFormReachable } from "../utils/channelResolution";
+import { shouldShowTriggerAll } from "../utils/triggerAllVisibility";
+import { createCompletionTracker, runTriggerAll, selectionSignatureFromKeys } from "../utils/triggerAllOrchestration";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
 import type {
   Inquiry,
@@ -175,12 +177,9 @@ export default function ContactManufacturerPage() {
   // Manual multi-manufacturer flow: keyed by manufacturer_id so editing one
   // manufacturer's email can never affect another's.
   const [manualEmailOverrides, setManualEmailOverrides] = useState<Record<number, EmailOverride>>({});
-  // Channels Trigger All has already dispatched successfully for the current
-  // bulk modal — a retry after a partial failure must not resend these.
-  const triggerAllCompletedRef = useRef<Set<"email" | "call">>(new Set());
-  // Same pattern as triggerAllCompletedRef, scoped to the Excel-bulk flow's
-  // own Trigger All (a separate dispatch path from the manual-picker one).
-  const bulkTriggerAllCompletedRef = useRef<Set<"email" | "call" | "webform">>(new Set());
+  // Resets whenever the target selection changes — see createCompletionTracker.
+  const triggerAllCompletionRef = useRef(createCompletionTracker());
+  const bulkTriggerAllCompletionRef = useRef(createCompletionTracker());
   // manufacturer_id -> Inquiry id, created lazily (dispatch_channel="none").
   const manualWebFormInquiryIdsRef = useRef<Record<number, number>>({});
   // selKey(attIdx, row_index) -> Inquiry id — per ROW, not deduped by manufacturer.
@@ -221,7 +220,6 @@ export default function ContactManufacturerPage() {
   // Keyed like rowEmailOverrides — independent per row, not per manufacturer.
   const [rowWebFormResults, setRowWebFormResults] = useState<Record<string, WebFormAutomationResult>>({});
   const [rowWebFormBusy, setRowWebFormBusy] = useState<Record<string, "prepare" | "submit">>({});
-  const [rowWebFormErrors, setRowWebFormErrors] = useState<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [subject, setSubject] = useState(PENDING_SUBJECT);
   const [question, setQuestion] = useState("");
@@ -229,7 +227,7 @@ export default function ContactManufacturerPage() {
   // call and, as defaultTeamName, the single-manufacturer InquiryForm.
   const [teamName, setTeamName] = useState("");
   const [fallbackHours, setFallbackHours] = useState(24);
-  const [submitting, setSubmitting] = useState<BulkChannel | null>(null);
+  const [submitting, setSubmitting] = useState<BulkChannel | "webform" | null>(null);
 
 
   const reloadManufacturers = useCallback(() => {
@@ -386,6 +384,10 @@ export default function ContactManufacturerPage() {
         case "resetRetries":
           await api.inquiries.resetRetries(current.id);
           setBanner("Retries reset. Inquiry returned to draft.");
+          break;
+        case "submitWebForm":
+          await api.inquiries.submitWebForm(current.id);
+          setBanner("Web Form resubmitted.");
           break;
         default:
           return;
@@ -549,7 +551,6 @@ export default function ContactManufacturerPage() {
 
   const closePendingBulk = useCallback(() => {
     setPendingBulkManualInput(null);
-    triggerAllCompletedRef.current = new Set();
     setManualEmailOverrides({});
     manualWebFormInquiryIdsRef.current = {};
   }, []);
@@ -791,7 +792,10 @@ export default function ContactManufacturerPage() {
         if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return;
         const mfr = mfrById[r.matched_id];
         if (!mfr || resolvePreferredChannel(mfr) !== "webform" || !isWebFormReachable(mfr)) return;
-        rows.push({ attIdx, s, r, key: selKey(attIdx, r.row_index), mfrName: mfr.manufacturer });
+        const key = selKey(attIdx, r.row_index);
+        // Already-succeeded rows are skipped — a retry only re-attempts the rest.
+        if (rowWebFormResults[key]?.outcome === "automation_success") return;
+        rows.push({ attIdx, s, r, key, mfrName: mfr.manufacturer });
       });
     });
     return rows;
@@ -802,13 +806,13 @@ export default function ContactManufacturerPage() {
     const rows = collectWebFormEligibleRows();
     for (const { attIdx, s, r, key } of rows) {
       setRowWebFormBusy((prev) => ({ ...prev, [key]: "submit" }));
-      setRowWebFormErrors((prev) => { const next = { ...prev }; delete next[key]; return next; });
       try {
         const id = await getOrCreateRowWebFormInquiryId(attIdx, s, r);
         const result = await api.inquiries.submitWebForm(id);
         setRowWebFormResults((prev) => ({ ...prev, [key]: result }));
-      } catch (e: any) {
-        setRowWebFormErrors((prev) => ({ ...prev, [key]: e?.message ?? "Failed to submit the Web Form." }));
+      } catch {
+        // No per-row error display remains for the bulk path; rowWebFormResults/
+        // Trigger All's own failure messaging surfaces the outcome instead.
       } finally {
         setRowWebFormBusy((prev) => { const next = { ...prev }; delete next[key]; return next; });
       }
@@ -855,8 +859,8 @@ export default function ContactManufacturerPage() {
     }
   };
 
-  // Dispatches Email and Call sequentially; skips a channel already
-  // completed on an earlier attempt so a retry never resends it.
+  // Web Form, then Email, then Call — skips a channel already completed on
+  // an earlier attempt for this exact selection so a retry never resends it.
   const handleTriggerAllBulk = async () => {
     if (attachmentExtractions.length === 0 || !ctx) return;
     if (!question.trim()) {
@@ -870,37 +874,46 @@ export default function ContactManufacturerPage() {
 
     setExtractError(null);
 
-    // Web Form first, while the modal is still open, so results are visible.
-    if (!bulkTriggerAllCompletedRef.current.has("webform")) {
-      await submitAllEligibleWebForms();
-      bulkTriggerAllCompletedRef.current.add("webform");
-    }
+    const selectedManufacturers: ManufacturerContact[] = [];
+    attachmentExtractions.forEach((s, attIdx) => {
+      s.result?.rows.forEach((r) => {
+        if (!selectedKeys.has(selKey(attIdx, r.row_index)) || r.matched_id == null) return;
+        const m = mfrById[r.matched_id];
+        if (m) selectedManufacturers.push(m);
+      });
+    });
+    const buckets = bucketByPreferredChannel(selectedManufacturers);
 
-    const outcomes: { channel: BulkChannel; ok: boolean; message: string }[] = [];
-    for (const channel of ["email", "call"] as const) {
-      if (bulkTriggerAllCompletedRef.current.has(channel)) continue;
-      setSubmitting(channel);
-      try {
-        const result = await dispatchBulkChannel(channel);
-        bulkTriggerAllCompletedRef.current.add(channel);
-        outcomes.push({ channel, ok: true, message: describeBulkResult(channel, result) });
-      } catch (e: any) {
-        outcomes.push({ channel, ok: false, message: e?.message ?? `Failed to dispatch ${channel}.` });
-      }
-    }
-    setSubmitting(null);
+    bulkTriggerAllCompletionRef.current.sync(selectionSignatureFromKeys(selectedKeys));
 
-    const failed = outcomes.filter((o) => !o.ok);
-    const succeeded = outcomes.filter((o) => o.ok);
-    if (failed.length > 0) {
-      setExtractError(
-        (succeeded.length > 0 ? succeeded.map((o) => o.message).join(" · ") + " · " : "") +
-          `Failed: ${failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`,
-      );
-      return;
-    }
-    setBanner(succeeded.map((o) => o.message).join(" · ") || "No Email- or Call-eligible manufacturers.");
-    loadExistingInquiries();
+    const outcome = await runTriggerAll({
+      hasWebFormWork: collectWebFormEligibleRows().length > 0,
+      runWebForm: submitAllEligibleWebForms,
+      channels: (["email", "call"] as const).map((channel) => ({
+        key: channel,
+        hasEligible: (channel === "email" ? buckets.email.length : buckets.call.length) > 0,
+        dispatch: async () => {
+          try {
+            const result = await dispatchBulkChannel(channel);
+            return { ok: true, message: describeBulkResult(channel, result) };
+          } catch (e: any) {
+            return { ok: false, message: e?.message ?? `Failed to dispatch ${channel}.` };
+          }
+        },
+      })),
+      isCompleted: bulkTriggerAllCompletionRef.current.isCompleted,
+      markCompleted: bulkTriggerAllCompletionRef.current.markCompleted,
+      onPhaseChange: setSubmitting,
+    });
+
+    // Unconditional — any created Inquiry belongs in Manufacturer Outreach's
+    // Already Contacted, success or failure; that page is the source of truth.
+    const succeededMsg = outcome.succeeded.map((o) => o.message).join(" · ");
+    const failedMsg = outcome.failed.length > 0
+      ? `Failed: ${outcome.failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`
+      : "";
+    setBanner([succeededMsg, failedMsg].filter(Boolean).join(" · ") || "Trigger All finished.");
+    goTo("inquiries");
   };
 
 
@@ -1345,77 +1358,6 @@ export default function ContactManufacturerPage() {
                                         {rowEmailOverrides[key] ? "Edited — Preview / Edit Email" : "Preview / Edit Email"}
                                       </button>
                                     )}
-                                    {matched && mfr && resolvePreferredChannel(mfr) === "webform" && isWebFormReachable(mfr) && (() => {
-                                      const rowResult = rowWebFormResults[key];
-                                      const rowBusy = rowWebFormBusy[key];
-                                      const rowErr = rowWebFormErrors[key];
-                                      const runWebForm = async () => {
-                                        setRowWebFormBusy((prev) => ({ ...prev, [key]: "submit" }));
-                                        setRowWebFormErrors((prev) => { const next = { ...prev }; delete next[key]; return next; });
-                                        try {
-                                          const id = await getOrCreateRowWebFormInquiryId(attIdx, s, r);
-                                          const result = await api.inquiries.submitWebForm(id);
-                                          setRowWebFormResults((prev) => ({ ...prev, [key]: result }));
-                                        } catch (e: any) {
-                                          setRowWebFormErrors((prev) => ({ ...prev, [key]: e?.message ?? "Failed to submit the Web Form." }));
-                                        } finally {
-                                          setRowWebFormBusy((prev) => { const next = { ...prev }; delete next[key]; return next; });
-                                        }
-                                      };
-                                      return (
-                                        <div className="webform-automation-row">
-                                          <button
-                                            type="button"
-                                            className="btn btn-ghost"
-                                            disabled={rowBusy !== undefined}
-                                            onClick={(e) => { e.preventDefault(); runWebForm(); }}
-                                          >
-                                            {rowBusy ? "Submitting…" : "Submit Web Form"}
-                                          </button>
-                                          {rowErr && <div className="error-banner">{rowErr}</div>}
-                                          {rowResult && (
-                                            rowResult.outcome === "human_action_required" ? (
-                                              <div className="webform-human-action-banner">
-                                                <strong>🖐 Manual action required — Open Web Form</strong>
-                                                <p>
-                                                  {rowResult.reason}
-                                                  {rowResult.mechanism ? ` (${rowResult.mechanism})` : ""} Marked Needs
-                                                  Attention — automation was stopped before anything was submitted
-                                                  {mfr.mi_web_form_url ? ". " : "."}
-                                                  {mfr.mi_web_form_url && (
-                                                    <a href={mfr.mi_web_form_url} target="_blank" rel="noopener noreferrer">
-                                                      Open the Web Form
-                                                    </a>
-                                                  )}
-                                                  {mfr.mi_web_form_url && " to complete it manually."}
-                                                </p>
-                                              </div>
-                                            ) : rowResult.outcome === "submitted_but_unverified" ? (
-                                              <div className="webform-human-action-banner">
-                                                <strong>⚠️ Submission outcome could not be verified</strong>
-                                                <p>
-                                                  {rowResult.reason} Marked Needs Attention —{" "}
-                                                  <strong>do not resubmit</strong> without checking whether the
-                                                  original submission already went through
-                                                  {mfr.mi_web_form_url ? ". " : "."}
-                                                  {mfr.mi_web_form_url && (
-                                                    <a href={mfr.mi_web_form_url} target="_blank" rel="noopener noreferrer">
-                                                      Open the Web Form
-                                                    </a>
-                                                  )}
-                                                  {mfr.mi_web_form_url && " to check."}
-                                                </p>
-                                              </div>
-                                            ) : (
-                                              <div className="cell-muted" style={{ marginTop: 4 }}>
-                                                <strong>{rowResult.outcome === "automation_success" ? "✓ Submitted — " : "✗ Not submitted — "}</strong>
-                                                {rowResult.reason}
-                                              </div>
-                                            )
-                                          )}
-                                        </div>
-                                      );
-                                    })()}
                                   </label>
                                 );
                               })}
@@ -1779,7 +1721,13 @@ export default function ContactManufacturerPage() {
                     >
                       Cancel
                     </button>
-                    {reachableByEmail > 0 && totalCallable > 0 && (
+                    {shouldShowTriggerAll({
+                      hasTriggerAllHandler: true,
+                      emailEligibleCount: reachableByEmail,
+                      callEligibleCount: totalCallable,
+                      webFormCapableCount: reachableByWebForm,
+                      hasWebFormHandler: true,
+                    }) && (
                       <button
                         type="button"
                         className="btn btn-primary"
@@ -1945,37 +1893,46 @@ export default function ContactManufacturerPage() {
           goTo("inquiries");
         };
 
-        // Dispatches Email- and Call-eligible manufacturers sequentially — each
-        // target belongs to exactly one channel bucket, so nothing is dispatched
-        // twice. One channel failing does not stop the other from being attempted.
+        // Web Form has no part in this modal's own trigger (ChannelChooser
+        // runs it separately) — this covers Email + Call only.
         const triggerAll = async () => {
-          const outcomes: { channel: "email" | "call"; ok: boolean; message: string }[] = [];
-          for (const channel of ["email", "call"] as const) {
-            // Already dispatched successfully on an earlier click this session — skip, don't resend.
-            if (triggerAllCompletedRef.current.has(channel)) continue;
-            try {
-              const result = await dispatchChannel(channel, eligibleTargets(channel));
-              if (result) {
-                triggerAllCompletedRef.current.add(channel);
-                outcomes.push({ channel, ok: true, message: describeResult(channel, result) });
-              }
-            } catch (e: any) {
-              let msg = e?.message ?? `Failed to dispatch ${channel}.`;
-              if (channel === "call" && msg.includes("503")) {
-                msg = "ElevenLabs is not configured yet. Add ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID / ELEVENLABS_AGENT_PHONE_NUMBER_ID to backend/.env and restart.";
-              }
-              outcomes.push({ channel, ok: false, message: msg });
-            }
-          }
-          const failed = outcomes.filter((o) => !o.ok);
-          const succeeded = outcomes.filter((o) => o.ok);
-          if (failed.length > 0) {
-            throw new Error(
-              (succeeded.length > 0 ? succeeded.map((o) => o.message).join(" · ") + " · " : "") +
-                `Failed: ${failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`,
-            );
-          }
-          setBanner(succeeded.map((o) => o.message).join(" · ") || "No Email- or Call-eligible manufacturers.");
+          triggerAllCompletionRef.current.sync(
+            selectionSignatureFromKeys(pendingBulkManualInput.targets.map((t) => String(t.manufacturer_id))),
+          );
+          const outcome = await runTriggerAll({
+            hasWebFormWork: false,
+            runWebForm: async () => {},
+            channels: (["email", "call"] as const).map((channel) => ({
+              key: channel,
+              hasEligible: eligibleTargets(channel).length > 0,
+              dispatch: async () => {
+                try {
+                  const result = await dispatchChannel(channel, eligibleTargets(channel));
+                  return {
+                    ok: true,
+                    message: result ? describeResult(channel, result) : `No manufacturers eligible for ${channel}.`,
+                  };
+                } catch (e: any) {
+                  let msg = e?.message ?? `Failed to dispatch ${channel}.`;
+                  if (channel === "call" && msg.includes("503")) {
+                    msg = "ElevenLabs is not configured yet. Add ELEVENLABS_API_KEY / ELEVENLABS_AGENT_ID / ELEVENLABS_AGENT_PHONE_NUMBER_ID to backend/.env and restart.";
+                  }
+                  return { ok: false, message: msg };
+                }
+              },
+            })),
+            isCompleted: triggerAllCompletionRef.current.isCompleted,
+            markCompleted: triggerAllCompletionRef.current.markCompleted,
+            onPhaseChange: () => {}, // busy UI for this modal is owned by ChannelChooser's own "all" state
+          });
+
+          // Unconditional — any created Inquiry belongs in Manufacturer
+          // Outreach's Already Contacted, success or failure.
+          const succeededMsg = outcome.succeeded.map((o) => o.message).join(" · ");
+          const failedMsg = outcome.failed.length > 0
+            ? `Failed: ${outcome.failed.map((o) => `${o.channel} — ${o.message}`).join("; ")}`
+            : "";
+          setBanner([succeededMsg, failedMsg].filter(Boolean).join(" · ") || "Trigger All finished.");
           closePendingBulk();
           goTo("inquiries");
         };

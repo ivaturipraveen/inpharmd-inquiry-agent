@@ -1579,6 +1579,7 @@ WEB_FORM_CONTACT_ADDRESS = "3423 Piedmont Rd NE"
 WEB_FORM_CONTACT_CITY = "Atlanta"
 WEB_FORM_CONTACT_STATE = "GA"
 WEB_FORM_CONTACT_ZIP = "30305"
+WEB_FORM_CONTACT_COUNTRY = "United States"
 
 
 def _web_form_inquiry_data(obj: Inquiry) -> dict:
@@ -1601,6 +1602,7 @@ def _web_form_inquiry_data(obj: Inquiry) -> dict:
         "requester_city": WEB_FORM_CONTACT_CITY,
         "requester_state": WEB_FORM_CONTACT_STATE,
         "requester_zip": WEB_FORM_CONTACT_ZIP,
+        "requester_country": WEB_FORM_CONTACT_COUNTRY,
         "team_name": obj.team_name,
         "subject": obj.subject,
     }
@@ -1689,6 +1691,14 @@ async def _run_web_form_attempt(
         # A real submission happened — status must reflect that (excludes
         # submit-test's mock fixture, which is never real).
         obj.status = "web_form_submitted"
+    elif (
+        mode == "submit"
+        and result.outcome == "automation_failed"
+        and result.target == "manufacturer"
+        and obj.status != "closed"
+    ):
+        # A real submit attempt failed — must not look like an untouched draft.
+        obj.status = "needs_attention"
     db.commit()
 
     if is_escalation:

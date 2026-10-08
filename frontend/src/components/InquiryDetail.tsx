@@ -84,7 +84,8 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
   // A Web-Form-caused needs_attention never involved a call.
   const isWebFormNeedsAttention =
     inquiry.web_form_automation_status === "human_action_required" ||
-    inquiry.web_form_automation_status === "submitted_but_unverified";
+    inquiry.web_form_automation_status === "submitted_but_unverified" ||
+    inquiry.web_form_automation_status === "automation_failed";
   // callInFlight is included so the recovery form still appears for a closed
   // inquiry's stuck follow-up call — status alone stays "closed" there.
   const canRecordCall = inquiry.status === "call_pending" || (inquiry.status === "needs_attention" && !isWebFormNeedsAttention) || callInFlight;
@@ -187,6 +188,20 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                   <a href={m.mi_web_form_url} target="_blank" rel="noopener noreferrer">open the Web Form</a>
                 )}
               </p>
+            </div>
+          )}
+          {inquiry.web_form_automation_status === "automation_failed" && (
+            <div className="webform-human-action-banner">
+              <strong>⚠️ Web Form submission failed</strong>
+              <p>{inquiry.web_form_automation_reason ?? "The Web Form submission did not complete."}</p>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={busy}
+                onClick={() => run(() => onAction("submitWebForm"))}
+              >
+                Retry Web Form
+              </button>
             </div>
           )}
           <div className="detail-section">

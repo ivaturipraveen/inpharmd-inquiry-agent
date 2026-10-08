@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -140,8 +140,27 @@ async def _wait_for_gate_settle(page) -> None:
 
 # Best-effort, generic — cookie banners (OneTrust, confirmed on Merck/
 # Sanofi) would otherwise intercept clicks meant for the real form.
+# Known consent-vendor "accept" buttons, most-common first. Always accepts
+# (never declines) — matches prior behavior, keeps consent-dependent site
+# features working rather than risking a different, untested page state.
+_COOKIE_BANNER_SELECTORS = (
+    "#onetrust-accept-btn-handler",                          # OneTrust
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",  # Cookiebot (newer)
+    "#CybotCookiebotDialogBodyButtonAccept",                 # Cookiebot (classic)
+    "#truste-consent-button",                                # TrustArc
+    "#didomi-notice-agree-button",                            # Didomi
+    ".osano-cm-accept-all",                                   # Osano
+    "#bbcdBannerButtonOK",                                    # seen on Fresenius Kabi
+)
+# Discovery/filling/mapping are never blocked by an undismissed banner
+# (confirmed: DOM reads and select_option() aren't pointer-event-gated) —
+# only a real .click() on an element the banner physically overlaps can be
+# intercepted. This exists specifically to protect that final click.
+_COOKIE_ACCEPT_TEXT_SIGNATURES = ("accept", "allow all", "agree")
+
+
 async def _dismiss_cookie_banner(page) -> None:
-    for selector in ("#onetrust-accept-btn-handler",):
+    for selector in _COOKIE_BANNER_SELECTORS:
         try:
             btn = await page.query_selector(selector)
             if btn and await btn.is_visible():
@@ -150,6 +169,29 @@ async def _dismiss_cookie_banner(page) -> None:
                 return
         except Exception:
             continue
+
+    # Generic fallback for an unrecognized vendor: only matches a button
+    # whose own id/class explicitly signals it IS a cookie/consent control
+    # — never matched on text alone, so this can't misclick an unrelated
+    # "Accept"-labeled control on the real form itself.
+    try:
+        candidates = await page.query_selector_all(
+            "[id*='cookie' i] button, [class*='cookie' i] button, "
+            "[id*='consent' i] button, [class*='consent' i] button"
+        )
+        for el in candidates:
+            try:
+                if not await el.is_visible():
+                    continue
+                text = ((await el.inner_text()) or "").strip().lower()
+                if any(sig in text for sig in _COOKIE_ACCEPT_TEXT_SIGNATURES):
+                    await el.click()
+                    await page.wait_for_timeout(500)
+                    return
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)
@@ -242,6 +284,9 @@ class WebFormAutomationResult:
     # Raw PNG bytes of the confirmation screen, captured when no unique
     # confirmation_url exists. Router uploads to S3.
     confirmation_screenshot_bytes: Optional[bytes] = None
+    # SUBMIT_READY evidence (generic engine only — see _evaluate_submit_readiness).
+    # None for the 4 real-adapter path, which doesn't use this contract.
+    evidence: Optional[dict] = None
 
 
 # Local mock/test adapter — the only one ever automation_enabled.
@@ -1583,6 +1628,9 @@ GENERIC_INQUIRY_SOURCES = (
     "requester_last_name",
     "requester_email",
     "team_name",
+    "requester_phone",
+    "requester_state",
+    "requester_country",
 )
 
 # Anything outside these native (element_type, input_type) pairs is UNSUPPORTED.
@@ -1646,6 +1694,26 @@ _SOURCE_RULES = {
         "high_keywords": ("institution", "organization", "facility", "hospital", "team", "practice"),
         "low_keywords": ("company",),
         "eligible_types": _NATIVE_TEXTLIKE_TYPES,
+    },
+    "requester_phone": {
+        "high_keywords": ("phone number", "telephone", "phone", "contact number"),
+        "low_keywords": (),
+        "eligible_types": _NATIVE_TEXTLIKE_TYPES,
+        # input[type=tel] is itself a deterministic HIGH signal, no label needed.
+        "type_auto_high": "tel",
+    },
+    "requester_state": {
+        "high_keywords": ("state/province", "state", "province"),
+        "low_keywords": (),
+        "eligible_types": _NATIVE_TEXTLIKE_TYPES | _NATIVE_SELECT_TYPES,
+    },
+    "requester_country": {
+        "high_keywords": ("country",),
+        "low_keywords": (),
+        "eligible_types": _NATIVE_TEXTLIKE_TYPES | _NATIVE_SELECT_TYPES,
+        # A phone "country code" dropdown is a different field entirely —
+        # never let the word "country" steal it.
+        "exclude_keywords": ("country code", "dial code", "calling code"),
     },
 }
 
@@ -1941,6 +2009,63 @@ async def _discover_submit_candidates(page) -> list:
     return candidates
 
 
+async def _disambiguate_submit_candidates(page, candidates: list, reference_fields: list) -> list:
+    """SubmitResolver disambiguation: if multiple submit candidates exist,
+    prefer the one sharing the same <form> ancestor as the already-discovered
+    fillable fields (e.g. the real contact form, not an unrelated page-level
+    search/newsletter button). Never guesses by button text alone — falls
+    back to the original ambiguous list if no single form correlates."""
+    if len(candidates) <= 1 or not reference_fields:
+        return candidates
+    try:
+        ref_forms = []
+        # A site search box lives in its own <form> just like the real one —
+        # excluding it (same exclusion _frame_or_page_has_plausible_form
+        # already applies) keeps a page-level search form from "winning" a
+        # vote it was never a real candidate for.
+        meaningful_fields = [rf for rf in reference_fields if rf.input_type != "search"]
+        for rf in meaningful_fields:
+            handle = getattr(rf, "element_handle", None)
+            if handle is None:
+                continue
+            try:
+                if not await handle.is_visible():
+                    continue
+                form_handle = await handle.evaluate_handle("e => e.closest('form')")
+                if not await form_handle.evaluate("f => f === null"):
+                    ref_forms.append(form_handle)
+            except Exception:
+                continue
+        if not ref_forms:
+            return candidates
+
+        scored = []
+        for cand in candidates:
+            try:
+                cand_form = await cand.evaluate_handle("e => e.closest('form')")
+                if await cand_form.evaluate("f => f === null"):
+                    continue
+            except Exception:
+                continue
+            match_count = 0
+            for rf_form in ref_forms:
+                try:
+                    # Python's evaluate() takes a single arg, unlike the JS
+                    # API — pass both handles as one array argument.
+                    if await page.evaluate("([a, b]) => a === b", [cand_form, rf_form]):
+                        match_count += 1
+                except Exception:
+                    continue
+            if match_count > 0:
+                scored.append(cand)
+
+        if len(scored) == 1:
+            return scored
+    except Exception:
+        pass
+    return candidates
+
+
 async def _structural_verification_evidence(page) -> bool:
     """Informational only — never authorizes submission or builds verification."""
     try:
@@ -1978,6 +2103,63 @@ def _generic_missing_required(mapping_results: list) -> list:
     return missing
 
 
+# SUBMIT_READY floor: prepare_capable alone is not sufficient (a near-empty
+# page trivially satisfies it) — also require question + contact + a 3rd field.
+_SUFFICIENCY_MIN_MAPPED_FIELDS = 3
+_SUFFICIENCY_CONTACT_CHANNEL_SOURCES = ("requester_email", "requester_phone")
+
+
+@dataclass(frozen=True)
+class ReadinessEvidence:
+    high_confidence_sources: tuple = ()
+    missing_required: tuple = ()
+    prepare_capable: bool = False
+    has_question: bool = False
+    has_contact_channel: bool = False
+    mapped_field_count: int = 0
+    sufficiency_met: bool = False
+    submit_ready: bool = False
+
+
+def _evaluate_submit_readiness(mapping_results: list, *, override_mappings: Optional[dict] = None) -> ReadinessEvidence:
+    """Single shared readiness contract for discover_only() and
+    run_generic_web_form_automation() — pass the SAME override_mappings used to fill."""
+    override_mappings = override_mappings or {}
+
+    missing_required = _generic_missing_required(mapping_results)
+    missing_required = [
+        l for l in missing_required
+        if not any(m.label == l for m in override_mappings.values())
+    ]
+    prepare_capable = not missing_required
+
+    generic_sources = {
+        r.source_key for r in mapping_results
+        if r.confidence == MappingConfidence.HIGH_CONFIDENCE and r.source_key
+    }
+    override_sources = {m.source_key for m in override_mappings.values() if m.source_key}
+    effective_sources = generic_sources | override_sources
+
+    has_question = "question" in effective_sources
+    has_contact_channel = bool(effective_sources & set(_SUFFICIENCY_CONTACT_CHANNEL_SOURCES))
+    mapped_field_count = len(effective_sources)
+    sufficiency_met = (
+        has_question and has_contact_channel
+        and mapped_field_count >= _SUFFICIENCY_MIN_MAPPED_FIELDS
+    )
+
+    return ReadinessEvidence(
+        high_confidence_sources=tuple(sorted(effective_sources)),
+        missing_required=tuple(missing_required),
+        prepare_capable=prepare_capable,
+        has_question=has_question,
+        has_contact_channel=has_contact_channel,
+        mapped_field_count=mapped_field_count,
+        sufficiency_met=sufficiency_met,
+        submit_ready=prepare_capable and sufficiency_met,
+    )
+
+
 @dataclass
 class DiscoveryReport:
     target_url: str
@@ -2006,6 +2188,14 @@ class DiscoveryReport:
     # ambiguous (Needs Investigation), never "assumed compatible."
     purpose_compatible: Optional[bool] = None
     purpose_evidence: Optional[str] = None
+    # Distinct from form_not_found/navigation_failed — the manufacturer's
+    # own site/service is down. See _detect_manufacturer_site_error.
+    site_error: Optional[str] = None
+    # See _evaluate_submit_readiness — a page can be prepare_capable=True
+    # but submit_ready=False (MAPPED_BUT_INSUFFICIENT).
+    sufficiency_met: bool = False
+    submit_ready: bool = False
+    readiness_evidence: Optional[dict] = None
 
 
 # Read-only: a page whose own nav links to the real contact/MI form is
@@ -2037,6 +2227,136 @@ async def _frame_or_page_has_plausible_form(frame_or_page) -> tuple:
     return len(plausible) >= _MIN_PLAUSIBLE_FORM_FIELDS, len(plausible)
 
 
+# Minimal PageStabilizer: bounded wait for a page/form state to settle after
+# an interaction, so navigation decisions aren't built on a fixed-sleep
+# guess. Never waits indefinitely — always bounded by timeout_ms.
+STABILIZE_MAX_WAIT_MS = 8000
+STABILIZE_POLL_INTERVAL_MS = 500
+
+
+async def _wait_for_page_stable(page, *, timeout_ms: int = STABILIZE_MAX_WAIT_MS) -> None:
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except Exception:
+        pass
+    elapsed = 0
+    last_count = None
+    stable_streak = 0
+    while elapsed < timeout_ms:
+        try:
+            count = len(await discover_fields(page))
+        except Exception:
+            return
+        if count == last_count:
+            stable_streak += 1
+            if stable_streak >= 2:
+                return
+        else:
+            stable_streak = 0
+        last_count = count
+        await page.wait_for_timeout(STABILIZE_POLL_INTERVAL_MS)
+        elapsed += STABILIZE_POLL_INTERVAL_MS
+
+
+# Generic CountrySelector (Tier A scope: native <select> only — ARIA/custom
+# dropdowns are a documented future extension, not guessed at here). Only
+# ever selects a name from this explicit, documented variant list — never
+# infers a country from anything else.
+_COUNTRY_SELECT_MARKER_OPTIONS = ("canada", "mexico", "united kingdom", "germany", "australia")
+_COUNTRY_NAME_VARIANTS = ("United States of America", "United States", "USA", "US")
+_COUNTRY_SELECT_MIN_OPTIONS = 10
+
+
+async def _detect_and_select_country(context, *, country_names=_COUNTRY_NAME_VARIANTS) -> Optional[str]:
+    """Finds a native <select> whose option list structurally looks like a
+    country list (dozens of options including other recognizable countries)
+    and selects our documented United States value if present. Returns the
+    matched option value, or None if no safe match — never guesses."""
+    try:
+        selects = await context.query_selector_all("select")
+    except Exception:
+        return None
+    for el in selects:
+        try:
+            if not await el.is_visible():
+                continue
+            options = await el.query_selector_all("option")
+            labels = [(await o.inner_text()).strip().lower() for o in options]
+        except Exception:
+            continue
+        if len(labels) < _COUNTRY_SELECT_MIN_OPTIONS:
+            continue
+        if not any(marker in labels for marker in _COUNTRY_SELECT_MARKER_OPTIONS):
+            continue
+        matched_value = None
+        for name in country_names:
+            matched_value = await _resolve_exact_option_value(el, name)
+            if matched_value is not None:
+                break
+        if matched_value is None:
+            continue
+        try:
+            await el.select_option(value=matched_value)
+            return matched_value
+        except Exception:
+            continue
+    return None
+
+
+# Generic link-based CountrySelector (anchor variant — e.g. Roche, the BMS/
+# Celgene global portal): some sites present a country gate as a list of
+# <a href> links instead of a native <select>. Same discipline as the native
+# selector above: exact-text match only against the documented variant list,
+# only engages when the page structurally looks like a country-link list
+# (enough distinct links, including a recognizable marker country), and
+# requires the match to be unique — never clicks on an ambiguous or
+# zero-match result.
+_COUNTRY_LINK_MARKER_OPTIONS = _COUNTRY_SELECT_MARKER_OPTIONS
+_COUNTRY_LINK_MIN_LINKS = _COUNTRY_SELECT_MIN_OPTIONS
+
+
+async def _detect_and_select_country_link(context, *, country_names=_COUNTRY_NAME_VARIANTS) -> Optional[str]:
+    """Finds a cluster of visible <a href> links whose text structurally
+    looks like a country-link list and clicks the single, unambiguous link
+    matching one of our documented United States variants. Returns the
+    matched link's exact text, or None if no safe match — never guesses."""
+    try:
+        anchors = await context.query_selector_all("a[href]")
+    except Exception:
+        return None
+
+    visible = []
+    for el in anchors:
+        try:
+            if not await el.is_visible():
+                continue
+            text = (await el.inner_text()).strip()
+        except Exception:
+            continue
+        if text:
+            visible.append((el, text))
+
+    if len(visible) < _COUNTRY_LINK_MIN_LINKS:
+        return None
+
+    lowered_texts = [t.lower() for _, t in visible]
+    if not any(marker in lowered_texts for marker in _COUNTRY_LINK_MARKER_OPTIONS):
+        return None
+
+    variant_set = {n.strip().lower() for n in country_names}
+    matches = [(el, t) for el, t in visible if t.strip().lower() in variant_set]
+    if len(matches) != 1:
+        # Zero matches: no safe target. 2+ matches: ambiguous — refuse to guess.
+        return None
+
+    el, matched_text = matches[0]
+    try:
+        await el.click()
+    except Exception:
+        return None
+    return matched_text
+
+
 @dataclass
 class _FormLocateResult:
     context: object  # Page or Frame to run field discovery against
@@ -2045,14 +2365,29 @@ class _FormLocateResult:
     evidence: str = ""
     human_gate_mechanism: Optional[str] = None
     login_gate: bool = False
+    # Distinct from "no form found" — the manufacturer's own site/service is
+    # down. See _detect_manufacturer_site_error.
+    site_error: Optional[str] = None
 
 
-async def _locate_real_form_context(page, *, max_link_hops: int = 2) -> _FormLocateResult:
-    """Read-only: if the current page has no plausible form, checks its
-    iframes, then follows at most `max_link_hops` on-page links matching
-    common MI/contact keywords and rechecks. Never fills/checks/selects/
-    submits anything. A gate (CAPTCHA/login) found anywhere along the way
-    stops the search immediately — reported, never routed around."""
+async def _locate_real_form_context(
+    page, *, max_link_hops: int = 2, response=None, try_country_select: bool = True,
+    try_country_link_select: bool = True,
+) -> _FormLocateResult:
+    """Read-only except for one explicit, bounded CountrySelector action: if
+    the current page has no plausible form, tries (in order) a native
+    country-select, its iframes (resolving to a direct URL when possible),
+    then follows at most `max_link_hops` on-page links matching common
+    MI/contact keywords. Never fills/checks/selects anything else, never
+    submits. A gate (site error/CAPTCHA/login) found anywhere along the way
+    stops the search immediately — reported, never routed around. `response`
+    is the goto() response for the CURRENT page state, used only for the
+    site-error check; re-supplied at every navigation hop so this check
+    re-runs after every interaction, not just once at initial load."""
+    site_err = await _detect_manufacturer_site_error(page, response)
+    if site_err:
+        return _FormLocateResult(context=page, evidence=f"manufacturer site error: {site_err}", site_error=site_err)
+
     mechanism = await _detect_human_verification(page)
     if mechanism:
         return _FormLocateResult(context=page, evidence="human gate detected", human_gate_mechanism=mechanism)
@@ -2063,6 +2398,29 @@ async def _locate_real_form_context(page, *, max_link_hops: int = 2) -> _FormLoc
     if ok:
         return _FormLocateResult(context=page, evidence=f"form found on page ({n} fields)")
 
+    if try_country_select:
+        country_selected = await _detect_and_select_country(page)
+        if country_selected:
+            await _wait_for_page_stable(page)
+            resolved = await _locate_real_form_context(
+                page, max_link_hops=max_link_hops, try_country_select=False,
+            )
+            resolved.navigated = True
+            resolved.evidence = f"selected country '{country_selected}' => {resolved.evidence}"
+            return resolved
+
+    if try_country_link_select:
+        country_link_selected = await _detect_and_select_country_link(page)
+        if country_link_selected:
+            await _wait_for_page_stable(page)
+            resolved = await _locate_real_form_context(
+                page, max_link_hops=max_link_hops,
+                try_country_select=try_country_select, try_country_link_select=False,
+            )
+            resolved.navigated = True
+            resolved.evidence = f"clicked country link '{country_link_selected}' => {resolved.evidence}"
+            return resolved
+
     for el in await page.query_selector_all("iframe"):
         try:
             frame = await el.content_frame()
@@ -2071,8 +2429,34 @@ async def _locate_real_form_context(page, *, max_link_hops: int = 2) -> _FormLoc
         if not frame:
             continue
         ok, n = await _frame_or_page_has_plausible_form(frame)
-        if ok:
-            return _FormLocateResult(context=frame, found_in_iframe=True, evidence=f"form found in iframe ({n} fields)")
+        if not ok:
+            continue
+        # Direct-URL resolution: if the iframe's loaded document has a real,
+        # separately-navigable URL (not about:blank/javascript:, the common
+        # dynamic-injection case — see B. Braun Medical), re-navigate the
+        # top-level page there instead of settling for "found in an iframe."
+        # This is exactly the Genentech pattern (its mi_web_form_url was
+        # manually pointed at its iframe's own URL), generalized.
+        iframe_url = frame.url
+        if iframe_url and iframe_url not in ("", "about:blank") and not iframe_url.startswith("javascript:"):
+            try:
+                nav_response = await page.goto(iframe_url, wait_until="load", timeout=20000)
+                await _dismiss_cookie_banner(page)
+                await _wait_for_page_stable(page)
+            except Exception as e:
+                return _FormLocateResult(
+                    context=frame, found_in_iframe=True,
+                    evidence=f"form found in iframe ({n} fields); resolving to direct URL {iframe_url} failed: {e}",
+                )
+            resolved = await _locate_real_form_context(
+                page, max_link_hops=max(max_link_hops - 1, 0),
+                response=nav_response, try_country_select=try_country_select,
+                try_country_link_select=try_country_link_select,
+            )
+            resolved.navigated = True
+            resolved.evidence = f"resolved iframe to direct URL {iframe_url} => {resolved.evidence}"
+            return resolved
+        return _FormLocateResult(context=frame, found_in_iframe=True, evidence=f"form found in iframe ({n} fields)")
 
     if max_link_hops <= 0:
         return _FormLocateResult(context=page, evidence="no plausible form found; link-following exhausted")
@@ -2103,14 +2487,13 @@ async def _locate_real_form_context(page, *, max_link_hops: int = 2) -> _FormLoc
         return _FormLocateResult(context=page, evidence="no plausible form found; no matching nav link")
 
     try:
-        await page.goto(candidate["href"], wait_until="load", timeout=20000)
+        nav_response = await page.goto(candidate["href"], wait_until="load", timeout=20000)
         await _dismiss_cookie_banner(page)
-        await _wait_for_gate_settle(page)
-        await page.wait_for_timeout(1500)  # extra settle for client-rendered forms
+        await _wait_for_page_stable(page)
     except Exception as e:
         return _FormLocateResult(context=page, navigated=True, evidence=f"navigation to '{candidate['text']}' failed: {e}")
 
-    nested = await _locate_real_form_context(page, max_link_hops=max_link_hops - 1)
+    nested = await _locate_real_form_context(page, max_link_hops=max_link_hops - 1, response=nav_response)
     nested.navigated = True
     nested.evidence = f"followed '{candidate['text']}' -> {candidate['href']} => {nested.evidence}"
     return nested
@@ -2127,7 +2510,7 @@ async def discover_only(target_url: str, *, pre_form_selector: Optional[str] = N
             browser = await pw.chromium.launch(headless=True)
             try:
                 page = await browser.new_page()
-                await page.goto(target_url, wait_until="load", timeout=20000)
+                response = await page.goto(target_url, wait_until="load", timeout=20000)
                 report.reachable = True
                 await _dismiss_cookie_banner(page)
 
@@ -2142,12 +2525,16 @@ async def discover_only(target_url: str, *, pre_form_selector: Optional[str] = N
 
                 await _wait_for_gate_settle(page)
 
-                located = await _locate_real_form_context(page, max_link_hops=2)
+                located = await _locate_real_form_context(page, max_link_hops=2, response=response)
                 report.navigated = located.navigated
                 report.navigation_evidence = located.evidence
                 report.found_in_iframe = located.found_in_iframe
                 if located.navigated and not located.found_in_iframe:
                     report.navigated_url = page.url
+
+                if located.site_error:
+                    report.site_error = located.site_error
+                    return report
 
                 if located.human_gate_mechanism:
                     report.human_gate_mechanism = located.human_gate_mechanism
@@ -2205,11 +2592,16 @@ async def discover_only(target_url: str, *, pre_form_selector: Optional[str] = N
                         report.unmapped_required_count += 1
                 report.ambiguous_sources = sorted(ambiguous)
 
-                missing_required = _generic_missing_required(mapping_results)
                 submit_candidates = await _discover_submit_candidates(context)
+                submit_candidates = await _disambiguate_submit_candidates(context, submit_candidates, fields)
                 report.submit_candidate_count = len(submit_candidates)
                 report.submit_capable_evidence = await _structural_verification_evidence(context)
-                report.prepare_capable = not missing_required
+
+                evidence = _evaluate_submit_readiness(mapping_results)
+                report.prepare_capable = evidence.prepare_capable
+                report.sufficiency_met = evidence.sufficiency_met
+                report.submit_ready = evidence.submit_ready
+                report.readiness_evidence = asdict(evidence)
 
                 return report
             finally:
@@ -2239,6 +2631,17 @@ async def run_generic_web_form_automation(
         return WebFormAutomationResult(
             outcome="automation_failed",
             reason=f"Could not reach the Web Form: {discovery.error or 'unknown error'}.",
+            target=target_label, stage=mode,
+        )
+    if discovery.site_error:
+        return WebFormAutomationResult(
+            outcome="human_action_required",
+            reason=(
+                f"The manufacturer's website returned an error instead of the "
+                f"form (\"{discovery.site_error}\"). This looks like an outage "
+                f"on their end, not a CAPTCHA/login gate — retry later."
+            ),
+            mechanism="manufacturer_site_error",
             target=target_label, stage=mode,
         )
     if discovery.human_gate_mechanism:
@@ -2280,6 +2683,20 @@ async def run_generic_web_form_automation(
             ),
             target=target_label, stage=mode,
         )
+    if not discovery.sufficiency_met:
+        # Fast-fail on sufficiency only (not prepare_capable) — discover_only
+        # has no override_adapter, so missing-required is left to the check below.
+        return WebFormAutomationResult(
+            outcome="automation_failed",
+            reason=(
+                "Not enough evidence this is a real, fillable Medical "
+                f"Information form (question_found={discovery.readiness_evidence['has_question']}, "
+                f"contact_channel_found={discovery.readiness_evidence['has_contact_channel']}, "
+                f"mapped_field_count={discovery.readiness_evidence['mapped_field_count']})."
+            ),
+            target=target_label, stage=mode,
+            evidence=discovery.readiness_evidence,
+        )
 
     # A plausible form wasn't where the DB's on-file URL points, but
     # link-following found the real one — use it for everything below.
@@ -2312,21 +2729,32 @@ async def run_generic_web_form_automation(
     override_mappings = override_adapter.field_mappings if override_adapter else {}
     merged_mappings = {**generic_mappings, **override_mappings}
 
-    missing_required = _generic_missing_required(mapping_results)
-    # Fields an override explicitly maps are exempt from this check.
-    missing_required = [
-        label for label in missing_required
-        if not any(m.label == label for m in override_mappings.values())
-    ]
-    if missing_required:
+    # Authoritative re-check on the live DOM, using the EXACT override_mappings merged above.
+    evidence = _evaluate_submit_readiness(mapping_results, override_mappings=override_mappings)
+
+    if not evidence.prepare_capable:
         return WebFormAutomationResult(
             outcome="automation_failed",
             reason=(
                 "Generic discovery could not confidently map required field(s): "
-                f"{', '.join(missing_required)}."
+                f"{', '.join(evidence.missing_required)}."
             ),
             target=target_label, stage=mode,
-            missing_fields=missing_required,
+            missing_fields=list(evidence.missing_required),
+            evidence=asdict(evidence),
+        )
+    if not evidence.sufficiency_met:
+        return WebFormAutomationResult(
+            outcome="automation_failed",
+            reason=(
+                f"Live re-check found only {evidence.mapped_field_count} high-confidence "
+                "field(s) on this exact page state — insufficient to proceed, even though "
+                "an earlier discovery pass reported readiness. The page may have changed "
+                "between checks; refusing to guess rather than fill a form that isn't "
+                "demonstrably real."
+            ),
+            target=target_label, stage=mode,
+            evidence=asdict(evidence),
         )
 
     has_verification = bool(
@@ -2419,7 +2847,9 @@ async def _discover_submit_candidates_for_selector(target_url: str, pre_form_sel
                         await page.wait_for_timeout(500)
                 except Exception:
                     pass
+            fields = await discover_fields(page)
             candidates = await _discover_submit_candidates(page)
+            candidates = await _disambiguate_submit_candidates(page, candidates, fields)
             for el in candidates:
                 el_id = await el.get_attribute("id")
                 el_name = await el.get_attribute("name")
