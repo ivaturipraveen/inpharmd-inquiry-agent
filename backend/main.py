@@ -54,6 +54,7 @@ def _ensure_columns():
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_url TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_sheet VARCHAR(255)",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_row INTEGER",
+        "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS source_excel_attachment_id INTEGER",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS excel_response_url TEXT",
         "ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS excel_response_posted_at TIMESTAMPTZ",
         # Per-row product details from the MUE Excel

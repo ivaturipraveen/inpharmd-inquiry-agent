@@ -161,6 +161,10 @@ class Inquiry(Base):
     source_excel_url = Column(Text)
     source_excel_sheet = Column(String(255))
     source_excel_row = Column(Integer)
+    # InpharmD's permanent attachment id (not our S3 mirror url, which is
+    # regenerated per extraction) — identifies which specific uploaded file a
+    # row came from, durable across reloads/re-extractions.
+    source_excel_attachment_id = Column(Integer)
     # Per-row product details extracted from the MUE Excel alongside the manufacturer name.
     medication_name = Column(Text)
     pi_storage_data = Column(Text)

@@ -403,6 +403,7 @@ async def bulk_create_inquiries(
             source_excel_url=payload.source_excel_url,
             source_excel_sheet=payload.source_excel_sheet,
             source_excel_row=tgt.source_excel_row,
+            source_excel_attachment_id=payload.source_excel_attachment_id,
             source_attachments_json=source_attachments_json,
             mue_details=(payload.mue_details or "").strip() or None,
             team_name=(payload.team_name or "").strip() or None,

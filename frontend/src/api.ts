@@ -287,6 +287,9 @@ export const api = {
       source_inquiry_uuid?: string | null;
       source_excel_url?: string | null;
       source_excel_sheet?: string | null;
+      /** InpharmD's permanent attachment id — one bulkCreate call = one file,
+       * so this applies to every target in this request. */
+      source_excel_attachment_id?: number | null;
       /** Original platform attachments (all of them), for later best-effort
        * structured-field extraction — see backend models.Inquiry.source_attachments_json. */
       attachments?: { file_name: string; doc_url: string }[];

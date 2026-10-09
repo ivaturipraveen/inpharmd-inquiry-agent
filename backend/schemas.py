@@ -123,6 +123,10 @@ class InquiryBase(BaseModel):
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
     source_excel_row: Optional[int] = None
+    # InpharmD's permanent attachment id — identifies which specific uploaded
+    # file source_excel_row refers to; distinct from source_attachments_json
+    # (the list of documents attached to the outbound email).
+    source_excel_attachment_id: Optional[int] = None
     medication_name: Optional[str] = None
     # Requesting pharmacist's team/organization — from InpharmD's
     # inquiry_submitter_details.team_name, or typed in manually.
@@ -230,6 +234,9 @@ class BulkInquiryCreate(BaseModel):
     source_inquiry_uuid: Optional[str] = None
     source_excel_url: Optional[str] = None
     source_excel_sheet: Optional[str] = None
+    # Same for every target in this batch (one bulkCreate call = one file) —
+    # per-row source_excel_row lives on BulkTarget instead.
+    source_excel_attachment_id: Optional[int] = None
     # All original attachments from the source InpharmD inquiry (not just the
     # MUE workbook) — stored as JSON for later extraction; see models.Inquiry.
     attachments: Optional[list[SourceAttachment]] = None

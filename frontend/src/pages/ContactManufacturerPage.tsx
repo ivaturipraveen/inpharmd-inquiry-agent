@@ -11,6 +11,7 @@ import { bucketByPreferredChannel, resolvePreferredChannel, isEmailReachable, is
 import { shouldShowTriggerAll } from "../utils/triggerAllVisibility";
 import { createCompletionTracker, runTriggerAll, selectionSignatureFromKeys } from "../utils/triggerAllOrchestration";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
+import { buildContactedRowKeys, isRowContacted } from "../utils/contactedRowIdentity";
 import type {
   Inquiry,
   InquiryInput,
@@ -108,7 +109,12 @@ const readContext = (): ForwardContext | null => {
     const url = params.get(`att_url_${i}`);
     const name = params.get(`att_name_${i}`);
     if (!url || !name) break;
-    attachments.push({ id: i, file_name: name, doc_url: url });
+    // Recover the real InpharmD attachment id when present; a pre-upgrade
+    // bookmarked URL won't have att_id_i, so fall back to the ordinal index
+    // rather than breaking the reload.
+    const idParam = params.get(`att_id_${i}`);
+    const id = idParam != null && !Number.isNaN(Number(idParam)) ? Number(idParam) : i;
+    attachments.push({ id, file_name: name, doc_url: url });
     i++;
   }
   if (attachments.length === 0) {
@@ -411,93 +417,32 @@ export default function ContactManufacturerPage() {
     }
   };
 
-  // Map manufacturer_id → inquiry for the first (most-recent) contact per mfr.
-  // Test call inquiries have manufacturer_id = null and are excluded from this map.
-  const contactedMfrMap = useMemo(() => {
-    const m = new Map<number, Inquiry>();
-    for (const inq of existingInquiries) {
-      if (inq.manufacturer_id != null && !m.has(inq.manufacturer_id))
-        m.set(inq.manufacturer_id, inq);
-    }
-    return m;
-  }, [existingInquiries]);
+  // A row is "contacted" only by its own exact (manufacturer, file, row)
+  // identity — never by manufacturer alone. Manual-origin inquiries carry no
+  // source_excel_row and are skipped, so they can never suppress an
+  // attachment row for the same manufacturer (see contactedRowIdentity.ts).
+  const contactedRowKeys = useMemo(
+    () => buildContactedRowKeys(existingInquiries),
+    [existingInquiries],
+  );
 
-  // manufacturer_ids claimed by any matched row — used to find contacted
-  // manufacturers not in the current extraction so they don't vanish from the list.
-  const claimedContactedIds = useMemo(() => {
-    const ids = new Set<number>();
-    for (const s of attachmentExtractions) {
-      s.result?.rows.forEach((r) => {
-        if (r.matched_id != null) ids.add(r.matched_id);
-      });
-    }
-    return ids;
-  }, [attachmentExtractions]);
-
-  const unclaimedContactedInquiries = useMemo(() => {
-    return Array.from(contactedMfrMap.values()).filter(
-      (inq) => inq.manufacturer_id != null && !claimedContactedIds.has(inq.manufacturer_id),
-    );
-  }, [contactedMfrMap, claimedContactedIds]);
-
-  // Single source of truth for "Already contacted" — merges extraction matches
-  // with unclaimed contacted inquiries into one deduped-by-manufacturer list.
-  type ContactedDisplayItem = {
-    key: string;
-    name: string;
-    medication?: string | null;
-    piStorage?: string | null;
-    inq: Inquiry;
-  };
-  const allContactedDisplayItems = useMemo((): ContactedDisplayItem[] => {
-    const byMfrId = new Map<number, ContactedDisplayItem>();
-    for (const s of attachmentExtractions) {
-      s.result?.rows.forEach((r) => {
-        if (r.matched_id != null && !byMfrId.has(r.matched_id)) {
-          const inq = contactedMfrMap.get(r.matched_id);
-          if (inq) {
-            byMfrId.set(r.matched_id, {
-              key: `mfr-${r.matched_id}`,
-              name: r.matched_name || r.raw_name,
-              medication: r.medication_name,
-              piStorage: r.pi_storage,
-              inq,
-            });
-          }
-        }
-      });
-    }
-    for (const inq of unclaimedContactedInquiries) {
-      const mfrId = inq.manufacturer_id as number;
-      if (byMfrId.has(mfrId)) continue;
-      const mfr = mfrById[mfrId];
-      byMfrId.set(mfrId, {
-        key: `mfr-${mfrId}`,
-        name: mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? `Manufacturer #${mfrId}`,
-        medication: inq.medication_name,
-        piStorage: inq.pi_storage_data,
-        inq,
-      });
-    }
-    return Array.from(byMfrId.values());
-  }, [attachmentExtractions, contactedMfrMap, unclaimedContactedInquiries, mfrById]);
-
-  // Remove contacted manufacturers from the current selection whenever the
-  // map updates (e.g. after the fetch completes post-extraction).
+  // Remove rows whose own (manufacturer, file, row) identity is already
+  // contacted whenever the set updates (e.g. after the fetch completes
+  // post-extraction) — never removes a sibling row for the same manufacturer.
   useEffect(() => {
-    if (contactedMfrMap.size === 0) return;
+    if (contactedRowKeys.size === 0) return;
     setSelectedKeys((prev) => {
       const next = new Set(prev);
       attachmentExtractions.forEach((s, attIdx) => {
         s.result?.rows.forEach((r) => {
-          if (r.matched_id != null && contactedMfrMap.has(r.matched_id)) {
+          if (isRowContacted(contactedRowKeys, r.matched_id, s.att.id, r.row_index)) {
             next.delete(selKey(attIdx, r.row_index));
           }
         });
       });
       return next;
     });
-  }, [contactedMfrMap, attachmentExtractions]);
+  }, [contactedRowKeys, attachmentExtractions]);
 
   const handleCancel = useCallback(() => {
     goTo("platform-inquiries");
@@ -638,7 +583,7 @@ export default function ContactManufacturerPage() {
     attachmentExtractions.forEach((s, attIdx) => {
       if (!s.result) return;
       s.result.rows
-        .filter((r) => r.matched_id && !contactedMfrMap.has(r.matched_id))
+        .filter((r) => r.matched_id && !isRowContacted(contactedRowKeys, r.matched_id, s.att.id, r.row_index))
         .forEach((r) => {
           next.add(selKey(attIdx, r.row_index));
         });
@@ -661,11 +606,11 @@ export default function ContactManufacturerPage() {
     let count = 0;
     attachmentExtractions.forEach((s) => {
       s.result?.rows.forEach((r) => {
-        if (r.matched_id && !contactedMfrMap.has(r.matched_id)) count++;
+        if (r.matched_id && !isRowContacted(contactedRowKeys, r.matched_id, s.att.id, r.row_index)) count++;
       });
     });
     return count;
-  }, [attachmentExtractions, contactedMfrMap]);
+  }, [attachmentExtractions, contactedRowKeys]);
 
 
   // Core per-channel dispatch, shared by the single-channel buttons and
@@ -730,6 +675,7 @@ export default function ContactManufacturerPage() {
         source_inquiry_uuid: ctx!.uuid,
         source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
         source_excel_sheet: s.result!.sheet_name,
+        source_excel_attachment_id: s.att.id,
         attachments: ctx!.attachments,
         // Already folded into `question` above (see the ctx effect) — sending it
         // here too would duplicate it in the outbound email.
@@ -771,6 +717,7 @@ export default function ContactManufacturerPage() {
       source_inquiry_uuid: ctx!.uuid,
       source_excel_url: s.result!.excel_s3_url ?? s.att.doc_url ?? null,
       source_excel_sheet: s.result!.sheet_name,
+      source_excel_attachment_id: s.att.id,
       attachments: ctx!.attachments,
       mue_details: null,
       dispatch_channel: "none",
@@ -799,6 +746,14 @@ export default function ContactManufacturerPage() {
       });
     });
     return rows;
+  };
+
+  // Standalone button only — refreshes the in-page Already Contacted list the
+  // same way handleBulkSubmit does for Email/Call. Trigger All calls
+  // submitAllEligibleWebForms directly and does not go through this wrapper.
+  const handleSubmitAllWebFormsStandalone = async () => {
+    await submitAllEligibleWebForms();
+    loadExistingInquiries();
   };
 
   // Shared by the Web Form card button and Trigger All's webform portion.
@@ -1063,7 +1018,7 @@ export default function ContactManufacturerPage() {
       {error && <div className="error-banner">{error}</div>}
 
       {/* Already Contacted — shown when there are no attachment extractions to render the section inline */}
-      {!attachmentExtractions.some((s) => s.result) && contactedMfrMap.size > 0 && (
+      {!attachmentExtractions.some((s) => s.result) && existingInquiries.length > 0 && (
         <div className="page-form">
           <div className="page-form-body">
             <div className="contacted-section">
@@ -1164,8 +1119,8 @@ export default function ContactManufacturerPage() {
                     Clear
                   </button>
                   <span className="cell-muted">{totalSelectedCount} selected</span>
-                  {contactedMfrMap.size > 0 && (
-                    <span className="cell-muted">· {contactedMfrMap.size} already contacted</span>
+                  {existingInquiries.length > 0 && (
+                    <span className="cell-muted">· {existingInquiries.length} already contacted</span>
                   )}
                 </div>
 
@@ -1190,10 +1145,10 @@ export default function ContactManufacturerPage() {
                       )}
                       {(() => {
                         const uncontactedRows = filteredRows.filter(
-                          (r) => !(r.matched_id != null && contactedMfrMap.has(r.matched_id)),
+                          (r) => !isRowContacted(contactedRowKeys, r.matched_id, s.att.id, r.row_index),
                         );
                         const alreadyContactedRows = filteredRows.filter(
-                          (r) => r.matched_id != null && contactedMfrMap.has(r.matched_id),
+                          (r) => isRowContacted(contactedRowKeys, r.matched_id, s.att.id, r.row_index),
                         );
                         return (
                           <>
@@ -1369,19 +1324,21 @@ export default function ContactManufacturerPage() {
                   );
                 })}
 
-                {/* Single Already-Contacted section for the MUE — merges extraction matches with
-                    unclaimed inquiries, deduped by manufacturer so nothing shows twice or vanishes. */}
-                {allContactedDisplayItems.length > 0 && (
+                {/* Single Already-Contacted section for the MUE — every Inquiry for this
+                    batch, one row per Inquiry (never deduped/merged by manufacturer), using
+                    each Inquiry's own stored data so a row's card never shows another row's
+                    drug/storage info just because they share a manufacturer. */}
+                {existingInquiries.length > 0 && (
                   <div className="contacted-section" style={{ marginTop: attachmentExtractions.some(x => x.result) ? "24px" : "0" }}>
                     <div className="contacted-section-header">
-                      Already contacted ({allContactedDisplayItems.length})
+                      Already contacted ({existingInquiries.length})
                     </div>
-                    {allContactedDisplayItems.map((item) => {
-                      const inq = item.inq;
+                    {existingInquiries.map((inq) => {
+                      const mfr = inq.manufacturer_id != null ? mfrById[inq.manufacturer_id] : undefined;
                       const isScheduled = inq.status === "email_pending" && !!inq.email_scheduled_for;
                       return (
                         <div
-                          key={item.key}
+                          key={inq.id}
                           className="contacted-row"
                           role="button"
                           tabIndex={0}
@@ -1391,14 +1348,16 @@ export default function ContactManufacturerPage() {
                           }}
                         >
                           <div className="contacted-row-main">
-                            <span className="contacted-row-name">{item.name}</span>
-                            {(item.medication || item.piStorage) && (
+                            <span className="contacted-row-name">
+                              {mfr?.manufacturer ?? inq.manufacturer?.manufacturer ?? (inq.test_call_phone ? `Test Call — ${inq.test_call_phone}` : `Manufacturer #${inq.manufacturer_id}`)}
+                            </span>
+                            {(inq.medication_name || inq.pi_storage_data) && (
                               <div className="bulk-row-product-info" style={{ marginTop: 2 }}>
-                                {item.medication && (
-                                  <span className="bulk-row-product-pill">💊 {item.medication}</span>
+                                {inq.medication_name && (
+                                  <span className="bulk-row-product-pill">💊 {inq.medication_name}</span>
                                 )}
-                                {item.piStorage && (
-                                  <span className="bulk-row-product-pill">🌡 {item.piStorage}</span>
+                                {inq.pi_storage_data && (
+                                  <span className="bulk-row-product-pill">🌡 {inq.pi_storage_data}</span>
                                 )}
                               </div>
                             )}
@@ -1693,7 +1652,7 @@ export default function ContactManufacturerPage() {
                           className="btn btn-primary"
                           type="button"
                           disabled={noneSelected || reachableByWebForm === 0 || anyBusy || Object.keys(rowWebFormBusy).length > 0}
-                          onClick={submitAllEligibleWebForms}
+                          onClick={handleSubmitAllWebFormsStandalone}
                         >
                           {Object.keys(rowWebFormBusy).length > 0 ? "Submitting…" : webFormLabel}
                         </button>
@@ -1813,6 +1772,11 @@ export default function ContactManufacturerPage() {
             onSubmitWebForm={async () => {
               const id = await getOrCreateId();
               return api.inquiries.submitWebForm(id);
+            }}
+            onWebFormFinished={() => {
+              setBanner(`Web Form submitted for ${mfr?.manufacturer ?? "manufacturer"}.`);
+              closePending();
+              goTo("inquiries");
             }}
           />
         );
@@ -1981,6 +1945,11 @@ export default function ContactManufacturerPage() {
               const id = await getOrCreateManualWebFormInquiryId(manufacturerId);
               return api.inquiries.submitWebForm(id);
             }}
+            onWebFormFinished={() => {
+              setBanner("Web Form submitted.");
+              closePendingBulk();
+              goTo("inquiries");
+            }}
           />
         );
       })()}
@@ -2054,6 +2023,7 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   extractables.forEach((att, i) => {
     qs.set(`att_url_${i}`, att.doc_url);
     qs.set(`att_name_${i}`, att.file_name);
+    qs.set(`att_id_${i}`, String(att.id));
   });
   window.location.hash = `contact-manufacturer?${qs.toString()}`;
 }

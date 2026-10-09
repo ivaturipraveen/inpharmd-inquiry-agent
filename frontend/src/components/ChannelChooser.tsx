@@ -22,6 +22,9 @@ interface Props {
   onClose: () => void;
   /** Fills and submits the real manufacturer form; omit to hide this section. */
   onSubmitWebForm?: (manufacturerId: number) => Promise<WebFormAutomationResult>;
+  /** Called only when the standalone Submit Web Form button (not Trigger All)
+   *  finishes with every submission a real automation_success. */
+  onWebFormFinished?: () => void;
 }
 
 const ChannelChooser: FC<Props> = ({
@@ -34,6 +37,7 @@ const ChannelChooser: FC<Props> = ({
   onTriggerAll,
   onClose,
   onSubmitWebForm,
+  onWebFormFinished,
 }) => {
   const [busy, setBusy] = useState<"email" | "call" | "all" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,15 +130,17 @@ const ChannelChooser: FC<Props> = ({
     }
   };
 
-  const submitWebFormForOne = async (manufacturerId: number) => {
-    if (!onSubmitWebForm) return;
+  const submitWebFormForOne = async (manufacturerId: number): Promise<boolean> => {
+    if (!onSubmitWebForm) return false;
     setWebFormBusy((prev) => ({ ...prev, [manufacturerId]: "submit" }));
     setWebFormErrors((prev) => { const next = { ...prev }; delete next[manufacturerId]; return next; });
     try {
       const result = await onSubmitWebForm(manufacturerId);
       setWebFormResults((prev) => ({ ...prev, [manufacturerId]: result }));
+      return result.outcome === "automation_success";
     } catch (e: any) {
       setWebFormErrors((prev) => ({ ...prev, [manufacturerId]: e?.message ?? "Failed to submit the Web Form." }));
+      return false;
     } finally {
       setWebFormBusy((prev) => { const next = { ...prev }; delete next[manufacturerId]; return next; });
     }
@@ -142,11 +148,23 @@ const ChannelChooser: FC<Props> = ({
 
   // Sequential per manufacturer so each result/error state updates as it goes.
   // Already-succeeded manufacturers are skipped — a retry only redoes failures.
-  const handleSubmitWebForm = async () => {
+  // Returns whether every manufacturer ended at automation_success, for the
+  // standalone button's finish behavior (Trigger All ignores this return value).
+  const handleSubmitWebForm = async (): Promise<boolean> => {
+    let allSucceeded = true;
     for (const wm of webFormManufacturers) {
       if (webFormResults[wm.id]?.outcome === "automation_success") continue;
-      await submitWebFormForOne(wm.id);
+      const ok = await submitWebFormForOne(wm.id);
+      if (!ok) allSucceeded = false;
     }
+    return allSucceeded;
+  };
+
+  // Only the standalone button reaches this — Trigger All calls
+  // handleSubmitWebForm directly and ignores its return value.
+  const handleSubmitWebFormStandalone = async () => {
+    const allSucceeded = await handleSubmitWebForm();
+    if (allSucceeded) onWebFormFinished?.();
   };
 
   const showTriggerAll = shouldShowTriggerAll({
@@ -369,7 +387,7 @@ const ChannelChooser: FC<Props> = ({
                 className="btn btn-primary"
                 type="button"
                 disabled={!onSubmitWebForm || webFormCapableCount === 0 || busy !== null || Object.keys(webFormBusy).length > 0}
-                onClick={handleSubmitWebForm}
+                onClick={handleSubmitWebFormStandalone}
               >
                 {Object.keys(webFormBusy).length > 0
                   ? "Submitting…"

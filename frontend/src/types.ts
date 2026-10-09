@@ -120,6 +120,9 @@ export interface Inquiry {
   manufacturer?: ManufacturerSummary | null;
   medication_name?: string | null;
   pi_storage_data?: string | null;
+  source_excel_url?: string | null;
+  source_excel_row?: number | null;
+  source_excel_attachment_id?: number | null;
   // Raw "Temperature Excursion Request" text from InpharmD, distinct from
   // `question` — see backend models.Inquiry.mue_details.
   mue_details?: string | null;
