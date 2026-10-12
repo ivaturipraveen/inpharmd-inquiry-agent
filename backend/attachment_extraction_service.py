@@ -103,6 +103,9 @@ def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None)
     routers.inquiries/scheduler) must be able to proceed with the send
     regardless of what happens here.
 
+    Does NOT commit — mutates obj.attachment_extraction_cache in-memory only;
+    the caller owns the transaction (committing here could release a lock early).
+
     manufacturer_name should be the already-resolved ManufacturerContact
     name (the caller already looks this up before sending) — passed
     through, along with obj.medication_name, as disambiguating context to
@@ -152,12 +155,10 @@ def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None)
         )
 
         obj.attachment_extraction_cache = json.dumps(fields)
-        db.commit()
         return fields
     except Exception:
         log.warning(
             "attachment_extraction: extraction failed for inquiry %s (email will send without it)",
             obj.id, exc_info=True,
         )
-        db.rollback()
         return dict(_EMPTY_FIELDS)

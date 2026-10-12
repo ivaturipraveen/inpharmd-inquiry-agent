@@ -531,6 +531,11 @@ async def bulk_create_inquiries(
             primary = siblings[0]
             mfr = db.get(ManufacturerContact, primary.manufacturer_id)
             try:
+                # Best-effort — never raises; returns all-"" fields on failure.
+                excursion_fields = attachment_extraction_service.get_or_extract(
+                    db, primary, manufacturer_name=mfr.manufacturer
+                )
+                excursion_fields.pop("drug_name", None)
                 resp = await call_service.place_inquiry_call(
                     inquiry_id=primary.id,
                     to_number=phone,
@@ -539,6 +544,11 @@ async def bulk_create_inquiries(
                     question=primary.question,
                     requester_name=primary.requester_name,
                     requester_email=primary.requester_email,
+                    medication_name=primary.medication_name,
+                    pi_storage_data=primary.pi_storage_data,
+                    pi_link=primary.pi_link,
+                    mue_details=primary.mue_details,
+                    **excursion_fields,
                 )
             except Exception as e:
                 for sib in siblings:
@@ -586,7 +596,13 @@ def update_inquiry(
     current_user: User = Depends(get_current_user),
 ):
     obj = _get_or_404(db, inquiry_id, current_user)
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    changed = payload.model_dump(exclude_unset=True)
+    # These feed get_or_extract — an edit must invalidate any cached extraction.
+    for field in ("question", "medication_name"):
+        if field in changed and changed[field] != getattr(obj, field):
+            obj.attachment_extraction_cache = None
+            break
+    for k, v in changed.items():
         if k == "subject" and v is not None:
             v = _with_subject_tag(v, obj.id)
         setattr(obj, k, v)
@@ -1115,6 +1131,11 @@ async def trigger_call(
             detail="A call is already in progress for this inquiry. Wait for it to complete before placing another.",
         )
 
+    # Best-effort — never raises; returns all-"" fields on failure.
+    excursion_fields = attachment_extraction_service.get_or_extract(
+        db, locked, manufacturer_name=mfr.manufacturer
+    )
+    excursion_fields.pop("drug_name", None)
     try:
         resp = await call_service.place_inquiry_call(
             inquiry_id=locked.id,
@@ -1124,6 +1145,11 @@ async def trigger_call(
             question=locked.question,
             requester_name=locked.requester_name,
             requester_email=locked.requester_email,
+            medication_name=locked.medication_name,
+            pi_storage_data=locked.pi_storage_data,
+            pi_link=locked.pi_link,
+            mue_details=locked.mue_details,
+            **excursion_fields,
         )
     except call_service.CallConfigError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -1583,13 +1609,20 @@ WEB_FORM_CONTACT_ZIP = "30305"
 WEB_FORM_CONTACT_COUNTRY = "United States"
 
 
-def _web_form_inquiry_data(obj: Inquiry) -> dict:
+def _web_form_inquiry_data(obj: Inquiry, db: Session, manufacturer_name: str) -> dict:
     medication_name = (obj.medication_name or "").strip()
     question = obj.question or ""
     # Restate the drug name in the question text so it's not lost when a
     # form's product picklist has no exact match (falls back to "Other").
     if medication_name:
         question = f"Regarding {medication_name}: {question}"
+
+    # Available as source_keys; an adapter only uses a field if it already maps it.
+    excursion_fields = attachment_extraction_service.get_or_extract(
+        db, obj, manufacturer_name=manufacturer_name
+    )
+    excursion_fields.pop("drug_name", None)
+
     return {
         "medication_name": obj.medication_name,
         "question": question,
@@ -1606,6 +1639,10 @@ def _web_form_inquiry_data(obj: Inquiry) -> dict:
         "requester_country": WEB_FORM_CONTACT_COUNTRY,
         "team_name": obj.team_name,
         "subject": obj.subject,
+        "pi_storage_data": obj.pi_storage_data,
+        "pi_link": obj.pi_link,
+        "mue_details": obj.mue_details,
+        **excursion_fields,
     }
 
 
@@ -1625,7 +1662,7 @@ async def _run_web_form_attempt(
         # Only reached for a hostname with no REAL_ADAPTERS entry.
         result = await web_form_automation_service.run_generic_web_form_automation(
             target_url=target_url,
-            inquiry_data=_web_form_inquiry_data(obj),
+            inquiry_data=_web_form_inquiry_data(obj, db, mfr.manufacturer if mfr else ""),
             mode=mode,
             target_label=target_label,
             target_authorized=target_authorized,
@@ -1650,7 +1687,7 @@ async def _run_web_form_attempt(
         result = await web_form_automation_service.run_web_form_automation(
             target_url=target_url,
             adapter=adapter,
-            inquiry_data=_web_form_inquiry_data(obj),
+            inquiry_data=_web_form_inquiry_data(obj, db, mfr.manufacturer if mfr else ""),
             mode=mode,
             target_label=target_label,
             target_authorized=target_authorized,

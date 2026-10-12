@@ -107,6 +107,12 @@ def _place_retry(db, obj: Inquiry) -> None:
         obj.next_retry_at = None
         return
 
+    import attachment_extraction_service
+    # Best-effort — never raises; returns all-"" fields on failure.
+    excursion_fields = attachment_extraction_service.get_or_extract(
+        db, obj, manufacturer_name=mfr.manufacturer
+    )
+    excursion_fields.pop("drug_name", None)
     try:
         resp = call_service.place_inquiry_call_sync(
             inquiry_id=obj.id,
@@ -116,6 +122,11 @@ def _place_retry(db, obj: Inquiry) -> None:
             question=obj.question,
             requester_name=obj.requester_name,
             requester_email=obj.requester_email,
+            medication_name=obj.medication_name,
+            pi_storage_data=obj.pi_storage_data,
+            pi_link=obj.pi_link,
+            mue_details=obj.mue_details,
+            **excursion_fields,
         )
     except call_service.CallOutcomeUnknown:
         # Timed out with no response — can't tell if ElevenLabs placed the call;
@@ -510,6 +521,12 @@ def _scan_and_trigger_fallback_calls() -> None:
                 db2.close()
                 continue
 
+            import attachment_extraction_service
+            # Best-effort — never raises; returns all-"" fields on failure.
+            excursion_fields = attachment_extraction_service.get_or_extract(
+                db2, locked, manufacturer_name=fresh_mfr.manufacturer
+            )
+            excursion_fields.pop("drug_name", None)
             try:
                 resp = call_service.place_inquiry_call_sync(
                     inquiry_id=locked.id,
@@ -519,6 +536,11 @@ def _scan_and_trigger_fallback_calls() -> None:
                     question=locked.question,
                     requester_name=locked.requester_name,
                     requester_email=locked.requester_email,
+                    medication_name=locked.medication_name,
+                    pi_storage_data=locked.pi_storage_data,
+                    pi_link=locked.pi_link,
+                    mue_details=locked.mue_details,
+                    **excursion_fields,
                 )
             except call_service.CallOutcomeUnknown:
                 # Timed out with no response — ElevenLabs may have placed the call; park it
@@ -623,6 +645,12 @@ def _scan_and_place_scheduled_calls() -> None:
                 db2.close()
                 continue
 
+            import attachment_extraction_service
+            # Best-effort — never raises; returns all-"" fields on failure.
+            excursion_fields = attachment_extraction_service.get_or_extract(
+                db2, locked, manufacturer_name=fresh_mfr.manufacturer
+            )
+            excursion_fields.pop("drug_name", None)
             try:
                 resp = call_service.place_inquiry_call_sync(
                     inquiry_id=locked.id,
@@ -632,6 +660,11 @@ def _scan_and_place_scheduled_calls() -> None:
                     question=locked.question,
                     requester_name=locked.requester_name,
                     requester_email=locked.requester_email,
+                    medication_name=locked.medication_name,
+                    pi_storage_data=locked.pi_storage_data,
+                    pi_link=locked.pi_link,
+                    mue_details=locked.mue_details,
+                    **excursion_fields,
                 )
             except call_service.CallOutcomeUnknown:
                 # Move off call_scheduled to call_pending so _resolve_ambiguous_call_timeouts can find and resolve it later.

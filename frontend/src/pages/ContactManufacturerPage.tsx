@@ -697,7 +697,16 @@ export default function ContactManufacturerPage() {
   ): Promise<number> => {
     const key = selKey(attIdx, r.row_index);
     const cached = rowWebFormInquiryIdsRef.current[key];
-    if (cached != null) return cached;
+    if (cached != null) {
+      // Re-sync in case subject/question/team name changed since creation.
+      await api.inquiries.update(cached, {
+        subject: subject.trim(),
+        question: question.trim(),
+        medication_name: r.medication_name || null,
+        team_name: teamName.trim() || null,
+      });
+      return cached;
+    }
     const rowOverride = rowEmailOverrides[key];
     const result = await api.inquiries.bulkCreate({
       targets: [{
@@ -1821,6 +1830,8 @@ export default function ContactManufacturerPage() {
             })),
             subject: pendingBulkManualInput.subject,
             question: pendingBulkManualInput.question,
+            requester_name: pendingBulkManualInput.requester_name ?? null,
+            requester_email: pendingBulkManualInput.requester_email ?? null,
             // Batch-level default only; every target above supplies its own
             // explicit value, so this is effectively unused here.
             fallback_after_hours: pendingBulkManualInput.targets[0]?.fallback_after_hours ?? 24,
