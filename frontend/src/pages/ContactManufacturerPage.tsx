@@ -1830,8 +1830,6 @@ export default function ContactManufacturerPage() {
             })),
             subject: pendingBulkManualInput.subject,
             question: pendingBulkManualInput.question,
-            requester_name: pendingBulkManualInput.requester_name ?? null,
-            requester_email: pendingBulkManualInput.requester_email ?? null,
             // Batch-level default only; every target above supplies its own
             // explicit value, so this is effectively unused here.
             fallback_after_hours: pendingBulkManualInput.targets[0]?.fallback_after_hours ?? 24,
