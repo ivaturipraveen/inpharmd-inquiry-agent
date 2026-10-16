@@ -23,6 +23,8 @@ SENDGRID_SEND_URL = "https://api.sendgrid.com/v3/mail/send"
 DEFAULT_FROM = "druginfo@inpharmd.com"
 DEFAULT_FROM_NAME = "InpharmD Medical Information"
 
+SENDGRID_SEND_TIMEOUT_SECONDS = int(os.getenv("SENDGRID_SEND_TIMEOUT_SECONDS", "30"))
+
 
 class EmailConfigError(RuntimeError):
     """Raised when SendGrid env vars are missing or invalid."""
@@ -367,7 +369,7 @@ def send_inquiry_email(
         "Content-Type": "application/json",
     }
 
-    with httpx.Client(timeout=30) as client:
+    with httpx.Client(timeout=SENDGRID_SEND_TIMEOUT_SECONDS) as client:
         resp = client.post(SENDGRID_SEND_URL, headers=headers, json=payload)
         if resp.status_code >= 400:
             raise RuntimeError(

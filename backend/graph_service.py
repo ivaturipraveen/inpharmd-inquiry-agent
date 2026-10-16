@@ -36,6 +36,14 @@ log = logging.getLogger("inquiry.graph")
 
 _TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+# Per-call httpx timeouts — named per operation, env-overridable, defaults unchanged.
+GRAPH_TOKEN_TIMEOUT_SECONDS = int(os.getenv("GRAPH_TOKEN_TIMEOUT_SECONDS", "15"))
+GRAPH_LIST_ATTACHMENTS_TIMEOUT_SECONDS = int(os.getenv("GRAPH_LIST_ATTACHMENTS_TIMEOUT_SECONDS", "30"))
+GRAPH_DOWNLOAD_ATTACHMENT_TIMEOUT_SECONDS = int(os.getenv("GRAPH_DOWNLOAD_ATTACHMENT_TIMEOUT_SECONDS", "60"))
+GRAPH_MARK_READ_TIMEOUT_SECONDS = int(os.getenv("GRAPH_MARK_READ_TIMEOUT_SECONDS", "10"))
+GRAPH_LIST_MESSAGES_TIMEOUT_SECONDS = int(os.getenv("GRAPH_LIST_MESSAGES_TIMEOUT_SECONDS", "20"))
+
 _SUBJECT_TAG = re.compile(r"\[InpharmD #(\d+)\]", re.IGNORECASE)
 
 _QUOTE_MARKERS = (
@@ -80,7 +88,7 @@ def _get_token() -> str:
         "client_secret": client_secret,
         "scope": "https://graph.microsoft.com/.default",
     }
-    with httpx.Client(timeout=15) as client:
+    with httpx.Client(timeout=GRAPH_TOKEN_TIMEOUT_SECONDS) as client:
         resp = client.post(url, data=data)
         if resp.status_code >= 400:
             try:
@@ -410,7 +418,7 @@ def _list_document_attachment_metadata(
     )
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=GRAPH_LIST_ATTACHMENTS_TIMEOUT_SECONDS) as client:
             r = client.get(url, headers=headers)
             r.raise_for_status()
             items = r.json().get("value", [])
@@ -444,7 +452,7 @@ def _download_attachment(
     full_url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}/attachments/{att_id}"
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        with httpx.Client(timeout=60) as client:
+        with httpx.Client(timeout=GRAPH_DOWNLOAD_ATTACHMENT_TIMEOUT_SECONDS) as client:
             r = client.get(full_url, headers=headers)
             r.raise_for_status()
             data = r.json()
@@ -506,7 +514,7 @@ def _mark_read(token: str, mailbox: str, message_id: str) -> None:
     url = f"{_GRAPH_BASE}/users/{mailbox}/messages/{message_id}"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     try:
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=GRAPH_MARK_READ_TIMEOUT_SECONDS) as client:
             resp = client.patch(url, headers=headers, json={"isRead": True})
             if resp.status_code == 403:
                 _MARK_READ_DISABLED = True
@@ -542,7 +550,7 @@ def poll_once() -> int:
     )
 
     try:
-        with httpx.Client(timeout=20) as client:
+        with httpx.Client(timeout=GRAPH_LIST_MESSAGES_TIMEOUT_SECONDS) as client:
             resp = client.get(url, headers=headers)
             resp.raise_for_status()
             messages = resp.json().get("value", [])

@@ -4,6 +4,7 @@ import InquiryDetail from "../components/InquiryDetail";
 import { api } from "../api";
 import type { Inquiry } from "../types";
 import { fmtFallbackStatus, fmtFallbackGroup } from "../utils/fallback";
+import { TOAST_DURATION_MS } from "../utils/uiConstants";
 
 const STATUS_FILTERS = [
   { value: "", label: "All statuses" },
@@ -114,7 +115,7 @@ export default function InquiriesPage() {
 
   useEffect(() => {
     if (!success) return;
-    const t = setTimeout(() => setSuccess(null), 6000);
+    const t = setTimeout(() => setSuccess(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [success]);
 
@@ -149,7 +150,7 @@ export default function InquiriesPage() {
 
   useEffect(() => {
     if (!error) return;
-    const id = setTimeout(() => setError(null), 6000);
+    const id = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(id);
   }, [error]);
 
@@ -491,11 +492,21 @@ export default function InquiriesPage() {
                         <td>
                           {i.is_test_call ? (
                             <div>
-                              <div>{i.manufacturer?.manufacturer ?? "No manufacturer matched"}</div>
+                              <div>
+                                {i.manufacturer?.manufacturer ?? "No manufacturer matched"}
+                                {i.manufacturer?.archived_at && (
+                                  <span className="pill pill-neutral" style={{ marginLeft: "0.4em" }}>Archived</span>
+                                )}
+                              </div>
                               <span style={{ fontSize: "0.7rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.5 }}>Test</span>
                             </div>
                           ) : (
-                            i.manufacturer?.manufacturer ?? "—"
+                            <>
+                              {i.manufacturer?.manufacturer ?? "—"}
+                              {i.manufacturer?.archived_at && (
+                                <span className="pill pill-neutral" style={{ marginLeft: "0.4em" }}>Archived</span>
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="status-td">
@@ -580,6 +591,9 @@ export default function InquiriesPage() {
                                   {c.is_test_call
                                     ? (c.manufacturer?.manufacturer ?? c.test_call_phone ?? "No manufacturer matched")
                                     : (c.manufacturer?.manufacturer ?? "—")}
+                                  {c.manufacturer?.archived_at && (
+                                    <span className="pill pill-neutral" style={{ marginLeft: "0.4em" }}>Archived</span>
+                                  )}
                                 </div>
                               ))}
                             </div>
@@ -648,7 +662,12 @@ export default function InquiriesPage() {
                                   : "Waiting for reply"}
                               </div>
                             </td>
-                            <td>{c.manufacturer?.manufacturer ?? "—"}</td>
+                            <td>
+                              {c.manufacturer?.manufacturer ?? "—"}
+                              {c.manufacturer?.archived_at && (
+                                <span className="pill pill-neutral" style={{ marginLeft: "0.4em" }}>Archived</span>
+                              )}
+                            </td>
                             <td className="status-td">
                               <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
                                 <StatusBadge status={c.status} next_retry_at={c.next_retry_at} retry_count={c.retry_count} max_retries={c.max_retries} />

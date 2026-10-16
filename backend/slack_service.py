@@ -21,6 +21,8 @@ import httpx
 
 log = logging.getLogger("inquiry.slack")
 
+SLACK_WEBHOOK_TIMEOUT_SECONDS = int(os.getenv("SLACK_WEBHOOK_TIMEOUT_SECONDS", "10"))
+
 # Slack hard-limits a single text object to 3000 chars; stay under it.
 _MAX_TEXT = 2900
 # Slack hard-limits plain_text inside a button to 75 chars — overshooting
@@ -48,7 +50,7 @@ def _post(payload: dict, *, log_context: str) -> bool:
         return False
     webhook = os.getenv("SLACK_WEBHOOK_URL")
     try:
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=SLACK_WEBHOOK_TIMEOUT_SECONDS) as client:
             resp = client.post(webhook, json=payload)
             if resp.status_code >= 400:
                 log.warning("Slack post failed (%s): %s %s", log_context, resp.status_code, resp.text[:200])
@@ -505,7 +507,7 @@ def notify_reply(
     }
 
     try:
-        with httpx.Client(timeout=10) as client:
+        with httpx.Client(timeout=SLACK_WEBHOOK_TIMEOUT_SECONDS) as client:
             resp = client.post(webhook, json=payload)
             if resp.status_code >= 400:
                 log.warning("Slack post failed: %s %s", resp.status_code, resp.text[:200])

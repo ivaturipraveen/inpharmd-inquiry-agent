@@ -2,6 +2,7 @@ import { FC, useEffect, useState } from "react";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel } from "../utils/channelResolution";
 import { shouldShowTriggerAll } from "../utils/triggerAllVisibility";
+import { TOAST_DURATION_MS } from "../utils/uiConstants";
 import type { ManufacturerContact, WebFormAutomationResult } from "../types";
 
 interface Props {
@@ -89,7 +90,7 @@ const ChannelChooser: FC<Props> = ({
 
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [error]);
 

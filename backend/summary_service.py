@@ -52,7 +52,15 @@ _SYSTEM = (
 )
 
 
-_MODEL = "gpt-4o-mini"
+# Single source of truth for the model used across every OpenAI call in this
+# module — env-overridable so the model can change without a redeploy.
+_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# Used by the time-sensitive extraction calls (outbound email send path) —
+# see extract_structured_excursion_fields / extract_drug_name docstrings.
+_TIME_SENSITIVE_EXTRACTION_TIMEOUT_SECONDS = int(
+    os.getenv("OPENAI_TIME_SENSITIVE_TIMEOUT_SECONDS", "15")
+)
 
 _NDC_KEYWORD_RE = re.compile(r"\bndc\b", re.IGNORECASE)
 _NDC_NUMBER_RE = re.compile(r"\b\d{4,5}-\d{3,4}-\d{1,2}\b")
@@ -304,7 +312,7 @@ def summarize_pdf(question: str, manufacturer: str, pdf_text: str) -> str:
     )
     try:
         resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            model=_MODEL,
             temperature=0.2,
             messages=[
                 {"role": "system", "content": _PDF_SUMMARY_SYSTEM},
@@ -477,10 +485,11 @@ def extract_structured_excursion_fields(
     many unrelated products. Optional so a caller with neither value can
     still get a best-effort extraction from the inquiry text alone.
 
-    timeout=15 is explicit and short — this function sits in the outbound
-    email send path and must never hang it; the default OpenAI client has no
-    timeout configured (see _get_client()), so every caller of a
-    time-sensitive extraction must pass its own, as done here.
+    _TIME_SENSITIVE_EXTRACTION_TIMEOUT_SECONDS is explicit and short — this
+    function sits in the outbound email send path and must never hang it;
+    the default OpenAI client has no timeout configured (see _get_client()),
+    so every caller of a time-sensitive extraction must pass its own, as
+    done here.
     """
     if not is_configured():
         raise SummaryConfigError("OPENAI_API_KEY not set")
@@ -505,9 +514,9 @@ def extract_structured_excursion_fields(
     user_content = f"{context_line}{snippet}"
 
     resp = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=_MODEL,
         temperature=0.0,
-        timeout=15,
+        timeout=_TIME_SENSITIVE_EXTRACTION_TIMEOUT_SECONDS,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": _EXCURSION_FIELDS_SYSTEM},
@@ -569,9 +578,9 @@ def extract_drug_name(text: str) -> dict:
     client = _get_client()
 
     resp = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=_MODEL,
         temperature=0.0,
-        timeout=15,
+        timeout=_TIME_SENSITIVE_EXTRACTION_TIMEOUT_SECONDS,
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": _DRUG_NAME_SYSTEM},

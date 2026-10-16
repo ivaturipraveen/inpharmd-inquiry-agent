@@ -2,10 +2,12 @@ import { FC, useEffect, useRef, useState } from "react";
 
 interface Props {
   onEdit: () => void;
-  onDelete: () => void;
+  onSecondaryAction: () => void;
+  secondaryLabel: string;
+  secondaryDanger?: boolean;
 }
 
-const RowMenu: FC<Props> = ({ onEdit, onDelete }) => {
+const RowMenu: FC<Props> = ({ onEdit, onSecondaryAction, secondaryLabel, secondaryDanger = true }) => {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -81,11 +83,11 @@ const RowMenu: FC<Props> = ({ onEdit, onDelete }) => {
           <button
             type="button"
             role="menuitem"
-            className="menu-item menu-item-danger"
+            className={`menu-item ${secondaryDanger ? "menu-item-danger" : ""}`}
             onClick={(e) => {
               e.stopPropagation();
               setOpen(false);
-              onDelete();
+              onSecondaryAction();
             }}
           >
             <svg
@@ -96,9 +98,13 @@ const RowMenu: FC<Props> = ({ onEdit, onDelete }) => {
               strokeLinecap="round"
               strokeLinejoin="round"
             >
-              <path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10" />
+              {secondaryDanger ? (
+                <path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10" />
+              ) : (
+                <path d="M3 10a7 7 0 1 1 2.1 5M3 10V5M3 10h5" />
+              )}
             </svg>
-            Delete
+            {secondaryLabel}
           </button>
         </div>
       )}

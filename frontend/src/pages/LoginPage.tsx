@@ -1,5 +1,6 @@
 import { FC, FormEvent, useEffect, useState } from "react";
 import { api, session } from "../api";
+import { TOAST_DURATION_MS } from "../utils/uiConstants";
 
 export interface AuthUser {
   id: number;
@@ -41,13 +42,13 @@ const LoginPage: FC<Props> = ({ onLogin }) => {
 
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [error]);
 
   useEffect(() => {
     if (!resendMessage) return;
-    const t = setTimeout(() => setResendMessage(null), 6000);
+    const t = setTimeout(() => setResendMessage(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [resendMessage]);
 

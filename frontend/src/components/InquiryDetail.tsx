@@ -1,6 +1,7 @@
 import { FC, ReactNode, useEffect, useState } from "react";
 import StatusBadge from "./StatusBadge";
 import type { Inquiry } from "../types";
+import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 import { renderBold } from "../utils/renderBold";
 import { fmtFallbackStatus } from "../utils/fallback";
 import { resolvePreferredChannel, isEmailReachable, isCallReachable, isWebFormReachable } from "../utils/channelResolution";
@@ -130,12 +131,14 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
             {isTestCall && (
               <div className="detail-head-sub">
                 <strong>{m?.manufacturer ?? "No manufacturer matched"}</strong>
+                {m?.archived_at && <span className="pill pill-neutral" style={{ marginLeft: "0.4em" }}>Archived</span>}
                 {inquiry.test_call_phone && <> · {inquiry.test_call_phone}</>}
               </div>
             )}
             {!isTestCall && m && (
               <div className="detail-head-sub">
                 To: <strong>{m.manufacturer}</strong>
+                {m.archived_at && <span className="pill pill-neutral" style={{ marginLeft: "0.4em" }}>Archived</span>}
                 {m.official_mi_email && (
                   <>
                     {" · "}
@@ -656,7 +659,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     type="text"
                     value={editSubject}
                     onChange={(e) => setEditSubject(e.target.value)}
-                    maxLength={1000}
+                    maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
                   />
                   <label className="detail-label" style={{ marginTop: 8 }}>Question</label>
                   <textarea
@@ -827,7 +830,7 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
                     type="text"
                     value={draftSubject}
                     onChange={(e) => setDraftSubject(e.target.value)}
-                    maxLength={1000}
+                    maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
                     style={{ width: "100%" }}
                   />
                   <label className="detail-label" style={{ marginTop: 8 }}>Email body</label>

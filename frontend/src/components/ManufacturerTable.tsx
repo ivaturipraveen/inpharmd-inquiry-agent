@@ -4,9 +4,13 @@ import RowMenu from "./RowMenu";
 
 interface Props {
   items: ManufacturerContact[];
+  view: "active" | "archived";
   onEdit: (item: ManufacturerContact) => void;
-  onDelete: (item: ManufacturerContact) => void;
+  onArchive: (item: ManufacturerContact) => void;
+  onRestore: (item: ManufacturerContact) => void;
 }
+
+const fmtDateTime = (s?: string | null) => (s ? new Date(s).toLocaleString() : null);
 
 const muted = <span className="cell-muted">—</span>;
 
@@ -45,7 +49,7 @@ const detailField = (label: string, value?: string | null, href?: string) => {
   );
 };
 
-const ManufacturerTable: FC<Props> = ({ items, onEdit, onDelete }) => {
+const ManufacturerTable: FC<Props> = ({ items, view, onEdit, onArchive, onRestore }) => {
   const [expanded, setExpanded] = useState<number | null>(null);
 
   if (!items.length) {
@@ -122,7 +126,14 @@ const ManufacturerTable: FC<Props> = ({ items, onEdit, onDelete }) => {
                       </svg>
                     </td>
                     <td>
-                      <div className="cell-primary">{m.manufacturer}</div>
+                      <div className="cell-primary">
+                        {m.manufacturer}
+                        {m.archived_at && (
+                          <span className="pill pill-neutral" style={{ marginLeft: "0.5em" }}>
+                            Archived
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="cell-muted">{m.parent_owner || muted}</td>
                     <td>
@@ -151,7 +162,20 @@ const ManufacturerTable: FC<Props> = ({ items, onEdit, onDelete }) => {
                       className="cell-actions"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <RowMenu onEdit={() => onEdit(m)} onDelete={() => onDelete(m)} />
+                      {view === "archived" ? (
+                        <RowMenu
+                          onEdit={() => onEdit(m)}
+                          onSecondaryAction={() => onRestore(m)}
+                          secondaryLabel="Restore"
+                          secondaryDanger={false}
+                        />
+                      ) : (
+                        <RowMenu
+                          onEdit={() => onEdit(m)}
+                          onSecondaryAction={() => onArchive(m)}
+                          secondaryLabel="Archive"
+                        />
+                      )}
                     </td>
                   </tr>
                   {isOpen && (
@@ -201,6 +225,22 @@ const ManufacturerTable: FC<Props> = ({ items, onEdit, onDelete }) => {
                             <div className="detail-field detail-full">
                               <div className="detail-label">Notes</div>
                               <div className="detail-value">{m.notes}</div>
+                            </div>
+                          )}
+                          {m.archived_at && (
+                            <div className="detail-field detail-full">
+                              <div className="detail-label">Archived</div>
+                              <div className="detail-value">
+                                Archived by {m.archived_by || "unknown"} on {fmtDateTime(m.archived_at)}
+                              </div>
+                            </div>
+                          )}
+                          {!m.archived_at && m.restored_at && (
+                            <div className="detail-field detail-full">
+                              <div className="detail-label">Last Restored</div>
+                              <div className="detail-value">
+                                Restored by {m.restored_by || "unknown"} on {fmtDateTime(m.restored_at)}
+                              </div>
                             </div>
                           )}
                         </div>

@@ -26,6 +26,15 @@ log = logging.getLogger("inquiry.call")
 
 ELEVEN_BASE = "https://api.elevenlabs.io/v1"
 
+# Shared fallback defaults for TRANSFER_PHARMACIST_NAME/PHONE — also used by
+# routers.inquiries.WEB_FORM_CONTACT_PHONE so both stay in sync.
+TRANSFER_PHARMACIST_NAME_DEFAULT = "Leah"
+TRANSFER_PHARMACIST_PHONE_DEFAULT = "+15134906650"
+
+# Per-call httpx timeouts — named per operation, env-overridable, defaults unchanged.
+CALL_PLACE_TIMEOUT_SECONDS = int(os.getenv("CALL_PLACE_TIMEOUT_SECONDS", "30"))
+CALL_POLL_TIMEOUT_SECONDS = int(os.getenv("CALL_POLL_TIMEOUT_SECONDS", "20"))
+
 
 class CallConfigError(RuntimeError):
     """Raised when ElevenLabs / Twilio configuration is missing."""
@@ -213,8 +222,8 @@ def _build_call_payload(
 ) -> Dict[str, Any]:
     # Configurable pharmacist transfer target. Env-driven so it can change
     # without a redeploy. Defaults are safe placeholders.
-    transfer_name = os.getenv("TRANSFER_PHARMACIST_NAME", "Leah")
-    transfer_phone = os.getenv("TRANSFER_PHARMACIST_PHONE", "+15134906650")
+    transfer_name = os.getenv("TRANSFER_PHARMACIST_NAME", TRANSFER_PHARMACIST_NAME_DEFAULT)
+    transfer_phone = os.getenv("TRANSFER_PHARMACIST_PHONE", TRANSFER_PHARMACIST_PHONE_DEFAULT)
 
     # Warmer, less scripted opener — the agent continues via its system prompt;
     # the question is deliberately omitted so it can small-talk into it.
@@ -330,7 +339,7 @@ async def place_inquiry_call(
         inquiry_id, is_test, json.dumps(payload, indent=2),
     )
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=CALL_PLACE_TIMEOUT_SECONDS) as client:
         try:
             r = await client.post(
                 f"{ELEVEN_BASE}/convai/twilio/outbound-call",
@@ -439,7 +448,7 @@ async def get_conversation_status(conversation_id: str) -> ConversationPollResul
     url = f"{ELEVEN_BASE}/convai/conversations/{conversation_id}"
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=CALL_POLL_TIMEOUT_SECONDS) as client:
             r = await client.get(url, headers=headers)
     except httpx.TimeoutException:
         return ConversationPollResult(outcome=CallPollOutcome.POLL_FAILED, fail_reason="timeout")

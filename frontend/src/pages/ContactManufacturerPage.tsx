@@ -12,6 +12,7 @@ import { shouldShowTriggerAll } from "../utils/triggerAllVisibility";
 import { createCompletionTracker, runTriggerAll, selectionSignatureFromKeys } from "../utils/triggerAllOrchestration";
 import { fmtFallbackHours, fmtFallbackStatus, FALLBACK_PRESETS } from "../utils/fallback";
 import { buildContactedRowKeys, isRowContacted } from "../utils/contactedRowIdentity";
+import { TOAST_DURATION_MS } from "../utils/uiConstants";
 import type {
   Inquiry,
   InquiryInput,
@@ -270,19 +271,19 @@ export default function ContactManufacturerPage() {
 
   useEffect(() => {
     if (!banner) return;
-    const t = setTimeout(() => setBanner(null), 6000);
+    const t = setTimeout(() => setBanner(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [banner]);
 
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [error]);
 
   useEffect(() => {
     if (!extractError) return;
-    const t = setTimeout(() => setExtractError(null), 6000);
+    const t = setTimeout(() => setExtractError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [extractError]);
 

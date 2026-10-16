@@ -1,5 +1,6 @@
 import { FC, FormEvent, useEffect, useRef, useState } from "react";
 import type { ManufacturerContact, ManufacturerContactInput } from "../types";
+import { TOAST_DURATION_MS } from "../utils/uiConstants";
 
 interface Props {
   initial?: ManufacturerContact | null;
@@ -67,7 +68,7 @@ const ManufacturerForm: FC<Props> = ({ initial, prefillManufacturer, onClose, on
 
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [error]);
 

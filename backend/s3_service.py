@@ -69,16 +69,6 @@ def _safe_filename(name: str) -> str:
     return base or "attachment"
 
 
-def upload_pdf(content: bytes, *, original_name: str, inquiry_id: int) -> Optional[str]:
-    """Upload PDF bytes; return a presigned GET URL (or None if not configured)."""
-    return upload_bytes(
-        content,
-        original_name=original_name or "attachment.pdf",
-        inquiry_id=inquiry_id,
-        content_type="application/pdf",
-    )
-
-
 def upload_bytes(
     content: bytes,
     *,
