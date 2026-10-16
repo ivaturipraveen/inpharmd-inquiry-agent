@@ -219,6 +219,11 @@ CREATE TABLE IF NOT EXISTS dailymed_drugname_cache (
     claimed_at            TIMESTAMPTZ
 )
 """,
+        # Manufacturer soft-delete (archive/restore) — see models.ManufacturerContact.
+        "ALTER TABLE manufacturer_contacts ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
+        "ALTER TABLE manufacturer_contacts ADD COLUMN IF NOT EXISTS archived_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE manufacturer_contacts ADD COLUMN IF NOT EXISTS restored_at TIMESTAMPTZ",
+        "ALTER TABLE manufacturer_contacts ADD COLUMN IF NOT EXISTS restored_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL",
     ]
     # Each statement runs in its own transaction — one engine.begin() block would
     # put all subsequent conn.execute() calls in aborted state after a failure.

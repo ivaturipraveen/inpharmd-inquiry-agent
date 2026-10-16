@@ -3,6 +3,7 @@ import { api } from "../api";
 import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
 import { fmtFallbackHours } from "../utils/fallback";
+import { DEFAULT_REQUESTER_EMAIL } from "../utils/uiConstants";
 
 const READ_KEY = "inpharmd_email_read"; // localStorage map of inquiryId -> true
 
@@ -273,7 +274,7 @@ export default function EmailsPage() {
             </button>
           ))}
         </nav>
-        <div className="gm-rail-foot">druginfo@inpharmd.com</div>
+        <div className="gm-rail-foot">{DEFAULT_REQUESTER_EMAIL}</div>
       </aside>
 
       {/* Middle: thread list */}
@@ -437,7 +438,7 @@ function ThreadReader({ inquiry, onMarkUnread }: ReaderProps) {
         avatarColor={avatarColor("InpharmD")}
         avatarInitials="IN"
         senderName="InpharmD Medical Information"
-        senderHandle="druginfo@inpharmd.com"
+        senderHandle={DEFAULT_REQUESTER_EMAIL}
         recipientLabel={`to ${to}`}
         timestamp={fmtLong(inquiry.email_sent_at || inquiry.created_at)}
         body={inquiry.mue_details ? `${inquiry.question}\n\n${inquiry.mue_details}` : inquiry.question}

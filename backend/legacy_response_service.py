@@ -44,10 +44,15 @@ log = logging.getLogger("inquiry.legacy_response")
 
 LEGACY_PATH = "/api/legacy/manufacturing_response"
 
-TIMEOUT_SECONDS = 15.0
-MAX_RETRIES = 2
+TIMEOUT_SECONDS = float(os.getenv("LEGACY_RESPONSE_TIMEOUT_SECONDS", "15"))
+MAX_RETRIES = int(os.getenv("LEGACY_RESPONSE_MAX_RETRIES", "2"))
 RETRY_BACKOFF = (1.0, 3.0)
 RETRY_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+
+# Retries for committing the post-success bookkeeping (legacy_response_posted_at /
+# legacy_last_event_key) — see _commit_posted_marker for why this matters.
+_COMMIT_MAX_RETRIES = 2
+_COMMIT_RETRY_BACKOFF = (0.25, 0.75)
 
 
 def _config() -> tuple[str, Optional[str]]:
@@ -270,6 +275,44 @@ def post_response(
     return False
 
 
+def _commit_posted_marker(
+    db: Session,
+    inquiry,
+    *,
+    posted_at: datetime,
+    attachment_count: int,
+    event_key: str,
+) -> bool:
+    """Commit the post-success bookkeeping, retrying transient failures.
+
+    A failed, unretried commit here would leave legacy_last_event_key stale,
+    so a later retry of the same event would duplicate-POST to the legacy endpoint.
+    """
+    for attempt in range(_COMMIT_MAX_RETRIES + 1):
+        try:
+            inquiry.legacy_response_posted_at = posted_at
+            inquiry.legacy_attachment_url_count = attachment_count
+            inquiry.legacy_last_event_key = event_key
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            log.exception(
+                "Failed to commit legacy_response_posted_at for inquiry %s (attempt %d/%d)",
+                inquiry.id, attempt + 1, _COMMIT_MAX_RETRIES + 1,
+            )
+            if attempt < _COMMIT_MAX_RETRIES:
+                time.sleep(_COMMIT_RETRY_BACKOFF[min(attempt, len(_COMMIT_RETRY_BACKOFF) - 1)])
+    log.critical(
+        "Legacy POST bookkeeping commit permanently failed for inquiry %s "
+        "event_key=%r — the external POST already succeeded, so a future "
+        "retry of this same event will duplicate-POST to the legacy "
+        "endpoint. Manual DB check required.",
+        inquiry.id, event_key,
+    )
+    return False
+
+
 def maybe_post_for_inquiry(
     db: Session,
     inquiry,
@@ -394,17 +437,13 @@ def maybe_post_for_inquiry(
         medication_name=med_name,
     )
     if ok:
-        inquiry.legacy_response_posted_at = datetime.now(timezone.utc)
-        inquiry.legacy_attachment_url_count = len(s3_urls)
-        inquiry.legacy_last_event_key = event_key
-        try:
-            db.commit()
-        except Exception:
-            log.exception(
-                "Failed to commit legacy_response_posted_at for inquiry %s",
-                inquiry.id,
-            )
-            db.rollback()
+        _commit_posted_marker(
+            db,
+            inquiry,
+            posted_at=datetime.now(timezone.utc),
+            attachment_count=len(s3_urls),
+            event_key=event_key,
+        )
 
     # MUE inquiries also get the Excel workbook rewritten + re-posted (see
     # excel_writeback_service) — independent op, doesn't roll back the POST above.

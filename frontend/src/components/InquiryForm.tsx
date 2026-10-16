@@ -11,6 +11,7 @@ import type { InquiryFormData, ManufacturerContact } from "../types";
 import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 import { DEFAULT_FALLBACK_HOURS, FALLBACK_PRESETS } from "../utils/fallback";
 import { resolvePreferredChannel, isEmailReachable } from "../utils/channelResolution";
+import { TOAST_DURATION_MS, DEFAULT_REQUESTER_NAME, DEFAULT_REQUESTER_EMAIL } from "../utils/uiConstants";
 import { api } from "../api";
 import EmailPreviewModal, { EmailOverride } from "./EmailPreviewModal";
 
@@ -59,8 +60,8 @@ const InquiryForm: FC<Props> = ({
   const [subject, setSubject] = useState(defaultSubject ?? "");
   const [question, setQuestion] = useState(defaultQuestion ?? "");
   const [teamName, setTeamName] = useState(defaultTeamName ?? "");
-  const [requesterName, setRequesterName] = useState("Leah");
-  const [requesterEmail, setRequesterEmail] = useState("druginfo@inpharmd.com");
+  const [requesterName, setRequesterName] = useState(DEFAULT_REQUESTER_NAME);
+  const [requesterEmail, setRequesterEmail] = useState(DEFAULT_REQUESTER_EMAIL);
   // Single source of truth for each manufacturer's Drug Name + fallback time —
   // used for both single- and multi-manufacturer cases.
   const [targetData, setTargetData] = useState<
@@ -259,7 +260,7 @@ const InquiryForm: FC<Props> = ({
 
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [error]);
 

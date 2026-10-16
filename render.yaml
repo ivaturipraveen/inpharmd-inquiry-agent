@@ -28,6 +28,11 @@ services:
       # into the app (e.g. the Slack "View inquiry" link)
       - key: APP_BASE_URL
         value: https://mfr-stg.inpharmd.com
+      # InpharmD platform instance this environment talks to — REQUIRED, no
+      # code fallback (inpharmd_service.py fails closed if unset). Must be
+      # set explicitly here in the Render dashboard, per environment.
+      - key: INPHARMD_API_BASE_URL
+        sync: false
       # ElevenLabs — fill in after creating the agent
       - key: ELEVENLABS_API_KEY
         sync: false

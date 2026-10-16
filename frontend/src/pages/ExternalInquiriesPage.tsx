@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiMeta } from "../api";
 import { startContactManufacturerFlow } from "./ContactManufacturerPage";
+import { TOAST_DURATION_MS } from "../utils/uiConstants";
 
 // Open MUE inquiries response: { data: [{ inquiry_uuid, title,
 // inquiry_submitter, inquiry_types[], attachments, inquiry_submitter_details }] }
@@ -228,7 +229,7 @@ export default function ExternalInquiriesPage() {
 
   useEffect(() => {
     if (!error) return;
-    const t = setTimeout(() => setError(null), 6000);
+    const t = setTimeout(() => setError(null), TOAST_DURATION_MS);
     return () => clearTimeout(t);
   }, [error]);
 

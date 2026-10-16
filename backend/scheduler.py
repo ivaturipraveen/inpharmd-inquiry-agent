@@ -45,6 +45,9 @@ CALL_RECONCILE_TICK_SECONDS = int(os.getenv("CALL_RECONCILE_TICK_SECONDS", "300"
 CALL_STUCK_THRESHOLD_MINUTES = int(os.getenv("CALL_STUCK_THRESHOLD_MINUTES", "10"))
 CALL_RECONCILE_MAX_AGE_HOURS = int(os.getenv("CALL_RECONCILE_MAX_AGE_HOURS", "24"))
 CALL_RECONCILE_BATCH_SIZE = int(os.getenv("CALL_RECONCILE_BATCH_SIZE", "25"))
+# How long to park an inquiry after a call-placement timeout with unknown
+# outcome, before a webhook/poll can resolve it.
+CALL_OUTCOME_UNKNOWN_PARK_MINUTES = int(os.getenv("CALL_OUTCOME_UNKNOWN_PARK_MINUTES", "10"))
 # Exponential backoff for consecutive poll failures — NOT applied when the
 # provider confirms still-in-progress, which keeps the full 5-min cadence.
 _CALL_RECONCILE_BACKOFF_BASE_MINUTES = 5
@@ -131,7 +134,7 @@ def _place_retry(db, obj: Inquiry) -> None:
     except call_service.CallOutcomeUnknown:
         # Timed out with no response — can't tell if ElevenLabs placed the call;
         # park it until a webhook resolves it or the window expires.
-        obj.call_outcome_unknown_until = _now() + timedelta(minutes=10)
+        obj.call_outcome_unknown_until = _now() + timedelta(minutes=CALL_OUTCOME_UNKNOWN_PARK_MINUTES)
         log.warning(
             "Retry call for inquiry %s timed out with unknown outcome; parked until %s",
             obj.id, obj.call_outcome_unknown_until.isoformat(),
@@ -545,7 +548,7 @@ def _scan_and_trigger_fallback_calls() -> None:
             except call_service.CallOutcomeUnknown:
                 # Timed out with no response — ElevenLabs may have placed the call; park it
                 # until a webhook resolves it or the window expires (see _resolve_ambiguous_call_timeouts).
-                locked.call_outcome_unknown_until = _now() + timedelta(minutes=10)
+                locked.call_outcome_unknown_until = _now() + timedelta(minutes=CALL_OUTCOME_UNKNOWN_PARK_MINUTES)
                 db2.commit()
                 log.warning(
                     "Fallback call for inquiry %s timed out with unknown outcome; parked until %s",
@@ -669,7 +672,7 @@ def _scan_and_place_scheduled_calls() -> None:
             except call_service.CallOutcomeUnknown:
                 # Move off call_scheduled to call_pending so _resolve_ambiguous_call_timeouts can find and resolve it later.
                 locked.status = "call_pending"
-                locked.call_outcome_unknown_until = _now() + timedelta(minutes=10)
+                locked.call_outcome_unknown_until = _now() + timedelta(minutes=CALL_OUTCOME_UNKNOWN_PARK_MINUTES)
                 db2.commit()
                 db2.close()
                 continue

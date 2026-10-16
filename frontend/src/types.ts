@@ -22,11 +22,25 @@ export interface ManufacturerContact {
   notes?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  archived_at?: string | null;
+  archived_by_user_id?: number | null;
+  archived_by?: string | null;
+  restored_at?: string | null;
+  restored_by_user_id?: number | null;
+  restored_by?: string | null;
 }
 
 export type ManufacturerContactInput = Omit<
   ManufacturerContact,
-  "id" | "created_at" | "updated_at"
+  | "id"
+  | "created_at"
+  | "updated_at"
+  | "archived_at"
+  | "archived_by_user_id"
+  | "archived_by"
+  | "restored_at"
+  | "restored_by_user_id"
+  | "restored_by"
 >;
 
 export type InquiryStatus =
@@ -52,6 +66,7 @@ export interface ManufacturerSummary {
   mi_web_form_url?: string | null;
   typical_response_sla?: string | null;
   fallback_call_enabled?: boolean;
+  archived_at?: string | null;
 }
 
 export interface InquiryAttachment {

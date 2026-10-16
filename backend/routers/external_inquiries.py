@@ -367,7 +367,7 @@ async def extract_manufacturers(
         log.exception("external.extract parse failed")
         raise HTTPException(status_code=422, detail=f"Could not parse spreadsheet: {e}")
 
-    mfrs = db.query(ManufacturerContact).all()
+    mfrs = db.query(ManufacturerContact).filter(ManufacturerContact.archived_at.is_(None)).all()
     matches = excel_service.match_manufacturers(rows, mfrs)
 
     # DailyMed NDC enrichment — fills pi_link/pi_storage on matched rows

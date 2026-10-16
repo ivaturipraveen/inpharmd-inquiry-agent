@@ -33,7 +33,8 @@ log = logging.getLogger("inquiry.excel_writeback")
 # POST /api/v2/inquiries/open_mue_inquiries/{uuid}/sheet?access_token=<token>
 # form field: s3_url=<re-uploaded xlsx URL>
 V2_SHEET_PATH_TEMPLATE = "/api/v2/inquiries/open_mue_inquiries/{uuid}/sheet"
-_DOWNLOAD_TIMEOUT_SECONDS = 30
+_WORKBOOK_DOWNLOAD_TIMEOUT_SECONDS = 30
+_V2_SHEET_POST_TIMEOUT_SECONDS = 20
 
 
 def _now() -> datetime:
@@ -95,7 +96,7 @@ def _download(url: str, *, token: Optional[str]) -> bytes:
     ):
         sep = "&" if "?" in url else "?"
         final_url = f"{url}{sep}access_token={token}"
-    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
+    with httpx.Client(timeout=_WORKBOOK_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
         res = client.get(final_url)
         res.raise_for_status()
         return res.content
@@ -123,7 +124,7 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
         excel_url,
     )
     try:
-        with httpx.Client(timeout=20) as client:
+        with httpx.Client(timeout=_V2_SHEET_POST_TIMEOUT_SECONDS) as client:
             res = client.post(
                 url,
                 params=params,

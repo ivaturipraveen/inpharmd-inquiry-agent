@@ -185,7 +185,7 @@ async def manufacturer_suggestions_preview(
         return ManufacturerSuggestionsPreviewResult()
 
     repackaged_names = set(result.get("repackaged_labeler_names") or [])
-    manufacturers = db.query(ManufacturerContact).all()
+    manufacturers = db.query(ManufacturerContact).filter(ManufacturerContact.archived_at.is_(None)).all()
     rows = [
         excel_service.ExtractedRow(row_index=i, raw_name=name)
         for i, name in enumerate(labeler_names)
@@ -1485,7 +1485,7 @@ async def reprocess_pdf(
     tag = f"[InpharmD #{inquiry_id}]"
 
     search_url = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages"
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=graph_service.GRAPH_LIST_MESSAGES_TIMEOUT_SECONDS) as client:
         r = await client.get(
             search_url,
             headers={**headers, "ConsistencyLevel": "eventual"},
@@ -1601,7 +1601,7 @@ WEB_FORM_CONTACT_FIRST_NAME = "Leah"
 WEB_FORM_CONTACT_LAST_NAME = "Mueller"
 WEB_FORM_CONTACT_EMAIL = "Leah@inpharmd.com"
 WEB_FORM_CONTACT_CREDENTIALS = "PharmD"
-WEB_FORM_CONTACT_PHONE = os.getenv("TRANSFER_PHARMACIST_PHONE", "+15134906650")
+WEB_FORM_CONTACT_PHONE = os.getenv("TRANSFER_PHARMACIST_PHONE", call_service.TRANSFER_PHARMACIST_PHONE_DEFAULT)
 WEB_FORM_CONTACT_ADDRESS = "3423 Piedmont Rd NE"
 WEB_FORM_CONTACT_CITY = "Atlanta"
 WEB_FORM_CONTACT_STATE = "GA"

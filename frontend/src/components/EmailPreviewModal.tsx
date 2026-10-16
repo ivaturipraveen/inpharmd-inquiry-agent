@@ -1,4 +1,5 @@
 import { FC, useEffect, useState } from "react";
+import { INQUIRY_SUBJECT_MAX_LENGTH } from "../types";
 
 export interface EmailOverride {
   subject: string;
@@ -102,7 +103,7 @@ const EmailPreviewModal: FC<Props> = ({
                   type="text"
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
-                  maxLength={1000}
+                  maxLength={INQUIRY_SUBJECT_MAX_LENGTH}
                   style={{ width: "100%" }}
                 />
                 <label className="detail-label" style={{ marginTop: 8 }}>Email body</label>

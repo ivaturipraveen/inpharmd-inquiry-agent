@@ -40,6 +40,13 @@ class ManufacturerContact(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    # Soft-delete. archived_at IS NULL means active; see
+    # routers/manufacturers.py for the archive/restore transitions.
+    archived_at = Column(DateTime(timezone=True), nullable=True)
+    archived_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    restored_at = Column(DateTime(timezone=True), nullable=True)
+    restored_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
     inquiries = relationship("Inquiry", back_populates="manufacturer", cascade="all, delete-orphan")
 
 

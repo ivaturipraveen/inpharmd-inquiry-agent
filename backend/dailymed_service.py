@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -51,6 +52,7 @@ _CACHE_TTL_DAYS = 30
 _MAX_CONCURRENT = 5
 _RETRY_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 1.0           # seconds; doubled on each retry
+DAILYMED_REQUEST_TIMEOUT_SECONDS = float(os.getenv("DAILYMED_REQUEST_TIMEOUT_SECONDS", "15"))
 
 
 def _normalize_ndc(ndc: str) -> str:
@@ -241,7 +243,7 @@ async def _http_get(
     last_exc: Optional[Exception] = None
     for attempt in range(_RETRY_ATTEMPTS):
         try:
-            r = await client.get(url, params=params, timeout=15.0)
+            r = await client.get(url, params=params, timeout=DAILYMED_REQUEST_TIMEOUT_SECONDS)
             if r.status_code in (429, 503) and attempt < _RETRY_ATTEMPTS - 1:
                 log.debug("dailymed: %s → %s, retrying in %.1fs", url, r.status_code, delay)
                 await asyncio.sleep(delay)

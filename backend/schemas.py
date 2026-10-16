@@ -41,6 +41,13 @@ class ManufacturerContactOut(ManufacturerContactBase):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    archived_at: Optional[datetime] = None
+    archived_by_user_id: Optional[int] = None
+    archived_by: Optional[str] = None  # resolved display_name/email, not the raw id
+    restored_at: Optional[datetime] = None
+    restored_by_user_id: Optional[int] = None
+    restored_by: Optional[str] = None  # resolved display_name/email
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -70,6 +77,7 @@ class ManufacturerSummary(BaseModel):
     mi_web_form_url: Optional[str] = None
     typical_response_sla: Optional[str] = None
     fallback_call_enabled: bool = False
+    archived_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 

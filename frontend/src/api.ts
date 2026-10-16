@@ -125,10 +125,15 @@ async function requestWithMeta<T>(
 
 export const api = {
   manufacturers: {
-    list: (q?: string) =>
-      request<ManufacturerContact[]>(
-        `/api/manufacturers${q ? `?q=${encodeURIComponent(q)}` : ""}`
-      ),
+    list: (params?: { q?: string; includeArchived?: boolean }) => {
+      const qs = new URLSearchParams();
+      if (params?.q) qs.set("q", params.q);
+      if (params?.includeArchived) qs.set("include_archived", "true");
+      const query = qs.toString();
+      return request<ManufacturerContact[]>(
+        `/api/manufacturers${query ? `?${query}` : ""}`
+      );
+    },
     create: (data: ManufacturerContactInput) =>
       request<ManufacturerContact>(`/api/manufacturers`, {
         method: "POST",
@@ -139,8 +144,14 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    remove: (id: number) =>
-      request<void>(`/api/manufacturers/${id}`, { method: "DELETE" }),
+    archive: (id: number) =>
+      request<ManufacturerContact>(`/api/manufacturers/${id}/archive`, {
+        method: "POST",
+      }),
+    restore: (id: number) =>
+      request<ManufacturerContact>(`/api/manufacturers/${id}/restore`, {
+        method: "POST",
+      }),
   },
   inquiries: {
     list: (params?: { status?: string; manufacturer_id?: number; source_inquiry_uuid?: string; all_users?: boolean }) => {

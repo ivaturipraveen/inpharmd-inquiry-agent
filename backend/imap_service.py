@@ -12,6 +12,8 @@ Env vars:
     IMAP_USERNAME    the mailbox to read, e.g. druginfo@inpharmd.com
     IMAP_PASSWORD    app password for that mailbox
     IMAP_MAILBOX     folder to read (default INBOX)
+    IMAP_TIMEOUT_SECONDS  socket timeout for the whole connection — connect,
+                     login, select, search, and every fetch (default 30)
 """
 from __future__ import annotations
 
@@ -47,6 +49,10 @@ _QUOTE_MARKERS = (
 
 
 _MAX_ATTACHMENTS_PER_EMAIL = inbound_attachment_service.MAX_ATTACHMENTS
+
+# Bounds the whole connection so a stalled server can't hang this call
+# forever and block the scheduler tick indefinitely.
+IMAP_TIMEOUT_SECONDS = int(os.getenv("IMAP_TIMEOUT_SECONDS", "30"))
 
 
 def is_configured() -> bool:
@@ -292,7 +298,7 @@ def poll_once() -> int:
     updated = 0
     conn: Optional[imaplib.IMAP4_SSL] = None
     try:
-        conn = imaplib.IMAP4_SSL(host, port)
+        conn = imaplib.IMAP4_SSL(host, port, timeout=IMAP_TIMEOUT_SECONDS)
         conn.login(username, password)
         conn.select(mailbox)
 
