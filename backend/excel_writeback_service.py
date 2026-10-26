@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 import excel_service
 import inpharmd_service
 import s3_service
+import ssrf_protection
 from models import Inquiry, User
 
 log = logging.getLogger("inquiry.excel_writeback")
@@ -83,21 +84,16 @@ def _pick_user_token(db: Session, inquiry: Inquiry) -> Optional[str]:
 
 
 def _download(url: str, *, token: Optional[str]) -> bytes:
-    from urllib.parse import urlparse
-    host = (urlparse(url).hostname or "").lower()
     final_url = url
-    # Inject access_token only for InpharmD's app host — *.amazonaws.com is
-    # skipped since merging params into a presigned URL breaks its signature.
-    if (
-        token
-        and not host.endswith(".amazonaws.com")
-        and ("inpharmd" in host or "mercer-inpharmd" in host)
-        and "access_token=" not in url
-    ):
+    # Inject access_token only for InpharmD's own configured host — gated by
+    # the same check excel_service.download_excel uses, so a presigned S3 URL
+    # (whose signature would be broken by an extra query param, and which is
+    # not InpharmD's host anyway) never receives the token.
+    if token and excel_service._is_inpharmd_url(url) and "access_token=" not in url:
         sep = "&" if "?" in url else "?"
         final_url = f"{url}{sep}access_token={token}"
-    with httpx.Client(timeout=_WORKBOOK_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        res = client.get(final_url)
+    with httpx.Client(timeout=_WORKBOOK_DOWNLOAD_TIMEOUT_SECONDS) as client:
+        res = ssrf_protection.safe_get(client, final_url)
         res.raise_for_status()
         return res.content
 
@@ -121,7 +117,7 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
     log.info(
         "excel_writeback: POST v2 sheet uuid=%s url=%s",
         inquiry_uuid,
-        excel_url,
+        excel_service.safe_url_for_log(excel_url),
     )
     try:
         with httpx.Client(timeout=_V2_SHEET_POST_TIMEOUT_SECONDS) as client:
@@ -142,7 +138,9 @@ def _post_v2_sheet(*, inquiry_uuid: str, excel_url: str, access_token: str) -> b
         log.info("excel_writeback: v2 sheet POST ok %s", res.status_code)
         return True
     except Exception as e:
-        log.exception("excel_writeback: v2 sheet POST error: %s", e)
+        # No raw exception text/exc_info — the request URL/params embed
+        # access_token as a query param (see client.post above).
+        log.error("excel_writeback: v2 sheet POST error: %s", type(e).__name__)
         return False
 
 
@@ -197,7 +195,7 @@ def writeback_pi_enrichment(
     if not new_url:
         log.error("pi_writeback: S3 upload failed for uuid=%s", short)
         return None
-    log.info("pi_writeback: uploaded uuid=%s url=%s", short, new_url[:200])
+    log.info("pi_writeback: uploaded uuid=%s url=%s", short, excel_service.safe_url_for_log(new_url))
 
     posted = _post_v2_sheet(
         inquiry_uuid=inquiry_uuid,
@@ -209,7 +207,7 @@ def writeback_pi_enrichment(
     else:
         log.warning(
             "pi_writeback: v2 POST failed uuid=%s — workbook uploaded to %s but staging rejected it",
-            short, new_url[:200],
+            short, excel_service.safe_url_for_log(new_url),
         )
 
     return new_url
@@ -266,13 +264,15 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         return False
     log.info(
         "pipeline: writeback step 1/4 (download) inquiry=%s base_url=%s",
-        inquiry.id, base_url,
+        inquiry.id, excel_service.safe_url_for_log(base_url),
     )
     try:
         xlsx_bytes = _download(base_url, token=token)
     except Exception as e:
-        log.error("pipeline: writeback download FAILED for inquiry %s url=%s: %s",
-                  inquiry.id, base_url, e)
+        # No raw exception text — _download appends access_token to the URL
+        # internally, and an httpx HTTPStatusError's message embeds that URL.
+        log.error("pipeline: writeback download FAILED for inquiry %s url=%s (%s)",
+                  inquiry.id, excel_service.safe_url_for_log(base_url), type(e).__name__)
         return False
     fmt = "xlsx" if xlsx_bytes[:4] == b"PK\x03\x04" else "csv"
     log.info(
@@ -328,7 +328,7 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
         return False
     log.info(
         "pipeline: writeback step 3/4 OK inquiry=%s s3_url=%s",
-        inquiry.id, new_url[:200],
+        inquiry.id, excel_service.safe_url_for_log(new_url),
     )
 
     log.info(
@@ -345,7 +345,7 @@ def maybe_writeback_for_inquiry(db: Session, inquiry: Inquiry) -> bool:
     else:
         log.error(
             "pipeline: writeback step 4/4 FAILED inquiry=%s — workbook was uploaded to %s but v2 POST did not 2xx; will retry on next reply",
-            inquiry.id, new_url[:200],
+            inquiry.id, excel_service.safe_url_for_log(new_url),
         )
 
     inquiry.excel_response_url = new_url

@@ -31,6 +31,8 @@ from typing import Optional
 
 import httpx
 
+import excel_service
+import ssrf_protection
 import summary_service
 from models import Inquiry, User
 
@@ -74,17 +76,19 @@ def _extractable_attachments(source_attachments_json: Optional[str]) -> list[dic
 
 def _download(doc_url: str, access_token: Optional[str]) -> bytes:
     """Fetch attachment bytes with a short, hard timeout. Appending
-    access_token as a query param (harmless no-op for a public/S3 URL) is
-    what lets a background scheduler tick — which has no live user
-    session — still authenticate against a protected InpharmD-hosted URL,
-    using the same permanently-stored User.staging_token the interactive
-    request path already relies on (see routers/auth.py)."""
+    access_token as a query param is what lets a background scheduler tick —
+    which has no live user session — still authenticate against a protected
+    InpharmD-hosted URL, using the same permanently-stored User.staging_token
+    the interactive request path already relies on (see routers/auth.py).
+    Gated by excel_service._is_inpharmd_url so the token is only ever sent to
+    InpharmD's own configured host, never to an S3 URL or any other host a
+    client/platform payload could point doc_url at."""
     final_url = doc_url
-    if access_token and "access_token=" not in doc_url:
+    if access_token and excel_service._is_inpharmd_url(doc_url) and "access_token=" not in doc_url:
         sep = "&" if "?" in doc_url else "?"
         final_url = f"{doc_url}{sep}access_token={access_token}"
-    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        resp = client.get(final_url)
+    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS) as client:
+        resp = ssrf_protection.safe_get(client, final_url)
         resp.raise_for_status()
         return resp.content
 
@@ -140,10 +144,14 @@ def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None)
                 text = summary_service.extract_document_text(att.get("file_name") or "", raw)
                 if text:
                     text_parts.append(text)
-            except Exception:
+            except Exception as e:
+                # No exc_info here — the traceback for an httpx download failure
+                # embeds the full request URL (including any presigned signature).
                 log.warning(
-                    "attachment_extraction: skipping unreadable attachment %s for inquiry %s",
-                    att.get("file_name"), obj.id, exc_info=True,
+                    "attachment_extraction: skipping unreadable attachment %s for "
+                    "inquiry %s (%s, url=%s)",
+                    att.get("file_name"), obj.id, type(e).__name__,
+                    excel_service.safe_url_for_log(att.get("doc_url") or ""),
                 )
                 continue  # one bad attachment must not abort the others
 
