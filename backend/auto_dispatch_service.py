@@ -273,7 +273,7 @@ async def _process_one_inquiry(
         for a in (item.get("attachments") or [])
     ] or None
 
-    from routers.inquiries import bulk_create_inquiries
+    from routers.inquiries import bulk_create_inquiries, send_now
 
     for channel, bucket in buckets.items():
         if not bucket:
@@ -313,6 +313,26 @@ async def _process_one_inquiry(
                 uuid_, channel,
             )
             db.rollback()
+            continue
+
+        if channel == "email":
+            # bulk_create_inquiries' email branch applies the human-UX
+            # stagger delay (EMAIL_SCHEDULE_DELAY_MINUTES) meant for a person
+            # reviewing a batch before it goes out — there's no human in
+            # this loop, so force immediate delivery via the same send-now
+            # path the UI's "Send Now" button already uses, without touching
+            # bulk_create_inquiries itself (the manual/human-triggered flow
+            # keeps its stagger exactly as before).
+            for created in result.created:
+                try:
+                    send_now(inquiry_id=created.id, db=db, current_user=user)
+                except Exception:
+                    log.exception(
+                        "auto_dispatch: immediate send-now failed for inquiry %s; "
+                        "left on its originally scheduled time",
+                        created.id,
+                    )
+                    db.rollback()
 
 
 async def _run_all(
