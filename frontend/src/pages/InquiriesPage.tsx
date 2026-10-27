@@ -1,7 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import StatusBadge from "../components/StatusBadge";
 import InquiryDetail from "../components/InquiryDetail";
-import AutoDispatchToggle from "../components/AutoDispatchToggle";
 import { api } from "../api";
 import type { Inquiry } from "../types";
 import { fmtFallbackStatus, fmtFallbackGroup } from "../utils/fallback";
@@ -335,8 +334,6 @@ export default function InquiriesPage() {
           the answer back here.
         </p>
       </section>
-
-      <AutoDispatchToggle />
 
       <div className="outreach-tabs">
         <button

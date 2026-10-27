@@ -4,6 +4,7 @@ import type { Inquiry } from "../types";
 import { renderBold } from "../utils/renderBold";
 import { fmtFallbackHours } from "../utils/fallback";
 import { DEFAULT_REQUESTER_EMAIL } from "../utils/uiConstants";
+import AutoDispatchToggle from "../components/AutoDispatchToggle";
 
 const READ_KEY = "inpharmd_email_read"; // localStorage map of inquiryId -> true
 
@@ -244,6 +245,8 @@ export default function EmailsPage() {
 
   return (
     <>
+      <AutoDispatchToggle />
+
       <div className="gm-stats">
         <StatTile label="Emails Scheduled" value={stats.scheduled} tone={stats.scheduled > 0 ? "warn" : "neutral"} />
         <StatTile label="Emails Sent" value={stats.sent} tone="neutral" />
