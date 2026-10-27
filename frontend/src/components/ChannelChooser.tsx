@@ -1,6 +1,7 @@
 import { FC, useEffect, useState } from "react";
 import { isWithinBusinessHoursNow } from "../utils/businessHours";
 import { bucketByPreferredChannel } from "../utils/channelResolution";
+import { fmtFallbackHours } from "../utils/fallback";
 import { shouldShowTriggerAll } from "../utils/triggerAllVisibility";
 import { TOAST_DURATION_MS } from "../utils/uiConstants";
 import type { ManufacturerContact, WebFormAutomationResult } from "../types";
@@ -239,7 +240,7 @@ const ChannelChooser: FC<Props> = ({
                       and will be emailed. Voice agent will call any that don't reply
                       {fallbackHoursVaries
                         ? " — fallback times are configured individually per eligible manufacturer."
-                        : <> within <strong>{fallbackHours}h</strong>.</>}
+                        : <> within <strong>{fmtFallbackHours(fallbackHours)}</strong>.</>}
                     </>
                   ) : (
                     "None of the selected manufacturers prefer Email."
@@ -247,7 +248,7 @@ const ChannelChooser: FC<Props> = ({
                 ) : emailEligibleCount > 0 ? (
                   <>
                     We'll send to <strong>{m?.official_mi_email || m?.team_verified_email}</strong> and wait{" "}
-                    <strong>{fallbackHours}h</strong> for a reply before the
+                    <strong>{fmtFallbackHours(fallbackHours)}</strong> for a reply before the
                     voice agent calls.
                   </>
                 ) : (
@@ -262,7 +263,7 @@ const ChannelChooser: FC<Props> = ({
                   <span>Fallback</span>{" "}
                   {isMulti && fallbackHoursVaries
                     ? "Configured individually per eligible manufacturer"
-                    : `Agent call after ${fallbackHours}h`}
+                    : `Agent call after ${fmtFallbackHours(fallbackHours)}`}
                 </li>
               </ul>
               <button

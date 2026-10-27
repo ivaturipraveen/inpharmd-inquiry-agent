@@ -1,7 +1,7 @@
 // Canonical fallback-time choices — every UI picker must render from this
 // list so the options stay identical everywhere (single-form, per-row, bulk).
 export const FALLBACK_PRESETS: { hours: number; label: string }[] = [
-  { hours: 0, label: "5 min (testing)" },
+  { hours: 0, label: "2 min (testing)" },
   { hours: 12, label: "12 hours" },
   { hours: 24, label: "24 hours" },
   { hours: 48, label: "48 hours" },
@@ -11,9 +11,9 @@ export const FALLBACK_PRESETS: { hours: number; label: string }[] = [
 
 export const DEFAULT_FALLBACK_HOURS = 24;
 
-/** 0 is a sentinel value meaning "5 minutes" (for manual testing). */
+/** 0 is a sentinel value meaning "2 minutes" (for manual testing). */
 export function fmtFallbackHours(h: number): string {
-  if (h === 0) return "5 min";
+  if (h === 0) return "2 min";
   if (h <= 24) return `${h}h`;
   if (h % 24 === 0) return `${h / 24} days`;
   return `${h}h`;

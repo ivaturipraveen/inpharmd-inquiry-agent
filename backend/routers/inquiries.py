@@ -839,7 +839,7 @@ def send_now(
     if locked.first_contacted_at is None:
         locked.first_contacted_at = now
     if mfr.fallback_call_enabled and mfr.mi_phone:
-        fallback_delta = timedelta(minutes=5) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
+        fallback_delta = timedelta(minutes=2) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
         locked.call_scheduled_for = now + fallback_delta
     elif mfr.fallback_call_enabled and not mfr.mi_phone:
         log.warning("Inquiry %s: fallback skipped — manufacturer '%s' has no MI phone", locked.id, mfr.manufacturer)
