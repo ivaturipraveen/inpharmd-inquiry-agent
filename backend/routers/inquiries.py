@@ -604,8 +604,16 @@ def delete_inquiry(
     current_user: User = Depends(get_current_user),
 ):
     obj = _get_or_404(db, inquiry_id, current_user)
+    source_inquiry_uuid = obj.source_inquiry_uuid
     db.delete(obj)
     db.commit()
+
+    # Prevent the autonomous pipeline from treating this as "never processed"
+    # and re-contacting the manufacturer on its next poll tick — see
+    # auto_dispatch_service.mark_ignored_if_orphaned.
+    import auto_dispatch_service
+    auto_dispatch_service.mark_ignored_if_orphaned(db, source_inquiry_uuid)
+
     return None
 
 

@@ -126,6 +126,48 @@ def disable(db: Session, user: User) -> AutoDispatchSetting:
     return setting
 
 
+def mark_ignored_if_orphaned(db: Session, source_inquiry_uuid: Optional[str]) -> None:
+    """Call this right after deleting an Inquiry row (any deletion path, not
+    just autonomous-created ones). Our dedup for the autonomous pipeline
+    (_already_seen, in poll_and_dispatch) only knows "already handled" by
+    checking whether a local Inquiry row exists for a given
+    source_inquiry_uuid — delete the last such row and, on the very next
+    poll tick, that uuid looks unprocessed again, so the manufacturer gets
+    silently re-contacted. If no other local Inquiry row still references
+    this uuid, permanently add it to the existing ignore-baseline table
+    (the same one enable() populates) so it can never be auto-resurrected.
+    No-op if sibling rows for the same uuid still exist (already covered by
+    _already_seen) or if this inquiry never had a source_inquiry_uuid.
+    Deliberately reuses the existing table rather than introducing new
+    schema — see AutoDispatchIgnoredInquiry's docstring.
+    """
+    if not source_inquiry_uuid:
+        return
+    still_referenced = (
+        db.query(Inquiry.id)
+        .filter(Inquiry.source_inquiry_uuid == source_inquiry_uuid)
+        .first()
+        is not None
+    )
+    if still_referenced:
+        return
+    already_ignored = (
+        db.query(AutoDispatchIgnoredInquiry.id)
+        .filter(AutoDispatchIgnoredInquiry.inquiry_uuid == source_inquiry_uuid)
+        .first()
+        is not None
+    )
+    if already_ignored:
+        return
+    db.add(AutoDispatchIgnoredInquiry(inquiry_uuid=source_inquiry_uuid))
+    db.commit()
+    log.info(
+        "auto_dispatch: inquiry_uuid=%s added to ignore-baseline after its last local "
+        "Inquiry row was deleted; will never be auto-resurrected",
+        source_inquiry_uuid,
+    )
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
