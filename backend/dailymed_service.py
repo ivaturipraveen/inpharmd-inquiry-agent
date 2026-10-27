@@ -29,6 +29,7 @@ Cache TTL: 30 days. NDC labels change rarely; a monthly refresh is sufficient.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -415,9 +416,14 @@ def _normalize_drug_name(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip().lower())
 
 
-def _parse_labeler(html: str) -> Optional[str]:
-    m = _LABELER_RE.search(html)
-    return m.group(1).strip() if m else None
+def _parse_labeler(page_html: str) -> Optional[str]:
+    """Raw HTML source legitimately encodes punctuation (e.g. "&" as "&amp;")
+    — html.unescape() decodes it back to the plain name DailyMed actually
+    displays, so excel_service.match_manufacturers (which never needs to
+    know about HTML entities) sees the same plain text an Excel-sourced
+    manufacturer name would carry."""
+    m = _LABELER_RE.search(page_html)
+    return html.unescape(m.group(1).strip()) if m else None
 
 
 async def _lookup_ndc_for_manufacturer(
@@ -711,3 +717,38 @@ async def suggest_manufacturers(db: Session, *, ndc: str, drug_name: str) -> dic
     except Exception:  # noqa: BLE001
         log.warning("dailymed.suggest_manufacturers: unexpected failure", exc_info=True)
         return {"labeler_names": [], "repackaged_labeler_names": []}
+
+
+async def suggest_and_match_manufacturers(
+    db: Session, *, ndc: str, drug_name: str, manufacturers: list
+) -> tuple[list, set]:
+    """Shared orchestration for "ask DailyMed which manufacturer(s) make this
+    drug, then match each suggested labeler name against our DB" — the
+    single place both the manual single-manufacturer form's suggestion
+    endpoint (routers/inquiries.py's /manufacturer-suggestions-preview) and
+    the autonomous InpharmD intake pipeline (auto_dispatch_service.py) go
+    through, so the two flows can never silently diverge in how a drug name
+    resolves to candidate manufacturers.
+
+    `manufacturers` is the caller's already-fetched ManufacturerContact list
+    (never re-queried here). Returns (matches, repackaged_labeler_names) —
+    the latter lets a caller that cares (the preview endpoint) flag a
+    match.raw_name as repackaged without a second DailyMed call. Never
+    raises, matching suggest_manufacturers' own contract.
+    """
+    import excel_service
+
+    try:
+        result = await suggest_manufacturers(db, ndc=ndc, drug_name=drug_name)
+    except Exception:
+        log.warning("dailymed.suggest_and_match: suggestion lookup failed", exc_info=True)
+        return [], set()
+    labeler_names = result.get("labeler_names") or []
+    if not labeler_names:
+        return [], set()
+    rows = [
+        excel_service.ExtractedRow(row_index=i, raw_name=name)
+        for i, name in enumerate(labeler_names)
+    ]
+    matches = excel_service.match_manufacturers(rows, manufacturers)
+    return matches, set(result.get("repackaged_labeler_names") or [])

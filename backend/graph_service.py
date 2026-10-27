@@ -177,6 +177,34 @@ def clean_reply_body(text: str) -> str:
     return cleaned
 
 
+def _sender_matches_manufacturer(sender_email: str, manufacturer) -> bool:
+    """True if `sender_email` matches the manufacturer's known email identity
+    (official_mi_email or team_verified_email — the same two fields the
+    outbound send already treats as "the manufacturer's email", e.g. in
+    scheduler._scan_and_send_pending_emails). Case-insensitive, trimmed.
+
+    Every outbound manufacturer email also CCs/BCCs internal InpharmD
+    addresses (see email_service.py) — without this check, any of those
+    recipients replying to their own copy gets recorded as if the
+    manufacturer itself had answered.
+
+    Returns True (fail open) when there's no manufacturer on file to check
+    against — nothing to verify, so the pre-existing trust-the-reply
+    behavior is preserved for that edge case rather than blocking replies
+    we have no way to validate anyway.
+    """
+    if manufacturer is None:
+        return True
+    known = {
+        (manufacturer.official_mi_email or "").strip().lower(),
+        (manufacturer.team_verified_email or "").strip().lower(),
+    }
+    known.discard("")
+    if not known:
+        return True
+    return (sender_email or "").strip().lower() in known
+
+
 def _get_body(msg: dict) -> str:
     body = msg.get("body", {})
     content = body.get("content", "")
@@ -241,10 +269,20 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
 
     sender = msg.get("from", {}).get("emailAddress", {}).get("address", "unknown")
     mfr_name = obj.manufacturer.manufacturer if obj.manufacturer else "the manufacturer"
+    sender_verified = _sender_matches_manufacturer(sender, obj.manufacturer)
     log.info(
-        "pipeline: graph parsed inquiry=%s sender=%s mfr=%s body_chars=%d reply_chars=%d",
-        inquiry_id, sender, mfr_name, len(body or ""), len(reply or ""),
+        "pipeline: graph parsed inquiry=%s sender=%s mfr=%s sender_verified=%s body_chars=%d reply_chars=%d",
+        inquiry_id, sender, mfr_name, sender_verified, len(body or ""), len(reply or ""),
     )
+    if not sender_verified:
+        log.warning(
+            "pipeline: graph reply for inquiry=%s is from %s, which does not match "
+            "manufacturer %s's official_mi_email/team_verified_email on file — the "
+            "message is still stored below for review, but will NOT be treated as "
+            "the manufacturer's answer (no status/final_answer change, no fallback-call "
+            "cancellation, no legacy POST to InpharmD).",
+            inquiry_id, sender, mfr_name,
+        )
 
     # Lowercase the HTML body once for a fast CID substring check per attachment;
     # left empty for plain-text bodies (no cid: references to match).
@@ -312,9 +350,15 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     if not email_reply.body and reply_text:
         email_reply.body = reply_text
 
-    # Only update inquiry scalar fields on the first reply.
+    # Only update inquiry scalar fields on the first reply — and only when the
+    # sender is verified. An unverified reply is stored above (never discarded)
+    # but must not be trusted as the manufacturer's answer, trigger the legacy
+    # POST, or cancel the fallback call that would otherwise still reach the
+    # real manufacturer.
     is_first_reply = not obj.email_response
-    if is_first_reply:
+    if not sender_verified:
+        pass
+    elif is_first_reply:
         obj.email_response = reply_text
         obj.email_response_at = email_reply.sent_at
         # Closed stays closed — a follow-up reply must not reopen it; fields are
@@ -381,6 +425,7 @@ def _process_message(db, token: str, mailbox: str, msg: dict) -> Optional[dict]:
     return {
         "inquiry_id": inquiry_id,
         "email_reply_id": email_reply.id,
+        "sender_verified": sender_verified,
         "manufacturer": mfr_name,
         "subject": obj.subject,
         "question": obj.question,
@@ -575,14 +620,23 @@ def poll_once() -> int:
                 db.commit()
                 updated += 1
                 _mark_read(token, mailbox, msg["id"])
-                # Forward to legacy if this inquiry came from InpharmD.
+                # Forward to legacy if this inquiry came from InpharmD — but
+                # never for a reply whose sender doesn't match the
+                # manufacturer on file (see _sender_matches_manufacturer).
                 try:
-                    obj = db.get(Inquiry, changed.get("inquiry_id"))
-                    if obj is not None:
-                        legacy_response_service.maybe_post_for_inquiry(
-                            db, obj, f"email:{changed.get('email_reply_id')}",
-                            email_reply_id=changed.get('email_reply_id'),
+                    if not changed.get("sender_verified", True):
+                        log.warning(
+                            "pipeline: skipping legacy POST for inquiry %s — reply "
+                            "sender %s did not match the manufacturer on file",
+                            changed.get("inquiry_id"), changed.get("sender_email"),
                         )
+                    else:
+                        obj = db.get(Inquiry, changed.get("inquiry_id"))
+                        if obj is not None:
+                            legacy_response_service.maybe_post_for_inquiry(
+                                db, obj, f"email:{changed.get('email_reply_id')}",
+                                email_reply_id=changed.get('email_reply_id'),
+                            )
                 except Exception:
                     log.exception(
                         "Legacy POST after Graph poll failed for inquiry %s",

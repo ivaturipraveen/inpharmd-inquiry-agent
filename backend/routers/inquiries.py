@@ -15,7 +15,6 @@ import call_log_service
 import call_service
 import dailymed_service
 import email_service
-import excel_service
 import legacy_response_service
 import slack_service
 import summary_service
@@ -171,37 +170,25 @@ async def manufacturer_suggestions_preview(
     db: Session = Depends(get_db),
 ):
     """DailyMed manufacturer suggestion — separate from extract_preview so
-    Drug Name prefill never waits on this. Never raises."""
-    try:
-        result = await dailymed_service.suggest_manufacturers(
-            db, ndc=payload.ndc or "", drug_name=payload.drug_name or ""
-        )
-    except Exception:
-        log.exception("manufacturer_suggestions_preview: lookup failed")
-        return ManufacturerSuggestionsPreviewResult()
+    Drug Name prefill never waits on this. Never raises.
 
-    labeler_names = result.get("labeler_names") or []
-    if not labeler_names:
-        return ManufacturerSuggestionsPreviewResult()
-
-    repackaged_names = set(result.get("repackaged_labeler_names") or [])
+    Shared with auto_dispatch_service.py's autonomous intake pipeline — see
+    dailymed_service.suggest_and_match_manufacturers' docstring."""
     manufacturers = db.query(ManufacturerContact).filter(ManufacturerContact.archived_at.is_(None)).all()
-    rows = [
-        excel_service.ExtractedRow(row_index=i, raw_name=name)
-        for i, name in enumerate(labeler_names)
-    ]
-    matches = excel_service.match_manufacturers(rows, manufacturers)
+    matches, repackaged_names = await dailymed_service.suggest_and_match_manufacturers(
+        db, ndc=payload.ndc or "", drug_name=payload.drug_name or "", manufacturers=manufacturers,
+    )
 
     suggested_ids: list[int] = []
     repackaged_ids: list[int] = []
-    for row, match in zip(rows, matches):
+    for match in matches:
         if match.matched_id is None:
             continue
         # Multiple labeler rows can resolve to the same manufacturer —
         # de-dup within this response only (fresh list per request).
         if match.matched_id not in suggested_ids:
             suggested_ids.append(match.matched_id)
-        if row.raw_name in repackaged_names:
+        if match.raw_name in repackaged_names:
             repackaged_ids.append(match.matched_id)
 
     return ManufacturerSuggestionsPreviewResult(
@@ -617,8 +604,16 @@ def delete_inquiry(
     current_user: User = Depends(get_current_user),
 ):
     obj = _get_or_404(db, inquiry_id, current_user)
+    source_inquiry_uuid = obj.source_inquiry_uuid
     db.delete(obj)
     db.commit()
+
+    # Prevent the autonomous pipeline from treating this as "never processed"
+    # and re-contacting the manufacturer on its next poll tick — see
+    # auto_dispatch_service.mark_ignored_if_orphaned.
+    import auto_dispatch_service
+    auto_dispatch_service.mark_ignored_if_orphaned(db, source_inquiry_uuid)
+
     return None
 
 
@@ -839,7 +834,7 @@ def send_now(
     if locked.first_contacted_at is None:
         locked.first_contacted_at = now
     if mfr.fallback_call_enabled and mfr.mi_phone:
-        fallback_delta = timedelta(minutes=2) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
+        fallback_delta = timedelta(minutes=1) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
         locked.call_scheduled_for = now + fallback_delta
     elif mfr.fallback_call_enabled and not mfr.mi_phone:
         log.warning("Inquiry %s: fallback skipped — manufacturer '%s' has no MI phone", locked.id, mfr.manufacturer)

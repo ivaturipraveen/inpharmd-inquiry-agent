@@ -490,6 +490,39 @@ def match_manufacturers(
     return out
 
 
+async def match_manufacturers_from_url(
+    doc_url: str,
+    *,
+    access_token: Optional[str],
+    manufacturers: list,
+    db: Any,
+) -> tuple[bytes, list[ManufacturerMatch], ColumnLocation, ExtraColumns]:
+    """Shared orchestration for "download an MUE workbook attachment, find
+    its Manufacturer column, match every row against our DB, enrich via
+    DailyMed" — the single place both the manual Contact Manufacturer page
+    (routers/external_inquiries.py's /extract-manufacturers) and the
+    autonomous InpharmD intake pipeline (auto_dispatch_service.py) go
+    through, so the two flows can never silently diverge in how a workbook
+    attachment gets matched.
+
+    Returns the raw downloaded bytes alongside the match results — callers
+    that need to mirror the workbook to S3 (the manual endpoint's writeback
+    flow) would otherwise have to re-download it.
+
+    Raises ValueError (column not found / unparseable file) or the
+    underlying download exception — callers decide how to surface that
+    (an HTTP error for the manual endpoint, log-and-skip for the autonomous
+    one). DailyMed enrichment never raises (see dailymed_service.enrich_rows).
+    """
+    import dailymed_service
+
+    xlsx = download_excel(doc_url, access_token=access_token)
+    rows, loc, extra_cols = extract_manufacturer_rows(xlsx)
+    matches = match_manufacturers(rows, manufacturers)
+    await dailymed_service.enrich_rows(matches, db)
+    return xlsx, matches, loc, extra_cols
+
+
 def _write_response_csv(
     csv_bytes: bytes, *, row_index: int, response_text: str
 ) -> bytes:
