@@ -18,6 +18,15 @@ import EmailPreviewModal, { EmailOverride } from "./EmailPreviewModal";
 interface Props {
   manufacturers: ManufacturerContact[];
   defaultManufacturerId?: number;
+  // Pre-selects multiple manufacturers with a per-manufacturer drug name —
+  // used when an InpharmD inquiry's requested_manufacturers were resolved
+  // against our manufacturer DB. Each id is added to the existing chip
+  // picker exactly as if the user had selected it manually.
+  defaultTargets?: { manufacturer_id: number; medication_name: string }[];
+  // requested_manufacturers entries that didn't match any ManufacturerContact —
+  // shown as a plain note above the picker so they're never silently dropped;
+  // resolved by the user via the same search/Add-Manufacturer flow below.
+  unmatchedRequestedManufacturers?: { manufacturer: string; drug_name: string }[];
   defaultSubject?: string;
   defaultQuestion?: string;
   // Pre-fills Team Name when forwarded from an InpharmD MUE inquiry — still
@@ -39,6 +48,8 @@ const MAX_RESULTS = 50;
 const InquiryForm: FC<Props> = ({
   manufacturers,
   defaultManufacturerId,
+  defaultTargets,
+  unmatchedRequestedManufacturers,
   defaultSubject,
   defaultQuestion,
   defaultTeamName,
@@ -100,18 +111,39 @@ const InquiryForm: FC<Props> = ({
     }
   }, [defaultManufacturerId]);
 
+  // Pre-selected manufacturer ids from a resolved requested_manufacturers
+  // list — added to the chip picker exactly like a manual selection; the
+  // lockstep effect below fills in each one's drug name from this map.
+  const defaultTargetsById = useMemo(() => {
+    const m: Record<number, string> = {};
+    for (const t of defaultTargets ?? []) m[t.manufacturer_id] = t.medication_name;
+    return m;
+  }, [defaultTargets]);
+
+  useEffect(() => {
+    if (!defaultTargets || defaultTargets.length === 0) return;
+    setManufacturerIds(prev => {
+      const next = new Set(prev);
+      for (const t of defaultTargets) next.add(t.manufacturer_id);
+      return Array.from(next);
+    });
+  }, [defaultTargets]);
+
   // Keep targetData in lockstep with manufacturerIds — seed a default entry
   // for newly added ids, drop entries for removed ones.
   useEffect(() => {
     setTargetData(prev => {
       const next: typeof prev = {};
       for (const id of manufacturerIds) {
-        const seedName = prev[id]?.medicationName ?? (touchedDrugName[id] ? "" : lastExtractedDrugName);
+        const seedName =
+          prev[id]?.medicationName ??
+          defaultTargetsById[id] ??
+          (touchedDrugName[id] ? "" : lastExtractedDrugName);
         next[id] = prev[id] ?? { medicationName: seedName, fallbackHours: DEFAULT_FALLBACK_HOURS };
       }
       return next;
     });
-  }, [manufacturerIds]);
+  }, [manufacturerIds, defaultTargetsById]);
 
   // Drop email overrides for manufacturers no longer selected — an override
   // must never silently apply to a different manufacturer added later.
@@ -364,6 +396,19 @@ const InquiryForm: FC<Props> = ({
                 <label>
                   Manufacturer<span className="req">*</span>
                 </label>
+
+                {unmatchedRequestedManufacturers && unmatchedRequestedManufacturers.length > 0 && (
+                  <div className="hint unmatched-requested-manufacturers">
+                    Couldn't auto-match {unmatchedRequestedManufacturers.length === 1 ? "this requested manufacturer" : "these requested manufacturers"} — add manually below:
+                    <ul>
+                      {unmatchedRequestedManufacturers.map((u, idx) => (
+                        <li key={idx}>
+                          {u.manufacturer} — {u.drug_name || "(no drug name)"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 <div className="mfr-combo" ref={mfrWrapRef}>
                   {selectedMfrs.length > 0 && (
