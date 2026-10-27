@@ -49,6 +49,7 @@ import excel_service
 import excel_writeback_service
 import inpharmd_service
 import s3_service
+import ssrf_protection
 from database import get_db
 from models import ManufacturerContact, User
 from routers.auth import get_current_user
@@ -349,15 +350,18 @@ async def extract_manufacturers(
     multi-select instead of typing each name."""
     log.info(
         "external.extract user_id=%s email=%s doc=%s",
-        current.id, current.email, payload.doc_url,
+        current.id, current.email, ssrf_protection.safe_url_for_log(payload.doc_url),
     )
     try:
         xlsx = excel_service.download_excel(
             payload.doc_url, access_token=current.staging_token
         )
     except Exception as e:
-        log.error("external.extract download failed: %s", e)
-        raise HTTPException(status_code=502, detail=f"Failed to download attachment: {e}")
+        log.error(
+            "external.extract download failed (%s) url=%s",
+            type(e).__name__, ssrf_protection.safe_url_for_log(payload.doc_url),
+        )
+        raise HTTPException(status_code=502, detail="Failed to download attachment from the provided URL.")
 
     try:
         rows, loc, extra_cols = excel_service.extract_manufacturer_rows(xlsx)

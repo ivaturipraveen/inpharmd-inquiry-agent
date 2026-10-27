@@ -17,11 +17,11 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
-from urllib.parse import urlparse
 
-import httpx
 from openpyxl import load_workbook
 from openpyxl.workbook import Workbook
+
+import ssrf_protection
 
 log = logging.getLogger("inquiry.excel")
 
@@ -118,39 +118,21 @@ def _tokenize(s: Any) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", str(s).lower()) if t}
 
 
-def _is_inpharmd_url(url: str) -> bool:
-    """True only for InpharmD's app host (heroku/localhost). S3 buckets
-    (theirs `inpharmd-asset.s3...` or ours `inpharmd-assistant.s3...`) are
-    explicitly excluded — presigned S3 URLs already carry their own auth in
-    the query string, and appending `access_token=` clobbers the signature."""
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        return False
-    if not host or host.endswith(".amazonaws.com"):
-        return False
-    return "inpharmd" in host or "mercer-inpharmd" in host
-
-
 def download_excel(doc_url: str, access_token: Optional[str] = None) -> bytes:
     """Fetch the workbook bytes (xlsx or csv). Includes access_token only
     when the URL points at the InpharmD staging app — S3 URLs and public/CDN
-    URLs are downloaded as-is. Appends the token as a query-string fragment
-    rather than via httpx params= because params= can collide with an
-    existing query (e.g. presigned signature) and corrupt the request URL."""
-    final_url = doc_url
-    if access_token and _is_inpharmd_url(doc_url) and "access_token=" not in doc_url:
-        sep = "&" if "?" in doc_url else "?"
-        final_url = f"{doc_url}{sep}access_token={access_token}"
+    URLs are downloaded as-is (see ssrf_protection.fetch)."""
+    will_append_token = (
+        bool(access_token)
+        and ssrf_protection.is_trusted_inpharmd_url(doc_url)
+        and "access_token=" not in doc_url
+    )
     log.info(
         "excel.download url=%s token=%s",
-        doc_url,
-        "yes" if final_url is not doc_url else "no",
+        ssrf_protection.safe_url_for_log(doc_url),
+        "yes" if will_append_token else "no",
     )
-    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        res = client.get(final_url)
-        res.raise_for_status()
-        return res.content
+    return ssrf_protection.fetch(doc_url, access_token=access_token, timeout=_DOWNLOAD_TIMEOUT_SECONDS)
 
 
 @dataclass
