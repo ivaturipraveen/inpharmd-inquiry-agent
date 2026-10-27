@@ -29,9 +29,6 @@ import json
 import logging
 from typing import Optional
 
-import httpx
-
-import excel_service
 import ssrf_protection
 import summary_service
 from models import Inquiry, User
@@ -80,17 +77,10 @@ def _download(doc_url: str, access_token: Optional[str]) -> bytes:
     which has no live user session — still authenticate against a protected
     InpharmD-hosted URL, using the same permanently-stored User.staging_token
     the interactive request path already relies on (see routers/auth.py).
-    Gated by excel_service._is_inpharmd_url so the token is only ever sent to
-    InpharmD's own configured host, never to an S3 URL or any other host a
-    client/platform payload could point doc_url at."""
-    final_url = doc_url
-    if access_token and excel_service._is_inpharmd_url(doc_url) and "access_token=" not in doc_url:
-        sep = "&" if "?" in doc_url else "?"
-        final_url = f"{doc_url}{sep}access_token={access_token}"
-    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS) as client:
-        resp = ssrf_protection.safe_get(client, final_url)
-        resp.raise_for_status()
-        return resp.content
+    See ssrf_protection.fetch for the token-gating/SSRF-protection logic
+    shared with excel_service.download_excel and
+    excel_writeback_service._download."""
+    return ssrf_protection.fetch(doc_url, access_token=access_token, timeout=_DOWNLOAD_TIMEOUT_SECONDS)
 
 
 def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None) -> dict:
@@ -151,7 +141,7 @@ def get_or_extract(db, obj: Inquiry, *, manufacturer_name: Optional[str] = None)
                     "attachment_extraction: skipping unreadable attachment %s for "
                     "inquiry %s (%s, url=%s)",
                     att.get("file_name"), obj.id, type(e).__name__,
-                    excel_service.safe_url_for_log(att.get("doc_url") or ""),
+                    ssrf_protection.safe_url_for_log(att.get("doc_url") or ""),
                 )
                 continue  # one bad attachment must not abort the others
 

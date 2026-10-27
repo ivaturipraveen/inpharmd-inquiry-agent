@@ -17,13 +17,10 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
-from urllib.parse import urlparse
 
-import httpx
 from openpyxl import load_workbook
 from openpyxl.workbook import Workbook
 
-import inpharmd_service
 import ssrf_protection
 
 log = logging.getLogger("inquiry.excel")
@@ -121,66 +118,21 @@ def _tokenize(s: Any) -> set[str]:
     return {t for t in re.split(r"[^a-z0-9]+", str(s).lower()) if t}
 
 
-def safe_url_for_log(url: Optional[str]) -> str:
-    """scheme://host[:port]/path only — strips userinfo, query string, and
-    fragment so a presigned URL's signature (or embedded credentials) never
-    reaches logs or error responses."""
-    if not url:
-        return ""
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-        port = f":{parsed.port}" if parsed.port else ""
-        return f"{parsed.scheme}://{host}{port}{parsed.path}"
-    except Exception:
-        return "(unparseable url)"
-
-
-def _trusted_inpharmd_host() -> str:
-    """The exact host configured via INPHARMD_API_BASE_URL — empty if unset
-    or malformed, which makes _is_inpharmd_url fail closed (never appends
-    the token anywhere) rather than falling back to a guessed host."""
-    try:
-        base = inpharmd_service._base_url()
-    except inpharmd_service.InpharmdConfigError:
-        return ""
-    return (urlparse(base).hostname or "").lower()
-
-
-def _is_inpharmd_url(url: str) -> bool:
-    """True only for the exact host configured via INPHARMD_API_BASE_URL (or
-    one of its subdomains) — never a substring match, so a lookalike host
-    like `my-inpharmd-mirror.evil.com` can never receive the access token.
-    S3 buckets are naturally excluded since they never match that host."""
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        return False
-    trusted = _trusted_inpharmd_host()
-    if not host or not trusted:
-        return False
-    return host == trusted or host.endswith("." + trusted)
-
-
 def download_excel(doc_url: str, access_token: Optional[str] = None) -> bytes:
     """Fetch the workbook bytes (xlsx or csv). Includes access_token only
     when the URL points at the InpharmD staging app — S3 URLs and public/CDN
-    URLs are downloaded as-is. Appends the token as a query-string fragment
-    rather than via httpx params= because params= can collide with an
-    existing query (e.g. presigned signature) and corrupt the request URL."""
-    final_url = doc_url
-    if access_token and _is_inpharmd_url(doc_url) and "access_token=" not in doc_url:
-        sep = "&" if "?" in doc_url else "?"
-        final_url = f"{doc_url}{sep}access_token={access_token}"
+    URLs are downloaded as-is (see ssrf_protection.fetch)."""
+    will_append_token = (
+        bool(access_token)
+        and ssrf_protection.is_trusted_inpharmd_url(doc_url)
+        and "access_token=" not in doc_url
+    )
     log.info(
         "excel.download url=%s token=%s",
-        safe_url_for_log(doc_url),
-        "yes" if final_url is not doc_url else "no",
+        ssrf_protection.safe_url_for_log(doc_url),
+        "yes" if will_append_token else "no",
     )
-    with httpx.Client(timeout=_DOWNLOAD_TIMEOUT_SECONDS) as client:
-        res = ssrf_protection.safe_get(client, final_url)
-        res.raise_for_status()
-        return res.content
+    return ssrf_protection.fetch(doc_url, access_token=access_token, timeout=_DOWNLOAD_TIMEOUT_SECONDS)
 
 
 @dataclass

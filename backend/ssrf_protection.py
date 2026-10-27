@@ -1,6 +1,7 @@
-"""Shared SSRF protection for every outbound fetch of a client-/platform-
-supplied URL (excel_service.py, attachment_extraction_service.py,
-excel_writeback_service.py).
+"""Shared SSRF protection and trust/logging helpers for every outbound fetch
+of a client-/platform-supplied URL (excel_service.py,
+attachment_extraction_service.py, excel_writeback_service.py). `fetch()` is
+the single entry point those three modules call.
 
 Why resolve-then-classify, never classify-then-resolve: `socket.getaddrinfo`
 accepts obfuscated numeric-IP hostnames (decimal `2130706433`, hex
@@ -28,6 +29,8 @@ from typing import Optional
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
+
+import inpharmd_service
 
 log = logging.getLogger("inquiry.ssrf_protection")
 
@@ -137,3 +140,64 @@ def safe_get(
             continue
         return response
     raise BlockedUrlError("too many redirects")
+
+
+def safe_url_for_log(url: Optional[str]) -> str:
+    """scheme://host[:port]/path only — strips userinfo, query string, and
+    fragment so a presigned URL's signature (or embedded credentials) never
+    reaches logs or error responses."""
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{host}{port}{parsed.path}"
+    except Exception:
+        return "(unparseable url)"
+
+
+def _trusted_inpharmd_host() -> str:
+    """The exact host configured via INPHARMD_API_BASE_URL — empty if unset
+    or malformed, which makes is_trusted_inpharmd_url fail closed (never
+    appends the token anywhere) rather than falling back to a guessed host."""
+    try:
+        base = inpharmd_service._base_url()
+    except inpharmd_service.InpharmdConfigError:
+        return ""
+    return (urlsplit(base).hostname or "").lower()
+
+
+def is_trusted_inpharmd_url(url: str) -> bool:
+    """True only for the exact host configured via INPHARMD_API_BASE_URL (or
+    one of its subdomains) — never a substring match, so a lookalike host
+    like `my-inpharmd-mirror.evil.com` can never receive the access token.
+    S3 buckets are naturally excluded since they never match that host."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    trusted = _trusted_inpharmd_host()
+    if not host or not trusted:
+        return False
+    return host == trusted or host.endswith("." + trusted)
+
+
+def fetch(url: str, *, access_token: Optional[str] = None, timeout: float) -> bytes:
+    """Shared download path for every client-/platform-supplied URL this app
+    fetches. Appends access_token as a query param only when url is the
+    trusted InpharmD host (never to S3/R2/any other host), then performs an
+    SSRF-protected GET via safe_get and returns the response body.
+
+    This is the single implementation behind excel_service.download_excel,
+    attachment_extraction_service._download, and
+    excel_writeback_service._download — previously each had its own
+    copy of this token-gating logic."""
+    final_url = url
+    if access_token and is_trusted_inpharmd_url(url) and "access_token=" not in url:
+        sep = "&" if "?" in url else "?"
+        final_url = f"{url}{sep}access_token={access_token}"
+    with httpx.Client(timeout=timeout) as client:
+        res = safe_get(client, final_url)
+        res.raise_for_status()
+        return res.content
