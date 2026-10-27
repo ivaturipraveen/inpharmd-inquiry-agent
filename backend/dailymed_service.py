@@ -29,6 +29,7 @@ Cache TTL: 30 days. NDC labels change rarely; a monthly refresh is sufficient.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -415,9 +416,14 @@ def _normalize_drug_name(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip().lower())
 
 
-def _parse_labeler(html: str) -> Optional[str]:
-    m = _LABELER_RE.search(html)
-    return m.group(1).strip() if m else None
+def _parse_labeler(page_html: str) -> Optional[str]:
+    """Raw HTML source legitimately encodes punctuation (e.g. "&" as "&amp;")
+    — html.unescape() decodes it back to the plain name DailyMed actually
+    displays, so excel_service.match_manufacturers (which never needs to
+    know about HTML entities) sees the same plain text an Excel-sourced
+    manufacturer name would carry."""
+    m = _LABELER_RE.search(page_html)
+    return html.unescape(m.group(1).strip()) if m else None
 
 
 async def _lookup_ndc_for_manufacturer(
