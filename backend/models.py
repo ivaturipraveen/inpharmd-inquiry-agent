@@ -411,3 +411,47 @@ class DailymedDrugNameCache(Base):
     labeler_names = Column(Text)         # JSON-encoded list[str]; NULL until a crawl completes fully
     fetched_at = Column(DateTime(timezone=True), nullable=True)
     claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AutoDispatchSetting(Base):
+    """Singleton (id=1) application-level feature flag for the fully-
+    autonomous InpharmD auto-dispatch pipeline (see auto_dispatch_service.py).
+
+    Server-side, DB-backed by design — the scheduler job and the Manufacturer
+    Outreach page UI toggle must read/write the exact same state; this must
+    never become a localStorage/browser-only flag.
+
+    activated_at is the activation-boundary timestamp: every time `enabled`
+    flips False -> True, auto_dispatch_service.enable() re-stamps it to now()
+    AND fully replaces AutoDispatchIgnoredInquiry with a fresh snapshot of
+    every InpharmD inquiry open at that exact moment (see that model's
+    docstring). activated_at itself is informational/display-only — the
+    actual eligibility gate is "is this inquiry_uuid in the ignore snapshot",
+    not a timestamp comparison, since InpharmD's inquiry payload has no
+    creation-time field we could compare against."""
+    __tablename__ = "auto_dispatch_settings"
+
+    id = Column(Integer, primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+
+class AutoDispatchIgnoredInquiry(Base):
+    """A snapshot of InpharmD inquiry_uuids that already existed the moment
+    auto-dispatch was last turned on — permanently ineligible for autonomous
+    processing for as long as the current activation lasts, even though no
+    local Inquiry row may ever exist for them.
+
+    Fully wiped and re-populated (not appended to) every time
+    auto_dispatch_service.enable() runs, so it always reflects only the most
+    recent activation's baseline. This is what guarantees an inquiry that
+    existed before activation — or arrived while the flag was off — can
+    never be swept up by a later (re-)activation: at the moment of each
+    (re-)activation, every inquiry_uuid still open at that instant is
+    recaptured here, regardless of whether it was captured before."""
+    __tablename__ = "auto_dispatch_ignored_inquiries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    inquiry_uuid = Column(String(64), nullable=False, index=True)

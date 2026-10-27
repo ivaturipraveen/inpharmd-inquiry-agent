@@ -39,6 +39,7 @@ import logging
 import os
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -351,28 +352,23 @@ async def extract_manufacturers(
         "external.extract user_id=%s email=%s doc=%s",
         current.id, current.email, payload.doc_url,
     )
+    mfrs = db.query(ManufacturerContact).filter(ManufacturerContact.archived_at.is_(None)).all()
+
+    # Shared with auto_dispatch_service.py's autonomous intake pipeline —
+    # see excel_service.match_manufacturers_from_url's docstring. Includes
+    # DailyMed NDC enrichment (never raises; failures leave rows unchanged).
     try:
-        xlsx = excel_service.download_excel(
-            payload.doc_url, access_token=current.staging_token
+        xlsx, matches, loc, extra_cols = await excel_service.match_manufacturers_from_url(
+            payload.doc_url, access_token=current.staging_token, manufacturers=mfrs, db=db,
         )
-    except Exception as e:
+    except httpx.HTTPError as e:
         log.error("external.extract download failed: %s", e)
         raise HTTPException(status_code=502, detail=f"Failed to download attachment: {e}")
-
-    try:
-        rows, loc, extra_cols = excel_service.extract_manufacturer_rows(xlsx)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         log.exception("external.extract parse failed")
         raise HTTPException(status_code=422, detail=f"Could not parse spreadsheet: {e}")
-
-    mfrs = db.query(ManufacturerContact).filter(ManufacturerContact.archived_at.is_(None)).all()
-    matches = excel_service.match_manufacturers(rows, mfrs)
-
-    # DailyMed NDC enrichment — fills pi_link/pi_storage on matched rows
-    # concurrently (semaphore-capped); never raises, failures leave rows unchanged.
-    await dailymed_service.enrich_rows(matches, db)
 
     # Mirror the workbook to our own S3 before any responses arrive — every
     # inquiry from this dispatch points at this URL for writeback.

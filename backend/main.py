@@ -11,6 +11,7 @@ from database import Base, engine
 from routers import (
     agent_tools,
     auth,
+    auto_dispatch,
     email_inbound,
     external_inquiries,
     inquiries,
@@ -282,3 +283,4 @@ app.include_router(agent_tools.router)
 app.include_router(email_inbound.router)
 app.include_router(auth.router)
 app.include_router(external_inquiries.router)
+app.include_router(auto_dispatch.router)

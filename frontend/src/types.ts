@@ -218,3 +218,13 @@ export interface WebFormAutomationResult {
   missing_fields: string[];
   inquiry: Inquiry;
 }
+
+// Server-side feature flag for the fully-autonomous InpharmD intake pipeline
+// (see backend/auto_dispatch_service.py). Shared source of truth between the
+// Manufacturer Outreach page toggle and the background scheduler job.
+export interface AutoDispatchStatus {
+  enabled: boolean;
+  activated_at: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+}

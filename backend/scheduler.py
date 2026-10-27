@@ -39,6 +39,9 @@ _NO_RESPONSE_TICK_SECONDS = int(os.getenv("NO_RESPONSE_TICK_SECONDS", "1800"))
 # outreach pending, before the Slack notice fires.
 NO_RESPONSE_ALERT_HOURS = int(os.getenv("NO_RESPONSE_ALERT_HOURS", "48"))
 
+# Fully-autonomous InpharmD inquiry intake (see auto_dispatch_service.py).
+INPHARMD_POLL_TICK_SECONDS = int(os.getenv("INPHARMD_POLL_TICK_SECONDS", "60"))
+
 # Stuck-call reconciliation — a call_pending inquiry with no confirming
 # webhook is otherwise stuck forever; this polls ElevenLabs to recover.
 CALL_RECONCILE_TICK_SECONDS = int(os.getenv("CALL_RECONCILE_TICK_SECONDS", "300"))
@@ -292,7 +295,7 @@ def _scan_and_send_pending_emails() -> None:
             if locked.first_contacted_at is None:
                 locked.first_contacted_at = sent_at
             if mfr.fallback_call_enabled and mfr.mi_phone:
-                fallback_delta = timedelta(minutes=2) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
+                fallback_delta = timedelta(minutes=1) if locked.fallback_after_hours == 0 else timedelta(hours=locked.fallback_after_hours)
                 locked.call_scheduled_for = sent_at + fallback_delta
             elif mfr.fallback_call_enabled and not mfr.mi_phone:
                 log.warning("Inquiry %s: fallback skipped — manufacturer '%s' has no MI phone", locked.id, mfr.manufacturer)
@@ -704,6 +707,19 @@ def _scan_and_place_scheduled_calls() -> None:
             db2.rollback()
         finally:
             db2.close()
+
+
+def _poll_and_auto_dispatch_inpharmd_inquiries() -> None:
+    """One scheduler tick: fetch new InpharmD inquiries and auto-dispatch
+    matched manufacturers with no human involvement. See auto_dispatch_service
+    for the full pipeline; this wrapper only exists so a failure here can
+    never take down the rest of the scheduler."""
+    import auto_dispatch_service
+
+    try:
+        auto_dispatch_service.poll_and_dispatch()
+    except Exception:
+        log.exception("InpharmD auto-dispatch tick failed")
 
 
 def _poll_email_replies() -> None:
@@ -1254,15 +1270,24 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        _poll_and_auto_dispatch_inpharmd_inquiries,
+        "interval",
+        seconds=INPHARMD_POLL_TICK_SECONDS,
+        id="inpharmd_auto_dispatch",
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
     log.info(
         "Schedulers started (retry every %ss, email poll every %ss, scheduled send every %ss, "
-        "no-response scan every %ss, call reconciliation every %ss)",
+        "no-response scan every %ss, call reconciliation every %ss, InpharmD auto-dispatch every %ss)",
         _TICK_SECONDS,
         _poll_seconds,
         _email_send_seconds,
         _NO_RESPONSE_TICK_SECONDS,
         CALL_RECONCILE_TICK_SECONDS,
+        INPHARMD_POLL_TICK_SECONDS,
     )
 
 

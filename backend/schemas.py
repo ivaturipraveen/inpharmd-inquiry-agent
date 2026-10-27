@@ -370,3 +370,11 @@ class InquiryOut(InquiryBase):
 # InquiryOut is defined.
 BulkInquiryResult.model_rebuild()
 WebFormAutomationResultOut.model_rebuild()
+
+
+# ---------- Autonomous InpharmD auto-dispatch feature flag ----------
+class AutoDispatchStatus(BaseModel):
+    enabled: bool
+    activated_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    updated_by: Optional[str] = None

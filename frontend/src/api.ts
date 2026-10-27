@@ -1,4 +1,5 @@
 import type {
+  AutoDispatchStatus,
   Inquiry,
   InquiryInput,
   ManufacturerContact,
@@ -411,5 +412,13 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ doc_url, inquiry_uuid }),
       }),
+  },
+  autoDispatch: {
+    getStatus: () =>
+      request<AutoDispatchStatus>(`/api/auto-dispatch/status`),
+    enable: () =>
+      request<AutoDispatchStatus>(`/api/auto-dispatch/enable`, { method: "POST" }),
+    disable: () =>
+      request<AutoDispatchStatus>(`/api/auto-dispatch/disable`, { method: "POST" }),
   },
 };
