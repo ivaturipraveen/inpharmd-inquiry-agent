@@ -504,16 +504,20 @@ const InquiryDetail: FC<Props> = ({ inquiry, onClose, onAction, onDelete }) => {
               });
             }
 
-            if (inquiry.email_response_at) {
-              entries.push({
-                key: "email-response",
-                sortAt: toMs(inquiry.email_response_at) ?? SORT_LAST,
-                status: "done",
-                title: "Email response received",
-                meta: fmtDate(inquiry.email_response_at),
-                body: inquiry.email_response ? renderBold(inquiry.email_response) : undefined,
+            // email_response_at only captures the first reply; loop over
+            // email_replies instead so later replies aren't dropped here.
+            (inquiry.email_replies ?? [])
+              .filter((reply) => reply.direction === "inbound")
+              .forEach((reply, idx) => {
+                entries.push({
+                  key: `email-response-${reply.id}`,
+                  sortAt: toMs(reply.sent_at) ?? SORT_LAST,
+                  status: "done",
+                  title: idx === 0 ? "Email response received" : "Follow-up email response received",
+                  meta: fmtDate(reply.sent_at),
+                  body: reply.body ? renderBold(reply.body) : undefined,
+                });
               });
-            }
 
             (inquiry.email_replies ?? [])
               .filter((reply) => reply.direction === "outbound")
