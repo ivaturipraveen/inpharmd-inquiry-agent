@@ -41,6 +41,9 @@ interface ForwardContext {
   // Raw "Temperature Excursion Request" text from InpharmD (API field
   // `mue_details`), distinct from `title`. TE-only in practice.
   mue_details?: string;
+  // Free-text (drug_name, manufacturer) pairs requested on this inquiry —
+  // resolved against our manufacturer DB on mount (see matchedTargets effect).
+  requested_manufacturers?: { drug_name: string; manufacturer: string }[];
 }
 
 interface DetectedRow {
@@ -125,12 +128,23 @@ const readContext = (): ForwardContext | null => {
   }
   const team_name = params.get("team_name") ?? undefined;
   const mue_details = params.get("mue_details") ?? undefined;
+  let requested_manufacturers: ForwardContext["requested_manufacturers"];
+  const reqMfrsRaw = params.get("requested_manufacturers");
+  if (reqMfrsRaw) {
+    try {
+      const parsed = JSON.parse(reqMfrsRaw);
+      if (Array.isArray(parsed)) requested_manufacturers = parsed;
+    } catch {
+      /* ignore malformed/truncated param — treated as absent */
+    }
+  }
   return {
     uuid,
     title,
     attachments,
     ...(team_name ? { team_name } : {}),
     ...(mue_details ? { mue_details } : {}),
+    ...(requested_manufacturers ? { requested_manufacturers } : {}),
   };
 };
 
@@ -169,6 +183,14 @@ const selKey = (attIdx: number, rowIndex: number) => `${attIdx}:${rowIndex}`;
 
 export default function ContactManufacturerPage() {
   const [ctx] = useState<ForwardContext | null>(readContext);
+  // Resolved requested_manufacturers — matched (pre-selects InquiryForm chips)
+  // and unmatched (shown as a plain note above the picker, never dropped).
+  const [requestedMfrMatched, setRequestedMfrMatched] = useState<
+    { manufacturer_id: number; medication_name: string }[]
+  >([]);
+  const [requestedMfrUnmatched, setRequestedMfrUnmatched] = useState<
+    { manufacturer: string; drug_name: string }[]
+  >([]);
   const [manufacturers, setManufacturers] = useState<ManufacturerContact[]>([]);
   const [loadingMfrs, setLoadingMfrs] = useState(true);
   const [existingInquiries, setExistingInquiries] = useState<Inquiry[]>([]);
@@ -267,6 +289,31 @@ export default function ContactManufacturerPage() {
       setQuestion(ctx.mue_details ? `${ctx.title}\n\n${ctx.mue_details}` : ctx.title);
     }
     if (ctx?.team_name) setTeamName(ctx.team_name);
+  }, [ctx]);
+
+  // Resolve this inquiry's requested_manufacturers (if any) against our
+  // manufacturer DB, reusing the same matcher the Excel/MUE flow uses.
+  // Read-only call — creates no local records.
+  useEffect(() => {
+    const reqMfrs = ctx?.requested_manufacturers;
+    if (!reqMfrs || reqMfrs.length === 0) return;
+    let cancelled = false;
+    api.externalInquiries
+      .matchRequestedManufacturers(reqMfrs)
+      .then((res) => {
+        if (cancelled) return;
+        setRequestedMfrMatched(
+          res.matched.map((m) => ({ manufacturer_id: m.manufacturer_id, medication_name: m.drug_name })),
+        );
+        setRequestedMfrUnmatched(res.unmatched);
+      })
+      .catch(() => {
+        // Never block the form on a failed match — every requested entry
+        // falls back to the unmatched note so it's still visible, not lost.
+        if (cancelled) return;
+        setRequestedMfrUnmatched(reqMfrs.map((r) => ({ manufacturer: r.manufacturer, drug_name: r.drug_name })));
+      });
+    return () => { cancelled = true; };
   }, [ctx]);
 
   useEffect(() => {
@@ -1724,6 +1771,8 @@ export default function ContactManufacturerPage() {
         ) : (
           <InquiryForm
             manufacturers={manufacturers}
+            defaultTargets={requestedMfrMatched}
+            unmatchedRequestedManufacturers={requestedMfrUnmatched}
             defaultSubject={subject}
             defaultQuestion={question}
             defaultTeamName={teamName}
@@ -2027,6 +2076,9 @@ export function startContactManufacturerFlow(ctx: ForwardContext): void {
   if (ctx.title) qs.set("title", ctx.title);
   if (ctx.team_name) qs.set("team_name", ctx.team_name);
   if (ctx.mue_details) qs.set("mue_details", ctx.mue_details);
+  if (ctx.requested_manufacturers && ctx.requested_manufacturers.length > 0) {
+    qs.set("requested_manufacturers", JSON.stringify(ctx.requested_manufacturers));
+  }
   // Encode ALL extractable attachments in the URL (indexed: att_url_0, att_url_1, …)
   // so readContext can reconstruct them on page refresh when sessionStorage is gone.
   const extractables = (ctx.attachments ?? []).filter(isExtractable);

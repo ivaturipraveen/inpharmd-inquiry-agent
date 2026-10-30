@@ -30,6 +30,10 @@ interface MueInquiry {
   // Raw "Temperature Excursion Request" free-text field from InpharmD's
   // form — distinct from `title`. TE-only in practice.
   mue_details?: string | null;
+  // Free-text (drug_name, manufacturer) pairs requested on this inquiry —
+  // no stable id on each entry. Forwarded as-is to Contact Manufacturer,
+  // where they're resolved against our manufacturer DB.
+  requested_manufacturers?: { drug_name: string; manufacturer: string }[];
 }
 
 const truncate = (s: string, n = 80): string =>
@@ -304,6 +308,7 @@ export default function ExternalInquiriesPage() {
       attachments: i.attachments,
       team_name: i.inquiry_submitter_details?.team_name,
       mue_details: i.mue_details ?? undefined,
+      requested_manufacturers: i.requested_manufacturers,
     });
   };
 

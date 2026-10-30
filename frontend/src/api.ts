@@ -411,5 +411,20 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ doc_url, inquiry_uuid }),
       }),
+    matchRequestedManufacturers: (
+      requested_manufacturers: { drug_name: string; manufacturer: string }[],
+    ) =>
+      request<{
+        matched: {
+          manufacturer_id: number;
+          manufacturer_name: string;
+          drug_name: string;
+          confidence: "exact" | "partial" | "loose" | "none";
+        }[];
+        unmatched: { manufacturer: string; drug_name: string }[];
+      }>(`/api/external/inquiries/match-requested-manufacturers`, {
+        method: "POST",
+        body: JSON.stringify({ requested_manufacturers }),
+      }),
   },
 };

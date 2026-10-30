@@ -336,6 +336,34 @@ class ExtractManufacturersResponse(BaseModel):
     excel_s3_url: Optional[str] = None
 
 
+class RequestedManufacturerIn(BaseModel):
+    """One entry of an InpharmD open_mue_inquiries `requested_manufacturers`
+    array — free-text only, no stable upstream id."""
+    drug_name: str = ""
+    manufacturer: str = ""
+
+
+class MatchRequestedManufacturersRequest(BaseModel):
+    requested_manufacturers: list[RequestedManufacturerIn] = []
+
+
+class MatchedRequestedManufacturer(BaseModel):
+    manufacturer_id: int
+    manufacturer_name: str
+    drug_name: str
+    confidence: str
+
+
+class UnmatchedRequestedManufacturer(BaseModel):
+    manufacturer: str
+    drug_name: str
+
+
+class MatchRequestedManufacturersResponse(BaseModel):
+    matched: list[MatchedRequestedManufacturer]
+    unmatched: list[UnmatchedRequestedManufacturer]
+
+
 @router.post("/extract-manufacturers", response_model=ExtractManufacturersResponse)
 async def extract_manufacturers(
     payload: ExtractManufacturersRequest = Body(...),
@@ -437,6 +465,53 @@ async def extract_manufacturers(
         ndc_col_header=extra_cols.ndc_col_header,
         excel_s3_url=s3_url,
     )
+
+
+@router.post("/match-requested-manufacturers", response_model=MatchRequestedManufacturersResponse)
+def match_requested_manufacturers(
+    payload: MatchRequestedManufacturersRequest = Body(...),
+    current: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Resolve an InpharmD open_mue_inquiries `requested_manufacturers` array
+    (free-text manufacturer names, no stable id) against our manufacturer DB.
+
+    Reuses excel_service.match_manufacturers — the same matcher the Excel/MUE
+    bulk-upload flow already uses — rather than a second matching engine.
+    Every input entry ends up in either `matched` or `unmatched`; nothing is
+    ever dropped. Read-only: makes no database writes."""
+    entries = [e for e in payload.requested_manufacturers if (e.manufacturer or "").strip()]
+    if not entries:
+        return MatchRequestedManufacturersResponse(matched=[], unmatched=[])
+
+    rows = [
+        excel_service.ExtractedRow(
+            row_index=i,
+            raw_name=e.manufacturer.strip(),
+            medication_name=(e.drug_name or "").strip(),
+        )
+        for i, e in enumerate(entries)
+    ]
+    mfrs = db.query(ManufacturerContact).filter(ManufacturerContact.archived_at.is_(None)).all()
+    matches = excel_service.match_manufacturers(rows, mfrs)
+
+    matched_out: list[MatchedRequestedManufacturer] = []
+    unmatched_out: list[UnmatchedRequestedManufacturer] = []
+    for m in matches:
+        if m.matched_id is not None:
+            matched_out.append(
+                MatchedRequestedManufacturer(
+                    manufacturer_id=m.matched_id,
+                    manufacturer_name=m.matched_name or "",
+                    drug_name=m.medication_name,
+                    confidence=m.confidence,
+                )
+            )
+        else:
+            unmatched_out.append(
+                UnmatchedRequestedManufacturer(manufacturer=m.raw_name, drug_name=m.medication_name)
+            )
+    return MatchRequestedManufacturersResponse(matched=matched_out, unmatched=unmatched_out)
 
 
 @router.get("/_debug/cache")
